@@ -178,7 +178,9 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
         let base = if ($sb != "") {
             ($sb | path join "Documents")
         } else if ($nu.os-info.family == "windows") {
-            let pwsh_res = (^pwsh -NoProfile -Command "[Environment]::GetFolderPath('MyDocuments')" | complete)
+            let pwsh_res = (try { ^pwsh -NoProfile -Command "[Environment]::GetFolderPath('MyDocuments')" | complete } catch {
+                try { ^powershell -NoProfile -Command "[Environment]::GetFolderPath('MyDocuments')" | complete } catch { { exit_code: 1, stdout: "" } }
+            })
             if ($pwsh_res.exit_code == 0) and (($pwsh_res.stdout | str trim) != "") {
                 ($pwsh_res.stdout | str trim)
             } else {
@@ -211,7 +213,7 @@ export def backup-existing [ygg_home: string, target_path: string]: nothing -> s
         return ""
     }
 
-    let timestamp = (date now | format date "%Y%m%d_%H%M%S")
+    let timestamp = (date now | format date "%Y%m%d_%H%M%S_%f")
     let backup_dir = ($ygg_home | path join ".state" "backups" $timestamp)
 
     # Sanitize path to create relative subpath
