@@ -1,0 +1,8 @@
+# Local runtime & test artifacts
+.state/
+.worktrees/
+*.bak
+*.log
+.DS_Store
+Thumbs.db
+mise.local.toml
