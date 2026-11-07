@@ -194,8 +194,8 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
 
     # If it is already an absolute path under home-path and sandbox is active, re-root it
     if ($sb != "") {
-        let home = ($nu.home-path | path expand)
-        let exp = ($raw_path | path expand)
+        let home = ("~" | path expand)
+        let exp = ($raw_path | path expand -n)
         if ($exp | str starts-with $home) {
             let rel = ($exp | str substring (($home | str length)..) | str trim -c "/" | str trim -c "\\")
             return ($sb | path join $rel)
@@ -203,7 +203,7 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
         return $exp
     }
 
-    $raw_path | path expand
+    $raw_path | path expand -n
 }
 
 # Move regular file or directory to centralized backup directory
