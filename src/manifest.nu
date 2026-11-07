@@ -98,7 +98,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         let ext = (open $pkg_file)
         if ($ext.packages? != null) {
             for mgr in ($ext.packages | columns) {
-                let cur = ($manifest.packages | get -i $mgr | default [])
+                let cur = ($manifest.packages | get -o $mgr | default [])
                 let added = ($ext.packages | get $mgr)
                 $manifest.packages = ($manifest.packages | upsert $mgr ($cur | append $added | uniq))
             }
@@ -106,7 +106,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         for col in ($ext | columns | where { |c| $c != "packages" and $c != "scope" }) {
             let val = ($ext | get $col)
             if (($val | describe) starts-with "list") {
-                let cur = ($manifest.packages | get -i $col | default [])
+                let cur = ($manifest.packages | get -o $col | default [])
                 $manifest.packages = ($manifest.packages | upsert $col ($cur | append $val | uniq))
             }
         }
@@ -114,11 +114,11 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
             for s_name in ($ext.scope | columns) {
                 let s_val = ($ext.scope | get $s_name)
                 let s_pkgs = if ($s_val.packages? != null) { $s_val.packages } else { $s_val }
-                let cur_scope = ($manifest.scope | get -i $s_name | default {})
+                let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_pkgs = ($cur_scope.packages? | default {})
                 mut updated_pkgs = $cur_scope_pkgs
                 for mgr in ($s_pkgs | columns) {
-                    let cur_mgr = ($updated_pkgs | get -i $mgr | default [])
+                    let cur_mgr = ($updated_pkgs | get -o $mgr | default [])
                     let added = ($s_pkgs | get $mgr)
                     $updated_pkgs = ($updated_pkgs | upsert $mgr ($cur_mgr | append $added | uniq))
                 }
@@ -142,7 +142,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
             for s_name in ($ext.scope | columns) {
                 let s_val = ($ext.scope | get $s_name)
                 let s_links = if ($s_val.links? != null) { $s_val.links } else { $s_val }
-                let cur_scope = ($manifest.scope | get -i $s_name | default {})
+                let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_links = ($cur_scope.links? | default {})
                 let updated_scope = ($cur_scope | upsert links ($cur_scope_links | merge $s_links))
                 $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
@@ -164,7 +164,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
             for s_name in ($ext.scope | columns) {
                 let s_val = ($ext.scope | get $s_name)
                 let s_env = if ($s_val.env? != null) { $s_val.env } else { $s_val }
-                let cur_scope = ($manifest.scope | get -i $s_name | default {})
+                let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_env = ($cur_scope.env? | default {})
                 let updated_scope = ($cur_scope | upsert env ($cur_scope_env | merge $s_env))
                 $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
@@ -186,7 +186,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
             for s_name in ($ext.scope | columns) {
                 let s_val = ($ext.scope | get $s_name)
                 let s_aliases = if ($s_val.aliases? != null) { $s_val.aliases } else { $s_val }
-                let cur_scope = ($manifest.scope | get -i $s_name | default {})
+                let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_aliases = ($cur_scope.aliases? | default {})
                 let updated_scope = ($cur_scope | upsert aliases ($cur_scope_aliases | merge $s_aliases))
                 $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
@@ -258,12 +258,12 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
 
         # Merge in active scopes for this module
         for s_name in $active_scopes {
-            let scope_data = ($manifest.scope | get -i $s_name)
+            let scope_data = ($manifest.scope | get -o $s_name)
             if ($scope_data != null) {
                 # packages in scope
                 if ($scope_data.packages? != null) {
                     for mgr in ($scope_data.packages | columns) {
-                        let cur = ($mod_packages | get -i $mgr | default [])
+                        let cur = ($mod_packages | get -o $mgr | default [])
                         let added = ($scope_data.packages | get $mgr)
                         $mod_packages = ($mod_packages | upsert $mgr ($cur | append $added | uniq))
                     }
@@ -341,7 +341,7 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
 
         # Merge packages across modules
         for mgr in ($mod_packages | columns) {
-            let cur = ($plan_packages | get -i $mgr | default [])
+            let cur = ($plan_packages | get -o $mgr | default [])
             let added = ($mod_packages | get $mgr)
             $plan_packages = ($plan_packages | upsert $mgr ($cur | append $added | uniq))
         }

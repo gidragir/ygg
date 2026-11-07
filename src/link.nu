@@ -13,14 +13,25 @@ export def is-link-or-junction [path: string]: nothing -> bool {
         return false
     }
 
-    # On Windows, check for ReparsePoint / Junction attribute
+    # On Windows, check for ReparsePoint / Junction attribute without admin privileges
     if ($nu.os-info.family == "windows") {
-        let res = (try {
-            ^cmd /c $"fsutil reparsepoint query \"($path)\"" | complete
+        let parent = ($path | path dirname)
+        let name = ($path | path basename)
+        let dir_res = (try {
+            ^cmd /c $"dir /a:l /b \"($parent)\"" | complete
         } catch {
-            { exit_code: 1 }
+            { exit_code: 1, stdout: "" }
         })
-        if $res.exit_code == 0 {
+        if ($dir_res.exit_code == 0) and ($name in ($dir_res.stdout | lines | str trim)) {
+            return true
+        }
+        let ps_cmd = ("([System.IO.File]::GetAttributes('" + $path + "').HasFlag([System.IO.FileAttributes]::ReparsePoint))")
+        let ps_res = (try {
+            ^powershell -NoProfile -Command $ps_cmd | complete
+        } catch {
+            { exit_code: 1, stdout: "" }
+        })
+        if ($ps_res.exit_code == 0) and (($ps_res.stdout | str trim | str lowercase) == "true") {
             return true
         }
     }
@@ -280,13 +291,23 @@ export def apply-links [
                             }
                         }
 
+                        let is_copy = ($is_windows and not $is_item_dir)
                         let link_record = {
                             module: $mod_name,
                             src: $src_item,
-                            type: (if $is_windows and $is_item_dir { "junction" } else { "symlink" }),
+                            type: (if $is_windows { if $is_item_dir { "junction" } else { "copy" } } else { "symlink" }),
                             cmd_shim: $cmd_shim
                         }
                         $state.links = ($state.links | upsert $target_item $link_record)
+                        if $is_copy {
+                            let item_hash = (if ($src_item | path exists) { open --raw $src_item | hash sha256 } else { "" })
+                            $state.copies = ($state.copies | upsert $target_item {
+                                module: $mod_name,
+                                src: $src_item,
+                                dest: $target_item,
+                                last_synced_hash: $item_hash
+                            })
+                        }
                         $applied_links = ($applied_links | append $target_item)
                     }
                 }
@@ -403,6 +424,8 @@ export def apply-links [
                 let old_record = ($state.links | get $old_dest)
                 if (is-link-or-junction $old_dest) {
                     remove-link-only $old_dest
+                } else if ($old_record.type? == "copy") and ($old_dest | path exists) {
+                    try { rm -f $old_dest }
                 }
                 let shim = ($old_record.cmd_shim? | default "")
                 if ($shim != "") and ($shim | path exists) {
@@ -411,6 +434,19 @@ export def apply-links [
             }
             $state.links = ($state.links | reject $old_dest)
             $pruned_links = ($pruned_links | append $old_dest)
+        }
+    }
+
+    # 4. Prune stale copies
+    let old_copies = ($state.copies | columns)
+    for old_dest in $old_copies {
+        if $old_dest not-in $active_copies {
+            if not $dry_run {
+                if ($old_dest | path exists) and not (is-link-or-junction $old_dest) {
+                    try { rm -f $old_dest }
+                }
+            }
+            $state.copies = ($state.copies | reject $old_dest)
         }
     }
 
@@ -426,7 +462,8 @@ export def apply-links [
 }
 
 # Reverse capture from host to module repository for all tracked copies and [save] entries
-export def save-copied-files [ygg_home: string, plan: record]: nothing -> list<string> {
+export def save-copied-files [ygg_home: string, plan: record, --sandbox: string = ""]: nothing -> list<string> {
+    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     mut state = (load-state $ygg_home)
     mut saved = []
 
@@ -459,7 +496,7 @@ export def save-copied-files [ygg_home: string, plan: record]: nothing -> list<s
     for save_item in $save_list {
         let src = $save_item.src_path
         let dest_raw = $save_item.dest_raw
-        let expanded_dest = (expand-target-path $dest_raw)
+        let expanded_dest = (expand-target-path $dest_raw --sandbox $effective_sandbox)
 
         let matches = if ($expanded_dest | str contains "*") or ($expanded_dest | str contains "?") {
             glob $expanded_dest
