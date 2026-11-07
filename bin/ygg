@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Resolve symlink to actual directory
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+# Ensure nu is available
+if ! command -v nu >/dev/null 2>&1; then
+    if [ -x "$HOME/.local/share/mise/shims/nu" ]; then
+        PATH="$HOME/.local/share/mise/shims:$PATH"
+    elif [ -x "$HOME/.cargo/bin/nu" ]; then
+        PATH="$HOME/.cargo/bin:$PATH"
+    fi
+fi
+
+if ! command -v nu >/dev/null 2>&1; then
+    echo "Error: nushell ('nu') is required to run ygg, but was not found in PATH." >&2
+    echo "Install nushell with: mise use -g nushell (or cargo install nu)" >&2
+    exit 1
+fi
+
+exec nu "${SCRIPT_DIR}/ygg.nu" "$@"
