@@ -37,8 +37,8 @@ export def compile-environment [
     let merged_env = ($plan_env | merge $sec_env)
     let merged_aliases = ($plan.aliases? | default {})
 
-    # Normalize environment values to strings
-    let clean_env = ($merged_env | transpose k v | reduce -f {} { |it, acc|
+    # Normalize environment values to strings, skipping complex sub-records
+    let clean_env = ($merged_env | transpose k v | where { |it| not (($it.v | describe) starts-with "record") and not (($it.v | describe) starts-with "table") } | reduce -f {} { |it, acc|
         $acc | upsert $it.k ($it.v | into string)
     })
 
