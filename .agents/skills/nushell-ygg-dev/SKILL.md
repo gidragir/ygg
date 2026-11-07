@@ -87,3 +87,49 @@ if $res.exit_code != 0 {
 ## 6. Изоляция тестов (`tests/helpers.nu`)
 
 Каждый тест обязан работать внутри `with-temp-ygg`, создающего уникальную папку через `mktemp -d -t ygg-test.XXXXXX`, выставляющего `YGG_HOME` и `YGG_SANDBOX` в `with-env` и гарантированно удаляющего временную папку в блоке `try { ... } catch { |e| rm -rf $tmp; error make { msg: $e.msg } }`.
+
+## 7. Квадратные скобки и строковая интерполяция (`$"..."` vs конкатенация)
+
+В Nushell внутри `$"..."` квадратные скобки `[` парсятся парсером как открывающийся разделитель выражений/индексов, а не литерал. При передаче команд с типами PowerShell/.NET (например, `[bool]`, `[System.IO.FileAttributes]::ReparsePoint`) интерполяция падает с `nu::parser::unclosed_delimiter`.
+* **Всегда используй строковую конкатенацию через `+`** для команд с литеральными скобками:
+  ```nushell
+  # ❌ НЕПРАВИЛЬНО: упадёт с nu::parser::unclosed_delimiter
+  let cmd = $"powershell -Command [bool]((Get-Item '($path)').Attributes.HasFlag([System.IO.FileAttributes]::ReparsePoint))"
+
+  # ✅ ПРАВИЛЬНО: конкатенация строк
+  let escaped = ($path | str replace --all "'" "''")
+  let cmd = ("([System.IO.File]::GetAttributes('" + $escaped + "').HasFlag([System.IO.FileAttributes]::ReparsePoint))")
+  ```
+
+## 8. Безопасное чтение полей (`get -o` вместо устаревшего `get -i`)
+
+Начиная с Nushell 0.106+, флаг `--ignore-errors` (`-i`) объявлен устаревшим и генерирует предупреждение в stderr.
+* **Используй флаг `--optional` (`-o`):**
+  ```nushell
+  # ❌ НЕПРАВИЛЬНО: предупреждение nu::parser::deprecated
+  let val = ($record | get -i non_existent_key | default [])
+
+  # ✅ ПРАВИЛЬНО:
+  let val = ($record | get -o non_existent_key | default [])
+  ```
+
+## 9. Замыкания в фильтрах `where` (явное связывание `|it|`)
+
+Внутри блока `where { ... }` переменная `$it` не объявляется неявно — обращение к `$it` вызовет `nu::shell::variable_not_found`.
+* **Всегда явно объявляй параметр блока `|it|` либо используй `$in` без фигурных скобок:**
+  ```nushell
+  # ❌ НЕПРАВИЛЬНО: Variable not found $it
+  $merged_env | transpose k v | where { not (($it.v | describe) starts-with "record") }
+
+  # ✅ ПРАВИЛЬНО:
+  $merged_env | transpose k v | where { |it| not (($it.v | describe) starts-with "record") }
+  ```
+
+## 10. Нормализация глоб-таргетов `dest_raw` (защита от папок со звездочкой `*`)
+
+Если пользователь указывает маску директории назначения в `ygg.toml` со звёздочкой на конце (`"scripts/*" = "~/.zsh/scripts/*"`), вызов `expand-target-path` создаст литеральную папку `*`.
+* **Всегда отсекай суффикс `/*` или `\*` перед разрешением целевой директории:**
+  ```nushell
+  let clean_dest_raw = ($dest_raw | str replace --regex '[\\/]\*$' '')
+  let dest_dir = (expand-target-path $clean_dest_raw --sandbox $effective_sandbox | str trim -r -c "/" | str trim -r -c "\\")
+  ```
