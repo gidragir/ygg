@@ -57,7 +57,7 @@ export def save-state [ygg_home: string, state: record]: nothing -> nothing {
 export def detect-host-os []: nothing -> record<os: string, distro: string, auto_scopes: list<string>> {
     let override = ($env.YGG_HOST_OS_OVERRIDE? | default "")
     if ($override != "") {
-        let o = ($override | str downcase)
+        let o = ($override | str lowercase)
         if ($o == "windows") {
             return { os: "windows", distro: "windows", auto_scopes: ["windows"] }
         } else if ($o in ["macos", "darwin"]) {
@@ -93,9 +93,9 @@ export def detect-host-os []: nothing -> record<os: string, distro: string, auto
         for line in $lines {
             let trimmed = ($line | str trim)
             if ($trimmed | str starts-with "ID=") {
-                $id_val = ($trimmed | str substring 3.. | str trim -c '"' | str trim -c "'" | str downcase)
+                $id_val = ($trimmed | str substring 3.. | str trim -c '"' | str trim -c "'" | str lowercase)
             } else if ($trimmed | str starts-with "ID_LIKE=") {
-                $id_like_val = ($trimmed | str substring 8.. | str trim -c '"' | str trim -c "'" | str downcase)
+                $id_like_val = ($trimmed | str substring 8.. | str trim -c '"' | str trim -c "'" | str lowercase)
             }
         }
 

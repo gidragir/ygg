@@ -1,0 +1,245 @@
+# tests/test_manifest.nu
+use std/assert
+use ../src/manifest.nu *
+use helpers.nu [with-temp-ygg]
+
+export def test_scope_isolation_and_last_module_wins [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "base")
+        let m2 = ($home | path join "modules" "override")
+        mkdir $m1 $m2
+        'name = "base"
+os = ["cachyos"]
+[packages]
+pacman = ["rofi-wayland"]
+[links]
+niri = "~/.config/niri"
+starship = "~/.config/starship.toml"
+[scope.pc.links]
+openrgb = "~/.config/OpenRGB"
+[scope.asus.links]
+rog = "~/.config/rog"
+' | save -f ($m1 | path join "ygg.toml")
+
+        'name = "override"
+os = ["linux"]
+[links]
+starship = "~/.config/starship.toml"
+' | save -f ($m2 | path join "ygg.toml")
+
+        '[[modules]]
+name = "base"
+scopes = ["asus"]
+[[modules]]
+name = "override"
+' | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let plan = (resolve-effective-plan $home)
+            let dests = ($plan.links | get dest_raw)
+            assert ("~/.config/rog" in $dests)
+            assert (not ("~/.config/OpenRGB" in $dests))
+            let star = ($plan.links | where dest_raw == "~/.config/starship.toml" | first)
+            assert equal $star.module "override"
+        }
+    }
+}
+
+export def test_rejects_incompatible_os [] {
+    let m = { name: "ai-dotfiles", os: ["cachyos"] }
+    let win = { os: "windows", distro: "windows", auto_scopes: ["windows"] }
+    assert equal (validate-module-os $m $win) false
+
+    let cachy = { os: "linux", distro: "cachyos", auto_scopes: ["linux", "unix", "cachyos", "arch"] }
+    assert equal (validate-module-os $m $cachy) true
+}
+
+export def test_load_and_save_host_config [] {
+    with-temp-ygg { |home|
+        # Missing host.toml returns default empty record
+        let empty_cfg = (load-host-config $home)
+        assert equal $empty_cfg.modules []
+
+        let new_cfg = {
+            modules: [
+                { name: "core", scopes: ["work"], exclude: ["secret"] }
+            ]
+        }
+        save-host-config $home $new_cfg
+        let loaded = (load-host-config $home)
+        assert equal ($loaded.modules | length) 1
+        assert equal ($loaded.modules | first | get name) "core"
+        assert equal ($loaded.modules | first | get scopes) ["work"]
+    }
+}
+
+export def test_load_module_manifest_with_merges [] {
+    with-temp-ygg { |home|
+        let mod_dir = ($home | path join "modules" "custom")
+        mkdir $mod_dir
+
+        'name = "custom"
+os = ["linux", "macos"]
+[config]
+theme = "dark"
+[links]
+base_link = "~/.config/base"
+[scope.work.links]
+work_link = "~/.config/work"
+' | save -f ($mod_dir | path join "ygg.toml")
+
+        'pacman = ["pkg1"]
+[scope.work]
+pacman = ["pkg2"]
+' | save -f ($mod_dir | path join "packages.toml")
+
+        'extra_link = "~/.config/extra"
+' | save -f ($mod_dir | path join "links.toml")
+
+        'FOO = "bar"
+' | save -f ($mod_dir | path join "env.toml")
+
+        'my_alias = "echo test"
+' | save -f ($mod_dir | path join "aliases.toml")
+
+        let manifest = (load-module-manifest $mod_dir)
+        assert equal $manifest.name "custom"
+        assert equal $manifest.os ["linux", "macos"]
+        assert equal $manifest.config.theme "dark"
+        assert equal $manifest.links.base_link "~/.config/base"
+        assert equal $manifest.links.extra_link "~/.config/extra"
+        assert equal $manifest.packages.pacman ["pkg1"]
+        assert equal $manifest.env.FOO "bar"
+        assert equal $manifest.aliases.my_alias "echo test"
+        assert equal $manifest.scope.work.links.work_link "~/.config/work"
+        assert equal $manifest.scope.work.packages.pacman ["pkg2"]
+    }
+}
+
+export def test_resolve_effective_plan_excludes_and_os_error [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "linux_only")
+        mkdir $m1
+        'name = "linux_only"
+os = ["linux"]
+[links]
+l1 = "~/.config/l1"
+l2 = "~/.config/l2"
+' | save -f ($m1 | path join "ygg.toml")
+
+        '[[modules]]
+name = "linux_only"
+exclude = ["l1"]
+' | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "linux" } {
+            let plan = (resolve-effective-plan $home)
+            let dests = ($plan.links | get dest_raw)
+            assert ("~/.config/l2" in $dests)
+            assert (not ("~/.config/l1" in $dests))
+        }
+
+        # Incompatible host OS must fail with error
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let res = (try { resolve-effective-plan $home; false } catch { true })
+            assert equal $res true
+        }
+    }
+}
+
+export def test_resolve_effective_plan_filter_and_config_merge [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "m1")
+        let m2 = ($home | path join "modules" "m2")
+        mkdir $m1 $m2
+
+        'name = "m1"
+os = ["linux"]
+[config]
+editor = "nano"
+theme = "solarized"
+[links]
+m1_link = "~/.config/m1"
+' | save -f ($m1 | path join "ygg.toml")
+
+        'name = "m2"
+os = ["linux"]
+[config]
+editor = "helix"
+[links]
+m2_link = "~/.config/m2"
+' | save -f ($m2 | path join "ygg.toml")
+
+        '[[modules]]
+name = "m1"
+config = { editor = "nvim" }
+[[modules]]
+name = "m2"
+' | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "linux" } {
+            # Filter only m1
+            let plan_filtered = (resolve-effective-plan $home --modules-filter ["m1"])
+            assert equal ($plan_filtered.modules | length) 1
+            let m1_resolved = ($plan_filtered.modules | first)
+            assert equal $m1_resolved.config.editor "nvim"
+            assert equal $m1_resolved.config.theme "solarized"
+            assert equal ($plan_filtered.links | length) 1
+            assert equal ($plan_filtered.links | first | get dest_raw) "~/.config/m1"
+        }
+    }
+}
+
+export def test_resolve_effective_plan_glob_links_multi_modules [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "m1")
+        let m2 = ($home | path join "modules" "m2")
+        mkdir $m1 $m2
+
+        'name = "m1"
+os = ["linux"]
+[links]
+"scripts/*" = "~/.zsh/scripts/"
+' | save -f ($m1 | path join "ygg.toml")
+
+        'name = "m2"
+os = ["linux"]
+[links]
+"scripts/*" = "~/.zsh/scripts/"
+' | save -f ($m2 | path join "ygg.toml")
+
+        '[[modules]]
+name = "m1"
+[[modules]]
+name = "m2"
+' | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "linux" } {
+            let plan = (resolve-effective-plan $home)
+            # Both glob links must be preserved
+            let glob_links = ($plan.links | where is_glob)
+            assert equal ($glob_links | length) 2
+            assert equal ($glob_links | get module) ["m1", "m2"]
+        }
+    }
+}
+
+export def test_load_module_manifest_validation_failures [] {
+    with-temp-ygg { |home|
+        let bad1 = ($home | path join "modules" "no_name")
+        let bad2 = ($home | path join "modules" "no_os")
+        mkdir $bad1 $bad2
+
+        'os = ["linux"]' | save -f ($bad1 | path join "ygg.toml")
+        'name = "no_os"' | save -f ($bad2 | path join "ygg.toml")
+
+        let res1 = (try { load-module-manifest $bad1; false } catch { true })
+        assert equal $res1 true
+
+        let res2 = (try { load-module-manifest $bad2; false } catch { true })
+        assert equal $res2 true
+
+        let res3 = (try { load-module-manifest ($home | path join "nonexistent"); false } catch { true })
+        assert equal $res3 true
+    }
+}
