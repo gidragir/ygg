@@ -42,7 +42,8 @@ export def add-module [
         }
 
         let host_cfg = (load-host-config $ygg_home)
-        mut updated_mods = ($host_cfg.modules | where { |m| $m.name != $manifest.name })
+        let cur_mods = ($host_cfg.modules? | default [])
+        mut updated_mods = ($cur_mods | where { |m| $m.name != $manifest.name })
         mut mod_record = { name: $manifest.name }
         if ($scopes | is-not-empty) {
             $mod_record = ($mod_record | upsert scopes $scopes)
@@ -98,7 +99,8 @@ export def add-module [
         mv $tmp_clone $mod_dest
 
         let host_cfg = (load-host-config $ygg_home)
-        mut updated_mods = ($host_cfg.modules | where { |m| $m.name != $manifest.name })
+        let cur_mods = ($host_cfg.modules? | default [])
+        mut updated_mods = ($cur_mods | where { |m| $m.name != $manifest.name })
         mut mod_record = { name: $manifest.name }
         if ($scopes | is-not-empty) {
             $mod_record = ($mod_record | upsert scopes $scopes)
@@ -129,7 +131,8 @@ export def remove-module [ygg_home: string, name: string]: nothing -> nothing {
 
     # Remove entry from host.toml
     let host_cfg = (load-host-config $ygg_home)
-    let updated_mods = ($host_cfg.modules | where { |m| $m.name != $name })
+    let cur_mods = ($host_cfg.modules? | default [])
+    let updated_mods = ($cur_mods | where { |m| $m.name != $name })
     save-host-config $ygg_home ($host_cfg | upsert modules $updated_mods)
 
     # Delete symlink or folder
