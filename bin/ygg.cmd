@@ -8,4 +8,15 @@ if %ERRORLEVEL% neq 0 (
         set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
     )
 )
-nu "%~dp0ygg.nu" %*
+setlocal
+if exist "%~dp0ygg.nu" (
+    set "YGG_SCRIPT=%~dp0ygg.nu"
+) else if defined YGG_ENGINE_DIR (
+    set "YGG_SCRIPT=%YGG_ENGINE_DIR%\bin\ygg.nu"
+) else if exist "%USERPROFILE%\.ygg\.engine\bin\ygg.nu" (
+    set "YGG_SCRIPT=%USERPROFILE%\.ygg\.engine\bin\ygg.nu"
+) else (
+    echo [ygg] Error: could not locate ygg.nu >&2
+    exit /b 1
+)
+nu "%YGG_SCRIPT%" %*

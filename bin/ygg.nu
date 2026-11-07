@@ -66,7 +66,8 @@ def "main init" [
 # Add a module from local directory or git repo, and immediately apply
 def "main add" [
     source: string,
-    --scope (-s): string = ""
+    --scope (-s): string = "",
+    --sandbox: string = ""
 ] {
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
@@ -91,7 +92,7 @@ def "main add" [
     let add_res = (add-module $ygg_home $clean_source --scopes $all_scopes)
     print $"Added module ($add_res.name)"
 
-    main apply
+    main apply --sandbox=$sandbox
 }
 
 # Remove a module and unlink its managed files

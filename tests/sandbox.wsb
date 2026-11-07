@@ -2,8 +2,9 @@
   <VGpu>Disable</VGpu>
   <Networking>Default</Networking>
   <MappedFolders>
+    <!-- Note: Windows Sandbox requires an absolute path on host. Adjust HostFolder to your local path if needed -->
     <MappedFolder>
-      <HostFolder>..</HostFolder>
+      <HostFolder>C:\projects\ygg</HostFolder>
       <SandboxFolder>C:\ygg</SandboxFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
