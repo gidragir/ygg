@@ -1,0 +1,68 @@
+# tests/test_state.nu
+use std/assert
+use ../src/state.nu *
+use helpers.nu [with-temp-ygg]
+
+export def test_state_roundtrip_and_dirs [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        assert (($home | path join "modules" | path exists))
+        assert (($home | path join ".state" | path exists))
+        assert (($home | path join ".state" "backups" | path exists))
+        assert (($home | path join ".state" "env" | path exists))
+
+        let st = (load-state $home | upsert hashes { test_key: "abc" })
+        save-state $home $st
+        assert equal ((load-state $home).hashes.test_key) "abc"
+
+        # Check default state structure
+        let loaded = (load-state $home)
+        assert ("links" in $loaded)
+        assert ("copies" in $loaded)
+        assert ("hashes" in $loaded)
+
+        # Check detect-host-os
+        let host_info = (detect-host-os)
+        assert ($host_info.os in ["linux", "windows", "macos", "unix"])
+        assert (($host_info.auto_scopes | length) > 0)
+
+        # Check get-ygg-home under YGG_HOME
+        assert equal (get-ygg-home) $home
+    }
+}
+
+export def test_expand_target_path_with_sandbox_and_tokens [] {
+    let sb = "/tmp/ygg-sb-check"
+    let p = (expand-target-path "~/.config/niri" --sandbox $sb)
+    assert equal $p "/tmp/ygg-sb-check/.config/niri"
+
+    # Also verify token expansions with sandbox
+    let p_appdata = (expand-target-path "$APPDATA/test" --sandbox $sb)
+    assert equal $p_appdata "/tmp/ygg-sb-check/AppData/Roaming/test"
+
+    let p_local = (expand-target-path "$LOCALAPPDATA/test" --sandbox $sb)
+    assert equal $p_local "/tmp/ygg-sb-check/AppData/Local/test"
+
+    let p_docs = (expand-target-path "$DOCUMENTS/test" --sandbox $sb)
+    assert equal $p_docs "/tmp/ygg-sb-check/Documents/test"
+
+    # Verify detect-host-os override
+    with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+        let win_os = (detect-host-os)
+        assert equal $win_os.os "windows"
+        assert equal $win_os.distro "windows"
+        assert ($win_os.auto_scopes | any { |s| $s == "windows" })
+    }
+}
+
+export def test_backup_moves_regular_file_outside_config [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let victim = ($home | path join "fake-config.toml")
+        "hello" | save -f $victim
+        let bak = (backup-existing $home $victim)
+        assert (not ($victim | path exists))
+        assert ($bak | path exists)
+        assert ($bak | str starts-with ($home | path join ".state" "backups"))
+    }
+}
