@@ -218,14 +218,17 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
 
     for mod_entry in $active_modules {
         let mod_name = $mod_entry.name
-        let mod_dir = if ($mod_entry.path? != null) and ($mod_entry.path != "") and ($mod_entry.path | path exists) {
+        let mod_dir = if ($mod_entry.path? != null) and ($mod_entry.path != "") {
+            if not ($mod_entry.path | path exists) {
+                error make { msg: $"Custom path for module '($mod_name)' not found at '($mod_entry.path)'" }
+            }
             $mod_entry.path
         } else {
-            ($ygg_home | path join "modules" $mod_name)
-        }
-
-        if not ($mod_dir | path exists) {
-            error make { msg: $"Module directory for '($mod_name)' not found at '($mod_dir)'" }
+            let default_dir = ($ygg_home | path join "modules" $mod_name)
+            if not ($default_dir | path exists) {
+                error make { msg: $"Module directory for '($mod_name)' not found at '($default_dir)'" }
+            }
+            $default_dir
         }
 
         let manifest = (load-module-manifest $mod_dir)
