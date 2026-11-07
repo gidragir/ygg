@@ -19,4 +19,10 @@ if exist "%~dp0ygg.nu" (
     echo [ygg] Error: could not locate ygg.nu >&2
     exit /b 1
 )
+where nu >nul 2>nul
+if %ERRORLEVEL% neq 0 (
+    echo [ygg] Error: nushell 'nu' was not found in PATH. >&2
+    echo [ygg] Please install Nushell via winget, scoop, or run scripts\install.ps1 >&2
+    exit /b 1
+)
 nu "%YGG_SCRIPT%" %*

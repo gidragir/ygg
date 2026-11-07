@@ -293,3 +293,18 @@ os = ["linux"]
         assert ($ls_res | str starts-with "-rwx")
     }
 }
+
+export def test_glob_dest_with_trailing_star [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "m")
+        mkdir ($m | path join "bin")
+        "#!/bin/sh\necho hi\n" | save -f ($m | path join "bin" "mytool")
+        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"bin/*\" = \"~/.local/bin/*\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        apply-links $home (resolve-effective-plan $home) --sandbox $sb
+        assert (($sb | path join ".local/bin/mytool" | path exists))
+        assert (not ($sb | path join ".local/bin/*" | path exists))
+    }
+}

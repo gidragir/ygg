@@ -25,7 +25,8 @@ export def is-link-or-junction [path: string]: nothing -> bool {
         if ($dir_res.exit_code == 0) and ($name in ($dir_res.stdout | lines | str trim)) {
             return true
         }
-        let ps_cmd = ("([System.IO.File]::GetAttributes('" + $path + "').HasFlag([System.IO.FileAttributes]::ReparsePoint))")
+        let escaped_path = ($path | str replace --all "'" "''")
+        let ps_cmd = ("([System.IO.File]::GetAttributes('" + $escaped_path + "').HasFlag([System.IO.FileAttributes]::ReparsePoint))")
         let ps_res = (try {
             ^powershell -NoProfile -Command $ps_cmd | complete
         } catch {
@@ -220,7 +221,8 @@ export def apply-links [
         let mod_name = $link.module
 
         if $is_glob {
-            let dest_dir = (expand-target-path $dest_raw --sandbox $effective_sandbox | str trim -r -c "/" | str trim -r -c "\\")
+            let clean_dest_raw = ($dest_raw | str replace --regex '[\\/]\*$' '')
+            let dest_dir = (expand-target-path $clean_dest_raw --sandbox $effective_sandbox | str trim -r -c "/" | str trim -r -c "\\")
 
             # Ownership conflict check: target directory must NOT be an existing link or junction
             if (is-link-or-junction $dest_dir) {
@@ -360,6 +362,9 @@ export def apply-links [
                         }
 
                         let sync_res = (sync-single-file $state $mod_name $src_path $dest $force)
+                        if ($sync_res.action == "conflict") {
+                            print -e $"[ygg] Warning: 3-way sync conflict on '($dest)' (both host and module modified). Preserving host version."
+                        }
                         $state.copies = ($state.copies | upsert $dest $sync_res.copy_record)
                         $active_copies = ($active_copies | append $dest)
 
@@ -410,6 +415,9 @@ export def apply-links [
             $active_copies = ($active_copies | append $dest_file)
             if not $dry_run {
                 let sync_res = (sync-single-file $state $mod_name $src_path $dest_file $force)
+                if ($sync_res.action == "conflict") {
+                    print -e $"[ygg] Warning: 3-way sync conflict on '($dest_file)' (both host and module modified). Preserving host version."
+                }
                 $state.copies = ($state.copies | upsert $dest_file $sync_res.copy_record)
                 $synced_copies = ($synced_copies | append $dest_file)
             }

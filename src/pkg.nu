@@ -26,7 +26,10 @@ export def install-packages [
     --sandbox: string = ""
 ]: nothing -> list<string> {
     # Skip package installation when inside a sandbox or sandbox path is passed
-    if ($sandbox != "") {
+    # In sandbox without mock logging, protect host package managers from execution
+    let env_sb = ($env.YGG_SANDBOX? | default "")
+    let is_mock = ($env.YGG_MOCK_PKG_LOG? != null)
+    if ($sandbox != "") or ($env_sb != "" and not $is_mock) {
         return []
     }
 
