@@ -404,3 +404,29 @@ export def test_doctor_core_has_no_user_specific_names [] {
         assert (not ($text | str contains $word)) $"src/doctor.nu must not mention '($word)'"
     }
 }
+
+export def test_journal_transaction_lifecycle_and_doctor_detection [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        ensure-ygg-dirs $home
+        write-host $home []
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_incomplete" | length) 0
+
+        begin-journal-transaction $home { modules: ["m1"] }
+        record-journal-step $home "links" "IN_PROGRESS"
+
+        let status = (check-pending-journal $home)
+        assert ($status.incomplete == true) "Expected incomplete journal"
+
+        let rep = (run-doctor $home --sandbox $sb)
+        let rows = (rows-of $rep "journal_incomplete")
+        assert equal ($rows | length) 1
+        assert equal ($rows | first | get severity) "error"
+        assert equal ($rows | first | get check) "journal_incomplete"
+
+        commit-journal-transaction $home
+        assert (not ($home | path join ".state" "journal.json" | path exists)) "Journal must be deleted on commit"
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_incomplete" | length) 0
+    }
+}
+

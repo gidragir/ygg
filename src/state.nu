@@ -318,3 +318,79 @@ export def release-host-lock [lock_file: string]: nothing -> nothing {
     }
 }
 
+# Begin transaction journal in $YGG_HOME/.state/journal.json (RFC-027)
+export def begin-journal-transaction [ygg_home: string, plan: record]: nothing -> string {
+    ensure-ygg-dirs $ygg_home
+    let state_dir = ($ygg_home | path join ".state")
+    let journal_file = ($state_dir | path join "journal.json")
+    let plan_str = ($plan | to json)
+    let plan_hash = ($plan_str | hash sha256)
+    let payload = {
+        timestamp: (date now | format date "%Y-%m-%dT%H:%M:%SZ"),
+        plan_hash: $plan_hash,
+        plan: $plan,
+        steps: {
+            packages: "PENDING",
+            links: "PENDING",
+            env: "PENDING",
+            setup: "PENDING",
+            hooks: "PENDING"
+        }
+    }
+    let rand_id = (random chars --length 8)
+    let tmp_file = ($state_dir | path join $"journal.json.tmp.($rand_id)")
+    $payload | to json --indent 2 | save -f $tmp_file
+    mv -f $tmp_file $journal_file
+    $journal_file
+}
+
+# Atomically update step status in transaction journal (RFC-027)
+export def record-journal-step [ygg_home: string, step_name: string, status: string]: nothing -> nothing {
+    let state_dir = ($ygg_home | path join ".state")
+    let journal_file = ($state_dir | path join "journal.json")
+    if not ($journal_file | path exists) {
+        return
+    }
+    let loaded = (try {
+        let val = (open $journal_file)
+        if (($val | describe) starts-with "record") { $val } else { {} }
+    } catch { {} })
+    let steps = ($loaded.steps? | default {})
+    let updated_steps = ($steps | upsert $step_name $status)
+    let updated_payload = ($loaded | upsert steps $updated_steps)
+    let rand_id = (random chars --length 8)
+    let tmp_file = ($state_dir | path join $"journal.json.tmp.($rand_id)")
+    $updated_payload | to json --indent 2 | save -f $tmp_file
+    mv -f $tmp_file $journal_file
+}
+
+# Commit transaction journal by removing $YGG_HOME/.state/journal.json (RFC-027)
+export def commit-journal-transaction [ygg_home: string]: nothing -> nothing {
+    let journal_file = ($ygg_home | path join ".state" "journal.json")
+    if ($journal_file | path exists) {
+        try { rm -f $journal_file } catch { }
+    }
+}
+
+# Check for incomplete pending transaction journal in $YGG_HOME/.state/journal.json (RFC-027)
+export def check-pending-journal [ygg_home: string]: nothing -> record {
+    let journal_file = ($ygg_home | path join ".state" "journal.json")
+    if not ($journal_file | path exists) {
+        return { incomplete: false }
+    }
+    let data = (try {
+        let val = (open $journal_file)
+        if (($val | describe) starts-with "record") { $val } else { {} }
+    } catch { {} })
+    let steps = ($data.steps? | default {})
+    {
+        incomplete: true,
+        file: $journal_file,
+        timestamp: ($data.timestamp? | default ""),
+        plan_hash: ($data.plan_hash? | default ""),
+        steps: $steps,
+        data: $data
+    }
+}
+
+

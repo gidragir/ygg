@@ -272,6 +272,12 @@ def apply-plan [
 
     let mod_count = ($plan_mods | length)
 
+    # Check pending journal before starting mutations (RFC-027)
+    let pending_journal = (check-pending-journal $ygg_home)
+    if ($pending_journal.incomplete? | default false) {
+        print -e $"[ygg] Warning: Interrupted transaction detected in .state/journal.json \(started ($pending_journal.timestamp? | default 'unknown')\). Resuming operation."
+    }
+
     if $dry_run {
         # RFC-011: plan only, nothing on the host changes
         report-collisions $resolved
@@ -305,22 +311,35 @@ def apply-plan [
         return
     }
 
+    # Begin WAL transaction (RFC-027)
+    begin-journal-transaction $ygg_home $plan
+
     # 1. Install packages
+    record-journal-step $ygg_home "packages" "IN_PROGRESS"
     let pkg_res = (install-packages $ygg_home $plan --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
+    record-journal-step $ygg_home "packages" "COMMITTED"
 
     # 2. Deploy links and file copies (PRUNE first; per-link failures are collected)
+    record-journal-step $ygg_home "links" "IN_PROGRESS"
     let link_res = (apply-links $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
+    record-journal-step $ygg_home "links" "COMMITTED"
 
     # 3. Compile shell environments and aliases
+    record-journal-step $ygg_home "env" "IN_PROGRESS"
     compile-environment $ygg_home $plan --force=$force --sandbox=$effective_sandbox | ignore
+    record-journal-step $ygg_home "env" "COMMITTED"
 
     # 4. Run module procedural setup scripts
+    record-journal-step $ygg_home "setup" "IN_PROGRESS"
     for mod_entry in $plan_mods {
         run-module-setup $ygg_home $mod_entry --force=$force --sandbox=$effective_sandbox
     }
+    record-journal-step $ygg_home "setup" "COMMITTED"
 
     # 5. on_change hooks of links (RFC-015): last step; a failing hook only warns
+    record-journal-step $ygg_home "hooks" "IN_PROGRESS"
     run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox | ignore
+    record-journal-step $ygg_home "hooks" "COMMITTED"
 
     print $"Applied ($mod_count) module\(s\)."
 
@@ -339,6 +358,9 @@ def apply-plan [
     if ($errors | is-not-empty) {
         error make { msg: ($errors | str join "; ") }
     }
+
+    # Commit WAL transaction on clean completion (RFC-027)
+    commit-journal-transaction $ygg_home
 }
 
 # Show planned changes across all modules without modifying the filesystem

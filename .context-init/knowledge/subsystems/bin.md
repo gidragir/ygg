@@ -2,8 +2,8 @@
 directory: bin/ygg.nu
 source:
   kind: git
-  blob_sha: ab64c9298a740de11bfd0fcce9cd269f2d7476da
-  commit_sha: 0d651c252a9873883824d2d6820981622c9fede7
+  blob_sha: 0282a3528692afd42b59c06a0ba9eeeeb7cd74fe
+  commit_sha: 79ad6edd6662cd416f292e81d259e32cbad89c17
 generated_by:
   component: context-init
   role: update

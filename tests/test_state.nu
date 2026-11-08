@@ -167,3 +167,20 @@ export def test_host_lock_prevents_concurrent_runs_and_cleans_stale [] {
     }
 }
 
+export def test_journal_transaction_lifecycle [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        assert equal (check-pending-journal $home).incomplete false
+        let jpath = (begin-journal-transaction $home { modules: ["m1"] })
+        assert ($jpath | path exists)
+        record-journal-step $home "links" "IN_PROGRESS"
+        let status = (check-pending-journal $home)
+        assert ($status.incomplete == true) "Expected incomplete journal"
+        assert equal $status.steps.links "IN_PROGRESS"
+        commit-journal-transaction $home
+        assert (not ($home | path join ".state" "journal.json" | path exists)) "Journal must be deleted on commit"
+        assert equal (check-pending-journal $home).incomplete false
+    }
+}
+
+

@@ -5,7 +5,7 @@
 # nothing is written, nothing is fixed automatically. Module-specific private files are declared
 # by modules themselves in `[doctor] private_files` of their manifest.
 
-use state.nu [load-state, expand-target-path]
+use state.nu [load-state, expand-target-path, check-pending-journal]
 use manifest.nu [load-host-config, resolve-effective-plan]
 use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-literal-target, normalize-case]
 use env.nu [missing-secret-keys]
@@ -223,9 +223,26 @@ def check-canonical [plan: record, targets: table]: nothing -> list<record> {
     $rows
 }
 
+# journal_incomplete: pending WAL transaction from an interrupted run (RFC-027)
+def check-journal [ygg_home: string]: nothing -> list<record> {
+    let journal = (check-pending-journal $ygg_home)
+    if ($journal.incomplete? | default false) {
+        let ts = ($journal.timestamp? | default "unknown")
+        let steps_info = if ($journal.steps? != null) {
+            let active = ($journal.steps | transpose k v | where v in ["IN_PROGRESS", "COMMITTED"] | each { |r| $"($r.k):($r.v)" } | str join ", ")
+            if ($active != "") { $" \(last steps: ($active)\)" } else { "" }
+        } else { "" }
+        [
+            (finding "journal_incomplete" "error" ($ygg_home | path join ".state" "journal.json") $"interrupted transaction from ($ts)($steps_info)" "run 'ygg apply' to recover or inspect and delete .state/journal.json")
+        ]
+    } else {
+        []
+    }
+}
+
 # Read-only audit of the host (RFC-017). Rows: { check, severity (error | warn), target, detail, fix }.
 # Checks: link, link_pending, orphan_link, state_orphan, sync, perm, tool, collision, shadow,
-# secrets, canonical; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
+# secrets, canonical, journal_incomplete; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
 export def run-doctor [
     ygg_home: string,
     --sandbox: string = ""
@@ -264,5 +281,6 @@ export def run-doctor [
         (check-shadow $ygg_home $targets)
         (check-secrets $ygg_home $plan)
         (check-canonical $plan $targets)
+        (check-journal $ygg_home)
     ] | flatten
 }

@@ -706,3 +706,60 @@ os = ["linux", "cachyos"]
     }
 }
 
+export def test_journal_transaction_apply_lifecycle_and_warning [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "wal-mod")
+        mkdir $mod_src
+        'name = "wal-mod"
+os = ["linux", "cachyos"]
+[links]
+"test.conf" = "~/.config/test.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "wal-content\n" | save -f ($mod_src | path join "test.conf")
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "wal-mod")
+        "[[modules]]\nname = \"wal-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb } {
+            # 1. Normal apply cleans up journal on success
+            let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            assert (not ($home | path join ".state" "journal.json" | path exists))
+
+            # 2. Simulate interrupted transaction in journal.json
+            let jfile = ($home | path join ".state" "journal.json")
+            {
+                timestamp: "2026-11-08T12:00:00Z",
+                plan_hash: "dummyhash",
+                steps: {
+                    packages: "COMMITTED",
+                    links: "IN_PROGRESS"
+                }
+            } | to json | save -f $jfile
+
+            # 3. ygg doctor detects incomplete journal
+            let doc_res = (^nu $ygg_bin doctor --json --sandbox $sb | complete)
+            assert equal $doc_res.exit_code 1
+            let findings = ($doc_res.stdout | from json)
+            let wal_errors = ($findings | where check == "journal_incomplete")
+            assert equal ($wal_errors | length) 1
+            assert equal ($wal_errors | first | get severity) "error"
+
+            # 4. ygg apply warns about interrupted transaction and recovers cleanly
+            let resume_res = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $resume_res.exit_code 0 $resume_res.stderr
+            assert ($resume_res.stderr | str contains "Interrupted transaction detected in .state/journal.json")
+            assert (not ($jfile | path exists)) "Journal must be removed after successful apply"
+
+            # 5. ygg doctor is clean again
+            let doc_clean = (^nu $ygg_bin doctor --json --sandbox $sb | complete)
+            assert equal $doc_clean.exit_code 0
+            let findings_clean = ($doc_clean.stdout | from json)
+            assert equal ($findings_clean | where check == "journal_incomplete" | length) 0
+        }
+    }
+}
+
+
