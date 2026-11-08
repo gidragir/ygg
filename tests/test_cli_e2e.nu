@@ -762,4 +762,75 @@ os = ["linux", "cachyos"]
     }
 }
 
+export def test_cli_clean_subcommand [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "clean-mod")
+        mkdir $mod_src
+        "hello" | save -f ($mod_src | path join "app.txt")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            cd $mod_src
+            ^nu $ygg_bin init "clean-mod" --os "linux"
+            "[links]\n\"app.txt\" = \"~/.config/clean/app.txt\"\n" | save --append ($mod_src | path join "ygg.toml")
+            ^nu $ygg_bin add $mod_src
+
+            # Create 25 dummy backups
+            let bkp_root = ($home | path join ".state" "backups")
+            for i in 1..25 {
+                mkdir ($bkp_root | path join $"2026110($i)_120000_000000")
+            }
+
+            # Put orphan hash into state.json
+            let state_file = ($home | path join ".state" "state.json")
+            let current_state = (open $state_file)
+            let updated_state = ($current_state | upsert hashes {
+                active_fake: "valid",
+                orphan_fake: "stale"
+            })
+            $updated_state | to json | save -f $state_file
+
+            # 1. Test ygg clean --dry-run
+            let dry_res = (^nu $ygg_bin clean --dry-run | complete)
+            assert equal $dry_res.exit_code 0 $dry_res.stderr
+            assert ($dry_res.stdout | str contains "Would remove")
+            assert ($dry_res.stdout | str contains "Would purge")
+            # Dry run must not remove anything
+            assert equal (ls $bkp_root | where type == "dir" | length) 25
+            assert equal ((open $state_file).hashes.orphan_fake? | default "") "stale"
+
+            # 2. Test ygg clean --backups
+            let bkp_res = (^nu $ygg_bin clean --backups | complete)
+            assert equal $bkp_res.exit_code 0 $bkp_res.stderr
+            assert ($bkp_res.stdout | str contains "Cleaned 5 old backup(s)")
+            assert equal (ls $bkp_root | where type == "dir" | length) 20
+            # Hashes still untouched
+            assert equal ((open $state_file).hashes.orphan_fake? | default "") "stale"
+
+            # 3. Test ygg clean --hashes
+            let hash_res = (^nu $ygg_bin clean --hashes | complete)
+            assert equal $hash_res.exit_code 0 $hash_res.stderr
+            assert ($hash_res.stdout | str contains "Purged")
+            let final_state = (open $state_file)
+            assert ("orphan_fake" not-in ($final_state.hashes | columns))
+
+            # 4. Test that ygg apply automatically purges orphan hashes and rotates backups
+            let state_with_orphan = ($final_state | upsert hashes {
+                orphan_during_apply: "stale"
+            })
+            $state_with_orphan | to json | save -f $state_file
+            for i in 1..25 {
+                mkdir ($bkp_root | path join $"2026110($i)_120000_000000")
+            }
+            let apply_res = (^nu $ygg_bin apply | complete)
+            assert equal $apply_res.exit_code 0 $apply_res.stderr
+            let post_apply_state = (open $state_file)
+            assert ("orphan_during_apply" not-in ($post_apply_state.hashes | columns))
+            assert ((ls $bkp_root | where type == "dir" | length) <= 20)
+        }
+    }
+}
+
+
 

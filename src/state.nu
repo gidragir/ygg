@@ -393,4 +393,131 @@ export def check-pending-journal [ygg_home: string]: nothing -> record {
     }
 }
 
+# Rotate old backups according to retention policy (RFC-028)
+export def rotate-backups [
+    ygg_home: string,
+    --max-count: int = 20,
+    --max-age-days: int = 30,
+    --dry-run
+]: nothing -> list<string> {
+    let bkp_root = ($ygg_home | path join ".state" "backups")
+    if not ($bkp_root | path exists) {
+        return []
+    }
+
+    let entries = (try {
+        ls $bkp_root | where type == "dir" | sort-by name --reverse
+    } catch { [] })
+
+    if ($entries | is-empty) {
+        return []
+    }
+
+    let now = (date now)
+    let has_age_limit = ($max_age_days > 0)
+    let cutoff = if $has_age_limit {
+        $now - ($max_age_days * 1day)
+    } else {
+        $now
+    }
+
+    let total = ($entries | length)
+    mut to_remove = []
+
+    for idx in 0..($total - 1) {
+        let entry = ($entries | get $idx)
+        let is_excess = if ($max_count > 0) { $idx >= $max_count } else { false }
+        let is_expired = if $has_age_limit {
+            let bname = ($entry.name | path basename)
+            let parsed_date = (try {
+                let m = ($bname | parse -r '^(?<y>\d{4})(?<m>\d{2})(?<d>\d{2})_(?<H>\d{2})(?<M>\d{2})(?<S>\d{2})')
+                if ($m | is-not-empty) {
+                    let r = ($m | first)
+                    $"($r.y)-($r.m)-($r.d)T($r.H):($r.M):($r.S)Z" | into datetime
+                } else {
+                    $entry.modified
+                }
+            } catch {
+                $entry.modified
+            })
+            $parsed_date < $cutoff
+        } else {
+            false
+        }
+
+        if $is_excess or $is_expired {
+            $to_remove = ($to_remove | append $entry.name)
+        }
+    }
+
+    let removed = ($to_remove | uniq)
+    if not $dry_run {
+        for p in $removed {
+            try { rm -rf $p } catch { }
+        }
+    }
+
+    $removed
+}
+
+# Garbage collect orphaned hashes from state.hashes (RFC-028)
+export def gc-state-hashes [
+    ygg_home: string,
+    active_keys: list<string>,
+    --dry-run
+]: nothing -> int {
+    let st = (load-state $ygg_home)
+    let hashes = ($st.hashes? | default {})
+    if not (($hashes | describe) starts-with "record") {
+        return 0
+    }
+
+    let all_keys = ($hashes | columns)
+    let orphans = ($all_keys | where { |k| not ($k in $active_keys) })
+    let count = ($orphans | length)
+
+    if ($count == 0) {
+        return 0
+    }
+
+    if not $dry_run {
+        let cleaned = ($hashes | reject ...$orphans)
+        save-state $ygg_home ($st | upsert hashes $cleaned)
+    }
+
+    $count
+}
+
+# Collect all active hash keys from the effective plan (RFC-028)
+export def collect-active-hash-keys [plan: record]: nothing -> list<string> {
+    mut active = []
+
+    # 1. Package manager hashes: pkg:<mgr>
+    for mgr in ($plan.packages? | default {} | columns) {
+        $active = ($active | append $"pkg:($mgr)")
+    }
+
+    # 2. Links on_change hooks: on_change:<module>:<key>
+    for l in ($plan.links? | default []) {
+        if (($l.on_change? | default "") != "") {
+            $active = ($active | append $"on_change:($l.module):($l.key)")
+        }
+    }
+
+    # 3. Module setup onchange hooks: static parse of setup.nu
+    for m in ($plan.modules? | default []) {
+        let setup_file = (($m.dir? | default "") | path join "setup.nu")
+        if ($setup_file != "") and ($setup_file | path exists) {
+            let content = (try { open --raw $setup_file } catch { "" })
+            let matches = ($content | parse -r '(?m)(?:ygg\s+)?onchange\s+([A-Za-z0-9_-]+)' | get capture0? | default [])
+            for k in $matches {
+                $active = ($active | append $k)
+            }
+        }
+    }
+
+    $active | uniq
+}
+
+
 

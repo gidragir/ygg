@@ -183,4 +183,24 @@ export def test_journal_transaction_lifecycle [] {
     }
 }
 
+export def test_rotate_backups_and_gc_state_hashes [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        # Создаем 25 фиктивных каталогов бэкапов
+        for i in 1..25 {
+            mkdir ($home | path join ".state" "backups" $"2026110($i)_120000_000000")
+        }
+        let removed = (rotate-backups $home --max-count 20)
+        assert (($removed | length) == 5) "Expected 5 old backups rotated"
+        
+        # Проверяем GC хэшей
+        save-state $home { links: {}, copies: {}, hashes: { keep_me: "hash1", orphan_me: "hash2" } }
+        let purged = (gc-state-hashes $home ["keep_me"])
+        assert ($purged == 1) "Expected 1 orphan hash removed"
+        let st = (load-state $home)
+        assert ("orphan_me" not-in ($st.hashes | columns)) "Orphan hash must be purged"
+    }
+}
+
+
 

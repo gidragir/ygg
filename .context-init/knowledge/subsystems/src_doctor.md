@@ -3,7 +3,7 @@ directory: src/doctor.nu
 source:
   kind: git
   blob_sha: 1b4558a7cf98b0ee3694c01244292f95abc87425
-  commit_sha: 79ad6edd6662cd416f292e81d259e32cbad89c17
+  commit_sha: b2b60cceff6830fd15d59eceaa74351c9a6c7049
 generated_by:
   component: context-init
   role: update

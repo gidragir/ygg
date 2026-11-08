@@ -36,6 +36,7 @@ def main [--version (-v)] {
     print "  ygg diff [--all] [--pkg <m1,m2>]         Show planned changes without modifying anything"
     print "  ygg update [--no-lock]                   Update git modules via rebase and apply"
     print "  ygg save [--no-lock]                     Save reverse-copied GUI/app edits back to modules"
+    print "  ygg clean [--backups] [--hashes] [--dry-run] [--no-lock]  Clean old backups and orphaned state hashes"
     print "  ygg status [--json]                      Display module sync and git status table"
     print "  ygg doctor [--json]                      Read-only host audit (exit code 1 on errors)"
     print "  ygg version                              Print version (also --version / -v)"
@@ -359,6 +360,15 @@ def apply-plan [
         error make { msg: ($errors | str join "; ") }
     }
 
+    # Rotate old backups and garbage collect orphaned hashes (RFC-028)
+    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+    let max_count = ($host_cfg | get -o ygg.backups.max_count | default 20)
+    let max_age_days = ($host_cfg | get -o ygg.backups.max_age_days | default 30)
+    rotate-backups $ygg_home --max-count=$max_count --max-age-days=$max_age_days | ignore
+
+    let active_keys = (collect-active-hash-keys $plan)
+    gc-state-hashes $ygg_home $active_keys | ignore
+
     # Commit WAL transaction on clean completion (RFC-027)
     commit-journal-transaction $ygg_home
 }
@@ -417,6 +427,52 @@ def "main save" [
         print $"Saved ($saved | length) file\(s\)."
         release-host-lock $lock_file
         $saved
+    } catch { |e|
+        release-host-lock $lock_file
+        error make $e
+    }
+}
+
+# Clean old backups and orphaned state hashes (RFC-028)
+def "main clean" [
+    --backups,
+    --hashes,
+    --dry-run,
+    --no-lock
+] {
+    let ygg_home = (get-ygg-home)
+    ensure-ygg-dirs $ygg_home
+
+    let do_backups = $backups or (not $hashes)
+    let do_hashes = $hashes or (not $backups)
+
+    let lock_file = (acquire-host-lock $ygg_home "clean" --no-lock=($no_lock or $dry_run))
+    try {
+        let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+        let max_count = ($host_cfg | get -o ygg.backups.max_count | default 20)
+        let max_age_days = ($host_cfg | get -o ygg.backups.max_age_days | default 30)
+
+        if $do_backups {
+            let removed = (rotate-backups $ygg_home --max-count=$max_count --max-age-days=$max_age_days --dry-run=$dry_run)
+            if $dry_run {
+                print $"Would remove ($removed | length) old backup\(s\)."
+            } else {
+                print $"Cleaned ($removed | length) old backup\(s\)."
+            }
+        }
+
+        if $do_hashes {
+            let plan = (resolve-effective-plan $ygg_home)
+            let active_keys = (collect-active-hash-keys $plan)
+            let purged = (gc-state-hashes $ygg_home $active_keys --dry-run=$dry_run)
+            if $dry_run {
+                print $"Would purge ($purged) orphan hash\(es\)."
+            } else {
+                print $"Purged ($purged) orphan hash\(es\)."
+            }
+        }
+
+        release-host-lock $lock_file
     } catch { |e|
         release-host-lock $lock_file
         error make $e
