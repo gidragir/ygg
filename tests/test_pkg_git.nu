@@ -788,3 +788,28 @@ os = ["linux", "cachyos"]' | save -f ($ext2 | path join "ygg.toml")
         }
     }
 }
+
+export def test_discard_staged_module_refuses_unsafe_path [] {
+    with-temp-ygg { |home|
+        let unsafe_dir = ($home | path join "unsafe_dir")
+        mkdir $unsafe_dir
+        "important\n" | save -f ($unsafe_dir | path join "file.txt")
+
+        # tmp_clone path outside .state/tmp must not be deleted
+        discard-staged-module { tmp_clone: $unsafe_dir }
+        assert ($unsafe_dir | path exists)
+        assert ($unsafe_dir | path join "file.txt" | path exists)
+
+        # tmp_clone path inside .state/tmp IS deleted
+        let safe_dir = ($home | path join ".state" "tmp" "test_clone")
+        mkdir $safe_dir
+        "clone\n" | save -f ($safe_dir | path join "file.txt")
+        discard-staged-module { tmp_clone: $safe_dir }
+        assert (not ($safe_dir | path exists))
+
+        # Empty or missing tmp_clone is a safe no-op
+        discard-staged-module {}
+        discard-staged-module { tmp_clone: "" }
+    }
+}
+

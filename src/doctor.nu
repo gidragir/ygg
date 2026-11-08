@@ -67,7 +67,8 @@ def check-orphan-links [state: record, targets: table, sb: string]: nothing -> l
         }
         for it in (try { ls -a $d } catch { [] }) {
             let p = $it.name
-            if ($it.type != "symlink") or ($p | path exists) or ((normalize-case $p) in $managed_norm) {
+            let is_link = ($it.type == "symlink") or (try { is-link-or-junction $p } catch { false })
+            if (not $is_link) or ($p | path exists) or ((normalize-case $p) in $managed_norm) {
                 continue
             }
             $rows = ($rows | append (finding "orphan_link" "warn" $p $"dangling symlink -> '(link-literal-target $p)' is not managed by ygg" "remove the link manually if it is no longer needed"))

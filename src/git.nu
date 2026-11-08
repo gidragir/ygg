@@ -39,7 +39,9 @@ export def warn-if-not-canonicalizable [path: string]: nothing -> nothing {
 # Remove the temporary clone of a staged module (no-op for local modules)
 export def discard-staged-module [prep: record]: nothing -> nothing {
     let tmp = ($prep.tmp_clone? | default "")
-    if ($tmp != "") and ($tmp | path exists) {
+    let safe_subpath = ([".state", "tmp"] | path join)
+    let has_safe_prefix = ($tmp | str contains $safe_subpath)
+    if ($tmp != "") and ($tmp | path exists) and $has_safe_prefix {
         rm -rf $tmp
     }
 }
