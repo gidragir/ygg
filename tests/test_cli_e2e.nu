@@ -663,3 +663,46 @@ on_change = "app msg reload"
         }
     }
 }
+
+export def test_cli_host_lock_and_no_lock [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "lock-mod")
+        mkdir $mod_src
+        'name = "lock-mod"
+os = ["linux", "cachyos"]
+' | save -f ($mod_src | path join "ygg.toml")
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "lock-mod")
+        "[[modules]]\nname = \"lock-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb } {
+            # 1. Normal apply creates and cleans lock file
+            let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            assert (not ($home | path join ".state" "ygg.lock" | path exists))
+
+            # 2. Simulate concurrent run with active PID
+            mkdir ($home | path join ".state")
+            {
+                pid: $nu.pid,
+                timestamp: "2026-11-08T00:00:00Z",
+                command: "apply"
+            } | to json | save -f ($home | path join ".state" "ygg.lock")
+
+            let locked_res = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $locked_res.exit_code 1
+            assert ($locked_res.stderr | str contains "Host is locked by another ygg instance")
+
+            # 3. --no-lock bypasses lock check
+            let no_lock_res = (^nu $ygg_bin apply --no-lock --sandbox $sb | complete)
+            assert equal $no_lock_res.exit_code 0 $no_lock_res.stderr
+
+            # 4. Remove with --no-lock also bypasses
+            let rm_res = (^nu $ygg_bin remove "lock-mod" --no-lock | complete)
+            assert equal $rm_res.exit_code 0 $rm_res.stderr
+        }
+    }
+}
+

@@ -248,3 +248,67 @@ export def backup-existing [ygg_home: string, target_path: string]: nothing -> s
 export def to-win32-path [p: string]: nothing -> string {
     $p | path expand -n | str replace -a "/" "\\"
 }
+
+# Check if a process with given PID is still running
+export def check-process-alive [pid: int]: nothing -> bool {
+    if $pid <= 0 {
+        return false
+    }
+    if $nu.os-info.family == "windows" {
+        let res = (try {
+            ^tasklist /FI $"PID eq ($pid)" /FO CSV | complete
+        } catch {
+            { exit_code: 1, stdout: "" }
+        })
+        if $res.exit_code == 0 {
+            ($res.stdout | str contains $"\"($pid)\"") or ($res.stdout | str contains ($pid | into string))
+        } else {
+            false
+        }
+    } else {
+        let res = (try {
+            ^kill -0 $pid | complete
+        } catch {
+            { exit_code: 1 }
+        })
+        $res.exit_code == 0
+    }
+}
+
+# Acquire exclusive advisory host lock in $YGG_HOME/.state/ygg.lock (RFC-026)
+export def acquire-host-lock [ygg_home: string, command: string, --no-lock]: nothing -> string {
+    if $no_lock or (($env.YGG_NO_LOCK? | default "") == "1") {
+        return ""
+    }
+    let lock_file = ($ygg_home | path join ".state" "ygg.lock")
+    ensure-ygg-dirs $ygg_home
+
+    if ($lock_file | path exists) {
+        let lock_data = (try { open $lock_file | from json } catch { {} })
+        let lock_pid = ($lock_data.pid? | default 0)
+        let is_alive = (check-process-alive $lock_pid)
+        if $is_alive {
+            error make { msg: $"Host is locked by another ygg instance \(PID: ($lock_pid), Command: '($lock_data.command? | default "unknown")', Started: ($lock_data.timestamp? | default "")\). Aborting." }
+        } else {
+            print -e $"[ygg] Warning: Removing stale lock from terminated process \(PID ($lock_pid)\)."
+            try { rm -f $lock_file } catch { }
+        }
+    }
+
+    let payload = {
+        pid: $nu.pid,
+        timestamp: (date now | format date "%Y-%m-%dT%H:%M:%SZ"),
+        command: $command,
+        user: ($env.USER? | default ($env.USERNAME? | default ""))
+    }
+    $payload | to json | save -f $lock_file
+    $lock_file
+}
+
+# Release advisory host lock (RFC-026)
+export def release-host-lock [lock_file: string]: nothing -> nothing {
+    if ($lock_file != "") and ($lock_file | path exists) {
+        try { rm -f $lock_file } catch { }
+    }
+}
+

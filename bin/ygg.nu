@@ -29,12 +29,13 @@ def main [--version (-v)] {
     print "Usage:"
     print "  ygg init [name] [--os <os_list>]        Initialize a new module with ygg.toml and .gitignore"
     print "  ygg add <source> [--scope <scopes>] [--dry-run] [--force]  Add local directory or git repo and apply"
-    print "  ygg remove <name>                        Remove a module and unlink its files"
+    print "      [--no-lock]"
+    print "  ygg remove <name> [--no-lock]            Remove a module and unlink its files"
     print "  ygg apply [--dry-run] [--force] [--all]  Apply configurations, links, packages and setup"
-    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages]"
+    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages] [--no-lock]"
     print "  ygg diff [--all] [--pkg <m1,m2>]         Show planned changes without modifying anything"
-    print "  ygg update                               Update git modules via rebase and apply"
-    print "  ygg save                                 Save reverse-copied GUI/app edits back to modules"
+    print "  ygg update [--no-lock]                   Update git modules via rebase and apply"
+    print "  ygg save [--no-lock]                     Save reverse-copied GUI/app edits back to modules"
     print "  ygg status [--json]                      Display module sync and git status table"
     print "  ygg doctor [--json]                      Read-only host audit (exit code 1 on errors)"
     print "  ygg version                              Print version (also --version / -v)"
@@ -98,7 +99,8 @@ def "main add" [
     --pkg: string = "",
     --pkg-timeout: int = -1,
     --refresh-packages,
-    --sandbox: string = ""
+    --sandbox: string = "",
+    --no-lock
 ] {
     assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
@@ -107,56 +109,64 @@ def "main add" [
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
 
-    # Parse inline scope suffix, e.g. "repo@s1,s2"
-    let parts = ($source | split row "@")
-    let clean_source = ($parts | first)
-    let inline_scopes = if ($parts | length) > 1 {
-        ($parts | skip 1 | str join "@" | split row "," | each { |s| $s | str trim } | where { |s| $s != "" })
-    } else {
-        []
-    }
+    let lock_file = (acquire-host-lock $ygg_home "add" --no-lock=($no_lock or $dry_run))
+    try {
+        # Parse inline scope suffix, e.g. "repo@s1,s2"
+        let parts = ($source | split row "@")
+        let clean_source = ($parts | first)
+        let inline_scopes = if ($parts | length) > 1 {
+            ($parts | skip 1 | str join "@" | split row "," | each { |s| $s | str trim } | where { |s| $s != "" })
+        } else {
+            []
+        }
 
-    let flag_scopes = if ($scope != "") {
-        ($scope | split row "," | each { |s| $s | str trim } | where { |s| $s != "" })
-    } else {
-        []
-    }
+        let flag_scopes = if ($scope != "") {
+            ($scope | split row "," | each { |s| $s | str trim } | where { |s| $s != "" })
+        } else {
+            []
+        }
 
-    let all_scopes = ($inline_scopes | append $flag_scopes | uniq)
+        let all_scopes = ($inline_scopes | append $flag_scopes | uniq)
 
-    # RFC-012: stage first (no change to modules/ or host.toml), check the plan with the module
-    # as a virtual entry, and register only after pre-flight passed (RFC-020).
-    let prep = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --force=$force)
-    let extra = [{ name: $prep.name, path: $prep.path, scopes: $all_scopes }]
+        # RFC-012: stage first (no change to modules/ or host.toml), check the plan with the module
+        # as a virtual entry, and register only after pre-flight passed (RFC-020).
+        let prep = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --force=$force)
+        let extra = [{ name: $prep.name, path: $prep.path, scopes: $all_scopes }]
 
-    if $dry_run {
+        if $dry_run {
+            try {
+                apply-plan --dry-run --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --extra-modules $extra
+            } catch { |e|
+                discard-staged-module $prep
+                error make { msg: $e.msg }
+            }
+            discard-staged-module $prep
+            release-host-lock $lock_file
+            return
+        }
+
         try {
-            apply-plan --dry-run --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --extra-modules $extra
+            let plan = (resolve-effective-plan $ygg_home --extra-modules $extra)
+            let resolved = (resolve-link-targets $plan --sandbox=$effective_sandbox)
+            let ops = (compute-link-ops $ygg_home $resolved --force=$force --sandbox=$effective_sandbox)
+            let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --quiet --sandbox=$effective_sandbox)
+            if ($problems | is-not-empty) {
+                error make { msg: (format-preflight-errors $problems) }
+            }
         } catch { |e|
             discard-staged-module $prep
             error make { msg: $e.msg }
         }
-        discard-staged-module $prep
-        return
-    }
 
-    try {
-        let plan = (resolve-effective-plan $ygg_home --extra-modules $extra)
-        let resolved = (resolve-link-targets $plan --sandbox=$effective_sandbox)
-        let ops = (compute-link-ops $ygg_home $resolved --force=$force --sandbox=$effective_sandbox)
-        let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --quiet --sandbox=$effective_sandbox)
-        if ($problems | is-not-empty) {
-            error make { msg: (format-preflight-errors $problems) }
-        }
+        let add_res = (register-staged-module $ygg_home $prep --force=$force)
+        print $"Added module ($add_res.name)"
+
+        apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox
+        release-host-lock $lock_file
     } catch { |e|
-        discard-staged-module $prep
-        error make { msg: $e.msg }
+        release-host-lock $lock_file
+        error make $e
     }
-
-    let add_res = (register-staged-module $ygg_home $prep --force=$force)
-    print $"Added module ($add_res.name)"
-
-    apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox
 }
 
 # RFC-013: manager selection and --skip-packages are mutually exclusive
@@ -167,11 +177,21 @@ def assert-pkg-flags [pkg: string, skip_packages: bool] {
 }
 
 # Remove a module and unlink its managed files
-def "main remove" [name: string] {
+def "main remove" [
+    name: string,
+    --no-lock
+] {
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
-    remove-module $ygg_home $name
-    print $"Removed module ($name)"
+    let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
+    try {
+        remove-module $ygg_home $name
+        print $"Removed module ($name)"
+        release-host-lock $lock_file
+    } catch { |e|
+        release-host-lock $lock_file
+        error make $e
+    }
 }
 
 # Print one planned operation line: "  <OP>  <dest>  (<module>: <key>) <detail>"
@@ -190,9 +210,23 @@ def "main apply" [
     --pkg: string = "",
     --pkg-timeout: int = -1,
     --refresh-packages,
-    --sandbox: string = ""
+    --sandbox: string = "",
+    --no-lock
 ] {
-    apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox
+    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+    assert-sandbox-home $effective_sandbox
+
+    let ygg_home = (get-ygg-home)
+    ensure-ygg-dirs $ygg_home
+
+    let lock_file = (acquire-host-lock $ygg_home "apply" --no-lock=($no_lock or $dry_run))
+    try {
+        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox
+        release-host-lock $lock_file
+    } catch { |e|
+        release-host-lock $lock_file
+        error make $e
+    }
 }
 
 # Apply pipeline shared by `apply`, `diff` and `add` (--extra-modules: virtual modules, RFC-012)
@@ -319,35 +353,52 @@ def "main diff" [
 }
 
 # Update git modules via rebase and apply if clean
-def "main update" [] {
+def "main update" [--no-lock] {
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
 
-    let results = (update-modules $ygg_home)
-    let conflicts = ($results | where status == "conflict")
-    if ($conflicts | is-not-empty) {
-        let names = ($conflicts | get name | str join ", ")
-        print -e $"Update encountered conflicts in: ($names). Skipping apply."
-        return $results
-    }
+    let lock_file = (acquire-host-lock $ygg_home "update" --no-lock=$no_lock)
+    try {
+        let results = (update-modules $ygg_home)
+        let conflicts = ($results | where status == "conflict")
+        if ($conflicts | is-not-empty) {
+            let names = ($conflicts | get name | str join ", ")
+            print -e $"Update encountered conflicts in: ($names). Skipping apply."
+            release-host-lock $lock_file
+            return $results
+        }
 
-    main apply
+        apply-plan
+        release-host-lock $lock_file
+    } catch { |e|
+        release-host-lock $lock_file
+        error make $e
+    }
 }
 
 # Save reverse-copied files back to their source modules
 def "main save" [
     --sandbox: string = "",
-    --force
+    --force,
+    --no-lock
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
 
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
-    let plan = (resolve-effective-plan $ygg_home)
-    let saved = (save-copied-files $ygg_home $plan --sandbox=$effective_sandbox --force=$force)
-    print $"Saved ($saved | length) file\(s\)."
-    $saved
+
+    let lock_file = (acquire-host-lock $ygg_home "save" --no-lock=$no_lock)
+    try {
+        let plan = (resolve-effective-plan $ygg_home)
+        let saved = (save-copied-files $ygg_home $plan --sandbox=$effective_sandbox --force=$force)
+        print $"Saved ($saved | length) file\(s\)."
+        release-host-lock $lock_file
+        $saved
+    } catch { |e|
+        release-host-lock $lock_file
+        error make $e
+    }
 }
 
 # Display module sync and git status table (--json: all columns as JSON, independent of terminal width)

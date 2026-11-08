@@ -2,8 +2,8 @@
 directory: bin/ygg.nu
 source:
   kind: git
-  blob_sha: 44e5ec82c169af7404b5bddb814c10c10e140bcb
-  commit_sha: 23db0a16cc70b05c766b715633609bf942d801bb
+  blob_sha: ab64c9298a740de11bfd0fcce9cd269f2d7476da
+  commit_sha: a2218f96ba44ab9fad971d0ebc5f459909b98b54
 generated_by:
   component: context-init
   role: update
@@ -33,12 +33,10 @@ freshness:
 def "main version" []
 def main [--version (-v)]
 def "main init" [ name?: string, --os: string = "linux" ]
-def "main add" [ source: string, --scope (-s): string = "", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "" ]
+def "main add" [ source: string, --scope (-s): string = "", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "", --no-lock ]
 def assert-pkg-flags [pkg: string, skip_packages: bool]
-def "main remove" [name: string]
+def "main remove" [ name: string, --no-lock ]
 def print-op-line [o: record]
-def "main apply" [ --dry-run (-n), --force (-f), --all (-a), --skip-packages (-S), --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "" ]
-def apply-plan [ --dry-run,
 ```
 
 ## 🧪 Запуск и тестирование

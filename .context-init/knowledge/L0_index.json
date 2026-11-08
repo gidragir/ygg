@@ -33,12 +33,10 @@
         "def \"main version\" []",
         "def main [--version (-v)]",
         "def \"main init\" [ name?: string, --os: string = \"linux\" ]",
-        "def \"main add\" [ source: string, --scope (-s): string = \"\", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = \"\", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = \"\" ]",
+        "def \"main add\" [ source: string, --scope (-s): string = \"\", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = \"\", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = \"\", --no-lock ]",
         "def assert-pkg-flags [pkg: string, skip_packages: bool]",
-        "def \"main remove\" [name: string]",
-        "def print-op-line [o: record]",
-        "def \"main apply\" [ --dry-run (-n), --force (-f), --all (-a), --skip-packages (-S), --pkg: string = \"\", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = \"\" ]",
-        "def apply-plan [ --dry-run,"
+        "def \"main remove\" [ name: string, --no-lock ]",
+        "def print-op-line [o: record]"
       ],
       "summary_source": "heuristic"
     },

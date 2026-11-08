@@ -116,3 +116,54 @@ export def test_to_win32_path_preserves_symlink_and_replaces_slashes [] {
         assert (not ($win_p | str ends-with "\\real_dir"))
     }
 }
+
+export def test_host_lock_prevents_concurrent_runs_and_cleans_stale [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+
+        # 1. Acquire lock creates file with expected metadata
+        let lock_file = (acquire-host-lock $home "apply")
+        assert ($lock_file | path exists) "Lock file must be created"
+        let lock_content = (open $lock_file | from json)
+        assert equal $lock_content.command "apply"
+        assert equal $lock_content.pid $nu.pid
+
+        # 2. Prevent concurrent runs: attempt to acquire by active process fails
+        let res = (try { acquire-host-lock $home "add" } catch { |e| { err: ($e.msg? | default ($e | to nuon)) } })
+        assert ($res.err? != null) "Expected lock conflict error"
+        assert ($res.err | str contains "Host is locked by another ygg instance")
+
+        # 3. Release lock removes lock file
+        release-host-lock $lock_file
+        assert (not ($lock_file | path exists)) "Lock file must be removed after release"
+
+        # 4. Stale lock recovery: non-existent PID allows new acquire
+        let stale_file = ($home | path join ".state" "ygg.lock")
+        {
+            pid: 99999999,
+            timestamp: "2026-11-08T00:00:00Z",
+            command: "stale_cmd"
+        } | to json | save -f $stale_file
+        assert ($stale_file | path exists)
+
+        let new_lock = (acquire-host-lock $home "update")
+        assert ($new_lock | path exists)
+        let new_content = (open $new_lock | from json)
+        assert equal $new_content.command "update"
+        assert equal $new_content.pid $nu.pid
+        release-host-lock $new_lock
+        assert (not ($new_lock | path exists))
+
+        # 5. --no-lock and YGG_NO_LOCK=1 bypass lock creation
+        let no_lock_res = (acquire-host-lock $home "apply" --no-lock)
+        assert equal $no_lock_res ""
+        assert (not ($home | path join ".state" "ygg.lock" | path exists))
+
+        with-env { YGG_NO_LOCK: "1" } {
+            let env_no_lock = (acquire-host-lock $home "apply")
+            assert equal $env_no_lock ""
+            assert (not ($home | path join ".state" "ygg.lock" | path exists))
+        }
+    }
+}
+
