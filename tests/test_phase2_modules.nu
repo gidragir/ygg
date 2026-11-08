@@ -127,7 +127,16 @@ OPENAI_API_KEY = "sk-test$secret'val"
         assert ($cfg_content | str contains "else { null }") "config.nu must contain 'else { null }'"
 
         # Verify Zsh loads .zshenv + .zshrc + aliases without error
-        let zsh_chk = (with-env { HOME: $sb.home, YGG_HOME: ($sb.home | path join ".ygg"), XDG_CONFIG_HOME: ($sb.home | path join ".config"), XDG_DATA_HOME: ($sb.home | path join ".local" "share"), XDG_CACHE_HOME: ($sb.home | path join ".cache"), XDG_STATE_HOME: ($sb.home | path join ".local" "state") } {
+        let zsh_chk = (with-env {
+            HOME: $sb.home,
+            YGG_HOME: ($sb.home | path join ".ygg"),
+            XDG_CONFIG_HOME: ($sb.home | path join ".config"),
+            XDG_DATA_HOME: ($sb.home | path join ".local" "share"),
+            XDG_CACHE_HOME: ($sb.home | path join ".cache"),
+            XDG_STATE_HOME: ($sb.home | path join ".local" "state"),
+            MISE_OFFLINE: "true",
+            MISE_DISABLE_UPDATE_CHECKS: "true"
+        } {
             ^zsh -c 'source "$HOME/.zshenv" && source "$HOME/.zshrc" && printf "%s|%s" "$EDITOR" "$OPENAI_API_KEY"'
         } | complete)
         assert ($zsh_chk.exit_code == 0) $"Zsh profile failed: ($zsh_chk.stderr)"
