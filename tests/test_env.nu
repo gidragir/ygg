@@ -190,3 +190,54 @@ export def test_windows_env_script_skips_path_block_when_empty [] {
     assert (not ($s | str contains "'Path'"))
 }
 
+
+export def test_env_expands_leading_tilde_and_home_only [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb")
+        let m1 = ($home | path join "modules" "core")
+        mkdir $m1
+        'name = "core"
+os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
+        'TILDE_ONLY = "~"
+TILDE_SUB = "~/.kube/config"
+HOME_SUB = "$HOME/.cargo/bin"
+MID_TILDE = "a/~/b"
+OTHER_VAR = "$OTHER/x"
+' | save -f ($m1 | path join "env.toml")
+        "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        compile-environment $home $plan --sandbox $sb
+
+        let env_nu = ($home | path join ".state/env/env.nu")
+        let env_zsh = ($home | path join ".state/env/env.zsh")
+        let conf_file = ($sb | path join ".config/environment.d/99-ygg.conf")
+
+        let nu_out = (^nu -c $"source ($env_nu); [$env.TILDE_ONLY, $env.TILDE_SUB, $env.HOME_SUB, $env.MID_TILDE, $env.OTHER_VAR] | to json -r") | from json
+        assert equal $nu_out.0 $sb
+        assert equal $nu_out.1 ($sb | path join ".kube/config")
+        assert equal $nu_out.2 ($sb | path join ".cargo/bin")
+        assert equal $nu_out.3 "a/~/b"
+        assert equal $nu_out.4 "$OTHER/x"
+
+        let conf_raw = (open --raw $conf_file)
+        assert ($conf_raw | str contains $"TILDE_SUB=\"($sb)/.kube/config\"")
+        assert ($conf_raw | str contains "OTHER_VAR=\"\\$OTHER/x\"")
+    }
+}
+
+export def test_missing_secret_keys_audit [] {
+    with-temp-ygg { |home|
+        let tmpl = ($home | path join "secrets.example.toml")
+        let sec = ($home | path join "secrets.toml")
+        "# KEY_COMMENTED = \"x\"\n[env]\nKEY_PRESENT = \"placeholder\"\nKEY_EMPTY = \"placeholder\"\nKEY_MISSING = \"placeholder\"\n" | save -f $tmpl
+        "[env]\nKEY_PRESENT = \"super_secret_val\"\nKEY_EMPTY = \"\"\n" | save -f $sec
+
+        let missing = (missing-secret-keys $tmpl $sec)
+        assert ("KEY_EMPTY" in $missing)
+        assert ("KEY_MISSING" in $missing)
+        assert (not ("KEY_PRESENT" in $missing))
+        assert (not ("KEY_COMMENTED" in $missing))
+    }
+}

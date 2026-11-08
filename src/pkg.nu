@@ -78,6 +78,18 @@ export def install-packages [
             continue
         }
 
+        # RFC-002: skip managers that are not installed (mockable via YGG_MOCK_PKG_MISSING)
+        let mock_missing = ($env.YGG_MOCK_PKG_MISSING? | default "" | split row "," | each { |s| $s | str trim } | where { |it| $it != "" })
+        let is_missing = if ($mock_log != "") {
+            ($mgr in $mock_missing)
+        } else {
+            (which $mgr | is-empty)
+        }
+        if $is_missing {
+            print -e $"[ygg] Warning: Package manager '($mgr)' not found on PATH. Skipping ($pkgs | length) package\(s\)."
+            continue
+        }
+
         let cmd_str = (format-pkg-command $mgr $pkgs)
 
         if $dry_run {

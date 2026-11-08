@@ -53,6 +53,35 @@ export def format-windows-env-script [clean_env: record, path_entries: list<stri
     ($lines | str join "\n") + "\n"
 }
 
+# Expand a leading `~` or `$HOME` in an env value (sandbox-aware); everything else stays literal
+def resolve-env-value [v: string, sb: string]: nothing -> string {
+    if ($v == "~") or ($v | str starts-with "~/") or ($v | str starts-with "~\\") {
+        expand-target-path $v --sandbox $sb
+    } else if ($v == "$HOME") or ($v | str starts-with "$HOME/") or ($v | str starts-with "$HOME\\") {
+        expand-target-path ("~" + ($v | str substring 5..)) --sandbox $sb
+    } else {
+        $v
+    }
+}
+
+# Read secret key/value record from a TOML file ([env] section or top-level keys)
+def secret-keys [p: string]: nothing -> record {
+    if not ($p | path exists) {
+        return {}
+    }
+    let d = (try { open $p } catch { {} })
+    let extracted = if "env" in $d { $d.env } else { $d }
+    if (($extracted | describe) starts-with "record") { $extracted } else { {} }
+}
+
+# Keys declared in a secrets template that are absent or empty in the secrets file (names only)
+export def missing-secret-keys [template: string, secrets: string]: nothing -> list<string> {
+    let have = (secret-keys $secrets)
+    secret-keys $template
+    | columns
+    | where { |k| (($have | get -o $k | default "") | into string) == "" }
+}
+
 # Compile environment variables, secrets, and aliases across active modules and hosts
 export def compile-environment [
     ygg_home: string,
@@ -63,6 +92,18 @@ export def compile-environment [
 ]: nothing -> nothing {
     let is_dry = if $dry_run { true } else { (($env.YGG_DRY_RUN? | default "false") == "true") }
     let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+
+    # 0. Audit secrets against module templates (read-only, names only; also runs in dry-run)
+    let audit_secrets = ($ygg_home | path join "secrets.toml")
+    for mod_entry in ($plan.modules? | default []) {
+        let tmpl = ($mod_entry.dir | path join "secrets.example.toml")
+        if ($tmpl | path exists) {
+            let missing = (missing-secret-keys $tmpl $audit_secrets)
+            if not ($missing | is-empty) {
+                print -e $"[ygg] Warning: module '($mod_entry.name)' is missing secrets: ($missing | str join ', ')"
+            }
+        }
+    }
 
     if $is_dry {
         return
@@ -89,7 +130,7 @@ export def compile-environment [
 
     # Normalize environment values to strings, skipping complex sub-records
     let clean_env = ($merged_env | transpose k v | where { |it| not (($it.v | describe) starts-with "record") and not (($it.v | describe) starts-with "table") } | reduce -f {} { |it, acc|
-        $acc | upsert $it.k ($it.v | into string)
+        $acc | upsert $it.k (resolve-env-value ($it.v | into string) $sb)
     })
 
     # 3. Ensure target directory exists

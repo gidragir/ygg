@@ -297,3 +297,20 @@ export def test_onchange_wildcard_pattern_does_not_call_path_exists_on_glob [] {
         }
     }
 }
+
+export def test_export_secrets_warns_on_missing_requested_keys [] {
+    with-temp-ygg { |home|
+        let dest = ($home | path join ".env")
+        "[env]\nPRESENT_KEY = \"val123\"\nEMPTY_KEY = \"\"\n" | save -f ($home | path join "secrets.toml")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env { YGG_HOME: $home } {
+            ^nu $ygg_bin export-secrets $dest --keys "PRESENT_KEY,EMPTY_KEY,MISSING_KEY" | complete
+        })
+        assert equal $res.exit_code 0
+        assert ($res.stderr | str contains "EMPTY_KEY")
+        assert ($res.stderr | str contains "MISSING_KEY")
+        assert (not ($res.stderr | str contains "val123"))
+        let written = (open --raw $dest)
+        assert ($written | str contains "PRESENT_KEY='val123'")
+    }
+}

@@ -367,3 +367,29 @@ os = ["linux", "cachyos"]' | save -f ($ext_dir | path join "ygg.toml")
     }
 }
 
+
+export def test_missing_package_manager_warns_and_skips_without_failing [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["windows"]
+[packages]
+winget = ["Git.Git"]
+scoop = ["neovim"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env {
+            YGG_HOST_OS_OVERRIDE: "windows",
+            YGG_MOCK_PKG_LOG: $log,
+            YGG_MOCK_PKG_MISSING: "scoop"
+        } {
+            let res = (install-packages (resolve-effective-plan $home))
+            assert equal $res.failed []
+            let lines = (open --raw $log)
+            assert ($lines | str contains "winget")
+            assert (not ($lines | str contains "scoop"))
+        }
+    }
+}

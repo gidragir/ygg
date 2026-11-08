@@ -216,6 +216,9 @@ export def export-secrets [
     let sec_file = ($ygg_home | path join "secrets.toml")
 
     if not ($sec_file | path exists) {
+        if ($keys | is-not-empty) {
+            print -e $"[ygg] Warning: export-secrets: secrets.toml not found, missing requested keys: ($keys | str join ', ')"
+        }
         return
     }
 
@@ -227,6 +230,9 @@ export def export-secrets [
     }
 
     if (not (($sec_env | describe) starts-with "record")) or ($sec_env | is-empty) {
+        if ($keys | is-not-empty) {
+            print -e $"[ygg] Warning: export-secrets: no secrets available, missing requested keys: ($keys | str join ', ')"
+        }
         return
     }
 
@@ -234,7 +240,11 @@ export def export-secrets [
     let target_keys = if ($keys | is-empty) {
         $available_keys
     } else {
-        $keys | where { |k| $k in $available_keys }
+        let missing_keys = ($keys | where { |k| (($sec_env | get -o $k | default "") | into string) == "" })
+        if ($missing_keys | is-not-empty) {
+            print -e $"[ygg] Warning: export-secrets: missing or empty requested keys: ($missing_keys | str join ', ')"
+        }
+        $keys | where { |k| not ($k in $missing_keys) }
     }
 
     mut lines: list<string> = []
