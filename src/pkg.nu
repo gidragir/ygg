@@ -9,7 +9,7 @@ def format-pkg-command [mgr: string, pkgs: list<string>]: nothing -> string {
     match $mgr {
         "pacman" => $"sudo pacman -S --needed --noconfirm ($pkg_args)",
         "paru" => $"paru -S --needed --noconfirm ($pkg_args)",
-        "mise" => $"mise use --path ~/.config/mise/config.local.toml ($pkg_args)",
+        "mise" => $"try { mise trust -y ~/.config/mise/config.toml } catch { }; mise use --path ~/.config/mise/config.local.toml ($pkg_args)",
         "cargo" => $"cargo install ($pkg_args)",
         "winget" => $"winget install --exact --accept-source-agreements --accept-package-agreements ($pkg_args)",
         "scoop" => $"scoop install ($pkg_args)",
@@ -23,8 +23,12 @@ def format-pkg-command [mgr: string, pkgs: list<string>]: nothing -> string {
 export def install-packages [
     plan: record,
     --dry-run,
+    --skip-packages (-S),
     --sandbox: string = ""
 ]: nothing -> record<executed: list<string>, failed: list<record<mgr: string, stderr: string>>> {
+    if $skip_packages {
+        return { executed: [], failed: [] }
+    }
     # Skip package installation when inside a sandbox or sandbox path is passed
     # In sandbox without mock logging, protect host package managers from execution
     let env_sb = ($env.YGG_SANDBOX? | default "")

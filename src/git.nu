@@ -36,7 +36,9 @@ export def add-module [
 
         let exp_src = ($source | path expand)
         if ($nu.os-info.family == "windows") {
-            ^cmd /c $"mklink /J \"($mod_dest)\" \"($exp_src)\"" | complete | ignore
+            let win_dest = ($mod_dest | str replace -a "/" "\\")
+            let win_src = ($exp_src | str replace -a "/" "\\")
+            ^cmd /c mklink /J $win_dest $win_src | complete | ignore
         } else {
             ^ln -sfn $exp_src $mod_dest
         }
@@ -234,7 +236,8 @@ export def modules-status [ygg_home: string]: nothing -> table {
             ($ygg_home | path join "modules" $name)
         }
 
-        let is_git = ($mod_path | path join ".git" | path exists)
+        let has_git = (which git | is-not-empty)
+        let is_git = ($mod_path | path join ".git" | path exists) and $has_git
         let branch = if $is_git {
             let br = (^git -C $mod_path branch --show-current | complete).stdout | str trim
             if ($br != "") {

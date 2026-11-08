@@ -67,6 +67,7 @@ def "main init" [
 def "main add" [
     source: string,
     --scope (-s): string = "",
+    --skip-packages (-S),
     --sandbox: string = ""
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
@@ -95,7 +96,7 @@ def "main add" [
     let add_res = (add-module $ygg_home $clean_source --scopes $all_scopes)
     print $"Added module ($add_res.name)"
 
-    main apply --sandbox=$sandbox
+    main apply --sandbox=$sandbox --skip-packages=$skip_packages
 }
 
 # Remove a module and unlink its managed files
@@ -110,6 +111,7 @@ def "main remove" [name: string] {
 def "main apply" [
     --dry-run (-n),
     --force (-f),
+    --skip-packages (-S),
     --sandbox: string = ""
 ] {
     let effective_sandbox = if ($sandbox != "") {
@@ -132,7 +134,7 @@ def "main apply" [
     }
 
     # 1. Install packages
-    let pkg_res = (install-packages $plan --dry-run=$dry_run --sandbox=$effective_sandbox)
+    let pkg_res = (install-packages $plan --dry-run=$dry_run --skip-packages=$skip_packages --sandbox=$effective_sandbox)
 
     # 2. Deploy links and file copies
     apply-links $ygg_home $plan --dry-run=$dry_run --force=$force --sandbox=$effective_sandbox | ignore

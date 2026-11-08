@@ -17,8 +17,9 @@ export def is-link-or-junction [path: string]: nothing -> bool {
     if ($nu.os-info.family == "windows") {
         let parent = ($path | path dirname)
         let name = ($path | path basename)
+        let win_parent = ($parent | str replace -a "/" "\\")
         let dir_res = (try {
-            ^cmd /c $"dir /a:l /b \"($parent)\"" | complete
+            ^cmd /c dir /a:l /b $win_parent | complete
         } catch {
             { exit_code: 1, stdout: "" }
         })
@@ -57,15 +58,16 @@ export def remove-link-only [path: string]: nothing -> nothing {
     }
 
     if ($nu.os-info.family == "windows") {
+        let win_path = ($path | str replace -a "/" "\\")
         if ($ptype == "dir") or $is_link {
             # Try rmdir (strictly without /S!) for NTFS junction
-            let rmdir_res = (try { ^cmd /c $"rmdir \"($path)\"" | complete } catch { { exit_code: 1 } })
+            let rmdir_res = (try { ^cmd /c rmdir $win_path | complete } catch { { exit_code: 1 } })
             if $rmdir_res.exit_code != 0 {
                 # Fall back to del for file symlink
-                try { ^cmd /c $"del /f /q \"($path)\"" | complete } catch { }
+                try { ^cmd /c del /f /q $win_path | complete } catch { }
             }
         } else {
-            try { ^cmd /c $"del /f /q \"($path)\"" | complete } catch { }
+            try { ^cmd /c del /f /q $win_path | complete } catch { }
         }
     } else {
         # Unix: strictly rm without -r
@@ -317,7 +319,9 @@ export def apply-links [
                         if $is_windows {
                             if $is_item_dir {
                                 if ($nu.os-info.family == "windows") {
-                                    ^cmd /c $"mklink /J \"($target_item)\" \"($src_item)\""
+                                    let win_target = ($target_item | str replace -a "/" "\\")
+                                    let win_src = ($src_item | str replace -a "/" "\\")
+                                    ^cmd /c mklink /J $win_target $win_src
                                 } else {
                                     ^ln -sfn $src_item $target_item
                                 }
@@ -382,7 +386,9 @@ export def apply-links [
                 if $is_windows {
                     if $is_src_dir {
                         if ($nu.os-info.family == "windows") {
-                            ^cmd /c $"mklink /J \"($dest)\" \"($src_path)\""
+                            let win_dest = ($dest | str replace -a "/" "\\")
+                            let win_src = ($src_path | str replace -a "/" "\\")
+                            ^cmd /c mklink /J $win_dest $win_src
                         } else {
                             ^ln -sfn $src_path $dest
                         }
