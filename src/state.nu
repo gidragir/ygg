@@ -82,8 +82,14 @@ export def detect-host-os []: nothing -> record<os: string, distro: string, auto
             return { os: "linux", distro: "cachyos", auto_scopes: ["linux", "unix", "cachyos", "arch"] }
         } else if ($o == "arch") {
             return { os: "linux", distro: "arch", auto_scopes: ["linux", "unix", "arch"] }
-        } else if ($o in ["ubuntu", "debian"]) {
+        } else if ($o in ["ubuntu", "debian", "pop", "mint"]) {
             return { os: "linux", distro: $o, auto_scopes: (["linux", "unix", $o, "debian"] | uniq) }
+        } else if ($o in ["fedora", "rhel", "centos"]) {
+            return { os: "linux", distro: $o, auto_scopes: (["linux", "unix", $o, "fedora", "rhel"] | uniq) }
+        } else if ($o in ["opensuse", "sles", "opensuse-tumbleweed", "opensuse-leap"]) {
+            return { os: "linux", distro: $o, auto_scopes: (["linux", "unix", $o, "opensuse", "suse"] | uniq) }
+        } else if ($o == "linux") {
+            return { os: "linux", distro: "linux", auto_scopes: ["linux", "unix"] }
         } else {
             return { os: $o, distro: $o, auto_scopes: [$o] }
         }

@@ -18,6 +18,10 @@ def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string
         "winget" => ($pkgs | each { |p| [winget install --exact --disable-interactivity --accept-source-agreements --accept-package-agreements $p] }),
         "scoop" => ($pkgs | each { |p| [scoop install $p] }),
         "uv" => ($pkgs | each { |p| [uv tool install $p] }),
+        "brew" => [[brew install ...$pkgs]],
+        "apt" => [[sudo apt-get install -y --no-install-recommends ...$pkgs]],
+        "dnf" => [[sudo dnf install -y ...$pkgs]],
+        "zypper" => [[sudo zypper install -y ...$pkgs]],
         "pacman" => [[sudo pacman -S --needed --noconfirm ...$pkgs]],
         "paru" => [[paru -S --needed --noconfirm ...$pkgs]],
         "mise" => [[mise use --path "~/.config/mise/config.local.toml" ...$pkgs]],
@@ -35,7 +39,7 @@ def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> 
 # RFC-013: default per-invocation timeout in seconds (0 = no timeout)
 def default-pkg-timeout [mgr: string]: nothing -> int {
     match $mgr {
-        "winget" | "scoop" | "uv" | "mise" | "pnpm" => 300,
+        "winget" | "scoop" | "uv" | "mise" | "pnpm" | "brew" | "apt" | "dnf" | "zypper" => 300,
         "cargo" | "paru" | "pacman" => 0,
         _ => 0
     }
@@ -94,12 +98,30 @@ export def run-with-timeout [argv: list<string>, timeout_sec: int]: nothing -> r
 export def allowed-package-managers [host_os: record]: nothing -> list<string> {
     if ($host_os.os == "windows") {
         ["winget", "scoop", "mise", "cargo", "pnpm", "uv"]
+    } else if ($host_os.os == "macos") {
+        ["brew", "mise", "cargo", "pnpm", "uv"]
     } else if ($host_os.os == "linux") {
-        if ($host_os.distro in ["cachyos", "arch"]) or ("arch" in $host_os.auto_scopes) {
-            ["pacman", "paru", "mise", "cargo", "pnpm", "uv"]
+        let is_arch = ($host_os.distro in ["cachyos", "arch"]) or ("arch" in $host_os.auto_scopes)
+        let is_debian = ($host_os.distro in ["ubuntu", "debian", "pop", "mint"]) or ("debian" in $host_os.auto_scopes) or ("ubuntu" in $host_os.auto_scopes)
+        let is_fedora = ($host_os.distro in ["fedora", "rhel", "centos"]) or ("fedora" in $host_os.auto_scopes) or ("rhel" in $host_os.auto_scopes)
+        let is_suse = ($host_os.distro in ["opensuse", "sles", "opensuse-tumbleweed", "opensuse-leap"]) or ("opensuse" in $host_os.auto_scopes) or ("suse" in $host_os.auto_scopes)
+
+        let native_mgrs = if $is_arch {
+            ["pacman", "paru"]
+        } else if $is_debian {
+            ["apt"]
+        } else if $is_fedora {
+            ["dnf"]
+        } else if $is_suse {
+            ["zypper"]
         } else {
-            ["mise", "cargo", "pnpm", "uv", "pacman", "paru"]
+            ["apt", "dnf", "zypper", "pacman", "paru"]
         }
+
+        let has_brew = (which brew | is-not-empty) or (($env.YGG_HOST_BREW? | default false) in [true, "true", 1, "1"]) or ($env.YGG_MOCK_PKG_ALLOWED? | default "" | split row "," | any { |m| $m == "brew" })
+        let brew_list = if $has_brew { ["brew"] } else { [] }
+
+        $native_mgrs | append $brew_list | append ["mise", "cargo", "pnpm", "uv"]
     } else {
         ["mise", "cargo", "pnpm", "uv"]
     }

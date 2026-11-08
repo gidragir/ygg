@@ -813,3 +813,40 @@ export def test_discard_staged_module_refuses_unsafe_path [] {
     }
 }
 
+export def test_package_providers_macos_and_linux_distros [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "macos" } {
+            let plan = { packages: { brew: ["ripgrep", "fd"] } }
+            let res = (install-packages $home $plan --dry-run)
+            assert ($res.executed | any { |c| $c =~ "brew install ripgrep fd" }) "Expected brew install"
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "ubuntu" } {
+            let plan = { packages: { apt: ["curl", "git"] } }
+            let res = (install-packages $home $plan --dry-run)
+            assert ($res.executed | any { |c| $c =~ "apt-get install -y --no-install-recommends curl git" }) "Expected apt-get install"
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "debian" } {
+            let plan = { packages: { apt: ["curl"] } }
+            let res = (install-packages $home $plan --dry-run)
+            assert ($res.executed | any { |c| $c =~ "apt-get install -y --no-install-recommends curl" }) "Expected apt-get install for debian"
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "ubuntu", YGG_HOST_BREW: "true" } {
+            let plan = { packages: { brew: ["fzf"] } }
+            let res = (install-packages $home $plan --dry-run)
+            assert ($res.executed | any { |c| $c =~ "brew install fzf" }) "Expected Linuxbrew install"
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "fedora" } {
+            let plan = { packages: { dnf: ["htop", "tmux"] } }
+            let res = (install-packages $home $plan --dry-run)
+            assert ($res.executed | any { |c| $c =~ "dnf install -y htop tmux" }) "Expected dnf install"
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "opensuse" } {
+            let plan = { packages: { zypper: ["neovim", "zsh"] } }
+            let res = (install-packages $home $plan --dry-run)
+            assert ($res.executed | any { |c| $c =~ "zypper install -y neovim zsh" }) "Expected zypper install"
+        }
+    }
+}
+
+
