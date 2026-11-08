@@ -46,9 +46,9 @@ export def test-omni-standalone-linux [] {
     let sb = (make-sandbox "omni-linux")
     try {
         link-wt-modules $sb.ygg_home ["omni-dotfiles"]
-        'profile = "test-omni"
-modules = ["omni-dotfiles"]
-' | save -f ($sb.ygg_home | path join "config.toml")
+        '[[modules]]
+name = "omni-dotfiles"
+' | save -f ($sb.ygg_home | path join "host.toml")
         r#'[env]
 OPENAI_API_KEY = "sk-test$secret'val"
 '# | save -f ($sb.ygg_home | path join "secrets.toml")
@@ -94,13 +94,14 @@ export def test-linux-pc-and-asus-scope-switch [] {
     let sb = (make-sandbox "linux-scopes")
     try {
         link-wt-modules $sb.ygg_home ["omni-dotfiles", "dotfiles", "ai-dotfiles"]
-        'profile = "cachyos-pc"
-modules = [
-  "omni-dotfiles",
-  "dotfiles@pc",
-  "ai-dotfiles",
-]
-' | save -f ($sb.ygg_home | path join "config.toml")
+        '[[modules]]
+name = "omni-dotfiles"
+[[modules]]
+name = "dotfiles"
+scopes = ["pc"]
+[[modules]]
+name = "ai-dotfiles"
+' | save -f ($sb.ygg_home | path join "host.toml")
         '[env]
 GEMINI_API_KEY = "gem-test-key"
 ' | save -f ($sb.ygg_home | path join "secrets.toml")
@@ -143,12 +144,12 @@ GEMINI_API_KEY = "gem-test-key"
 
         # Switch profile in-place from dotfiles@pc -> dotfiles@asus (Review Focus: Zero-Trash pruning)
         "" | save -f $sb.pkg_log
-        'profile = "cachyos-asus"
-modules = [
-  "omni-dotfiles",
-  "dotfiles@asus",
-]
-' | save -f ($sb.ygg_home | path join "config.toml")
+        '[[modules]]
+name = "omni-dotfiles"
+[[modules]]
+name = "dotfiles"
+scopes = ["asus"]
+' | save -f ($sb.ygg_home | path join "host.toml")
 
         let res_asus = (with-env {
             HOME: $sb.home,
@@ -186,12 +187,12 @@ export def test-windows-work-and-save-roundtrip [] {
         let wt_settings = ($wt_dir | path join "settings.json")
         (open --raw ($WT_ROOT | path join "win-dotfiles" "terminal" "settings.json")) | save -f $wt_settings
 
-        'profile = "win-workstation"
-modules = [
-  "omni-dotfiles",
-  "win-dotfiles@work",
-]
-' | save -f ($sb.ygg_home | path join "config.toml")
+        '[[modules]]
+name = "omni-dotfiles"
+[[modules]]
+name = "win-dotfiles"
+scopes = ["work"]
+' | save -f ($sb.ygg_home | path join "host.toml")
 
         let res = (with-env {
             HOME: $sb.home,
