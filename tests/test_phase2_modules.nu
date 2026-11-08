@@ -18,6 +18,11 @@ def make-sandbox [name: string]: nothing -> record<root: string, ygg_home: strin
     { root: $root, ygg_home: $ygg_home, home: $home, pkg_log: $pkg_log }
 }
 
+# Tools launched by shell profiles (atuin, sheldon) may still be writing: retry removal once
+def cleanup-sandbox [root: string] {
+    try { rm -rf $root } catch { sleep 2sec; try { rm -rf $root } catch { } }
+}
+
 def link-wt-modules [ygg_home: string, names: list<string>] {
     for n in $names {
         let src = ($WT_ROOT | path join $n)
@@ -71,23 +76,23 @@ OPENAI_API_KEY = "sk-test$secret'val"
         assert-no-broken-links $sb.home
 
         # Verify Nushell loads env.nu + config.nu + aliases cleanly with HOME=$sb.home
-        let nu_chk = (with-env { HOME: $sb.home, YGG_HOME: ($sb.home | path join ".ygg") } {
+        let nu_chk = (with-env { HOME: $sb.home, YGG_HOME: ($sb.home | path join ".ygg"), XDG_CONFIG_HOME: ($sb.home | path join ".config"), XDG_DATA_HOME: ($sb.home | path join ".local" "share"), XDG_CACHE_HOME: ($sb.home | path join ".cache"), XDG_STATE_HOME: ($sb.home | path join ".local" "state") } {
             ^nu --env-config ($sb.home | path join ".config" "nushell" "env.nu") --config ($sb.home | path join ".config" "nushell" "config.nu") -c "$env.EDITOR + '|' + $env.OPENAI_API_KEY"
         } | complete)
         assert ($nu_chk.exit_code == 0) $"Nushell profile failed to parse/load: ($nu_chk.stderr)"
         assert (($nu_chk.stdout | str trim) == "nvim|sk-test$secret'val") $"Unexpected nu env output: ($nu_chk.stdout)"
 
         # Verify Zsh loads .zshenv + .zshrc + aliases without error
-        let zsh_chk = (with-env { HOME: $sb.home, YGG_HOME: ($sb.home | path join ".ygg") } {
+        let zsh_chk = (with-env { HOME: $sb.home, YGG_HOME: ($sb.home | path join ".ygg"), XDG_CONFIG_HOME: ($sb.home | path join ".config"), XDG_DATA_HOME: ($sb.home | path join ".local" "share"), XDG_CACHE_HOME: ($sb.home | path join ".cache"), XDG_STATE_HOME: ($sb.home | path join ".local" "state") } {
             ^zsh -c 'source "$HOME/.zshenv" && source "$HOME/.zshrc" && printf "%s|%s" "$EDITOR" "$OPENAI_API_KEY"'
         } | complete)
         assert ($zsh_chk.exit_code == 0) $"Zsh profile failed: ($zsh_chk.stderr)"
         assert (($zsh_chk.stdout | str trim) == "nvim|sk-test$secret'val") $"Unexpected zsh env output: ($zsh_chk.stdout)"
     } catch { |e|
-        rm -rf $sb.root
+        cleanup-sandbox $sb.root
         error make { msg: $e.msg }
     }
-    rm -rf $sb.root
+    cleanup-sandbox $sb.root
 }
 
 export def test-linux-pc-and-asus-scope-switch [] {
@@ -171,10 +176,10 @@ scopes = ["asus"]
         assert ($pkgs_asus | str contains "asusctl") "ASUS packages must include asusctl"
         assert (not ($pkgs_asus | str contains "openrgb")) "ASUS packages must NOT include openrgb"
     } catch { |e|
-        rm -rf $sb.root
+        cleanup-sandbox $sb.root
         error make { msg: $e.msg }
     }
-    rm -rf $sb.root
+    cleanup-sandbox $sb.root
 }
 
 export def test-windows-work-and-save-roundtrip [] {
@@ -222,10 +227,10 @@ scopes = ["work"]
         assert (not ($ps_aliases | str contains "function kubectl")) "Unix DevOps aliases leaked into Windows aliases.ps1"
         assert ($ps_aliases | str contains "function gst") "Core git aliases missing in Windows aliases.ps1"
     } catch { |e|
-        rm -rf $sb.root
+        cleanup-sandbox $sb.root
         error make { msg: $e.msg }
     }
-    rm -rf $sb.root
+    cleanup-sandbox $sb.root
 }
 
 def main [target: string = "all"] {
