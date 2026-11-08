@@ -454,3 +454,232 @@ export def test_add_module_dirty_guard_and_dry_run_clone_cleanup [] {
         }
     }
 }
+
+# Write a single-module host with the given [packages] TOML body
+def write-pkg-module [home: string, os: string, packages_toml: string] {
+    let m1 = ($home | path join "modules" "m")
+    mkdir $m1
+    ("name = \"m\"\nos = [\"" + $os + "\"]\n[packages]\n" + $packages_toml + "\n") | save -f ($m1 | path join "ygg.toml")
+    "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+}
+
+def read-log [log: string]: nothing -> list<string> {
+    if ($log | path exists) { open --raw $log | lines | where { |l| $l != "" } } else { [] }
+}
+
+export def test_pacman_precheck_and_noninteractive_sudo_guard [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        write-pkg-module $home "linux" "pacman = [\"curl\", \"git\"]"
+
+        # 1. Everything already installed: pacman is not invoked at all
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_INSTALLED: "curl,git" } {
+            let res = (install-packages (resolve-effective-plan $home))
+            assert equal $res.failed []
+            assert equal (read-log $log) []
+            assert equal $res.executed []
+        }
+
+        # 2. Partially installed: only the missing package reaches pacman (and paru behaves the same)
+        write-pkg-module $home "linux" "pacman = [\"curl\", \"ripgrep\"]\nparu = [\"curl\", \"aur-tool\"]"
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_INSTALLED: "curl" } {
+            let res = (install-packages (resolve-effective-plan $home))
+            assert equal $res.failed []
+            assert equal (read-log $log) ["sudo pacman -S --needed --noconfirm ripgrep", "paru -S --needed --noconfirm aur-tool"]
+        }
+        rm -f $log
+
+        # 3. No sudo without a TTY: pacman not invoked, failure recorded, other managers still run
+        write-pkg-module $home "linux" "pacman = [\"curl\", \"ripgrep\"]\ncargo = [\"bat\"]"
+        with-env {
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: $log,
+            YGG_MOCK_PKG_INSTALLED: "curl",
+            YGG_MOCK_SUDO_DENIED: "1"
+        } {
+            let res = (install-packages $home (resolve-effective-plan $home))
+            let lines = (read-log $log)
+            assert (not ($lines | any { |l| $l | str contains "pacman" }))
+            assert equal $lines ["cargo install bat"]
+            assert equal ($res.failed | length) 1
+            let f = ($res.failed | first)
+            assert equal $f.mgr "pacman"
+            assert equal $f.pkg "ripgrep"
+            assert equal $f.reason "sudo_required"
+            assert ("stderr" in ($f | columns))
+        }
+    }
+}
+
+export def test_per_package_providers_and_isolated_failure [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        write-pkg-module $home "windows" "winget = [\"Git.Git\", \"Neovim.Neovim\"]\nscoop = [\"jq\", \"fd\"]\nuv = [\"ruff\", \"black\"]"
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_PKG_LOG: $log } {
+            let res = (install-packages (resolve-effective-plan $home))
+            assert equal $res.failed []
+            let lines = (read-log $log)
+            assert equal $lines [
+                "winget install --exact --disable-interactivity --accept-source-agreements --accept-package-agreements Git.Git",
+                "winget install --exact --disable-interactivity --accept-source-agreements --accept-package-agreements Neovim.Neovim",
+                "scoop install jq",
+                "scoop install fd",
+                "uv tool install ruff",
+                "uv tool install black"
+            ]
+        }
+        rm -f $log
+        let winget_hash = ((load-state $home).hashes | get -o "pkg:winget")
+        assert ($winget_hash != null)
+
+        # One failing package does not stop the next one
+        write-pkg-module $home "windows" "winget = [\"Bad.Pkg\", \"Good.Pkg\"]"
+        with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_FAIL: "winget:Bad.Pkg" } {
+            let res = (install-packages (resolve-effective-plan $home))
+            assert equal ($res.failed | length) 1
+            let f = ($res.failed | first)
+            assert equal $f.mgr "winget"
+            assert equal $f.pkg "Bad.Pkg"
+            assert equal $f.reason "error"
+            let lines = (read-log $log)
+            assert equal $lines ["winget install --exact --disable-interactivity --accept-source-agreements --accept-package-agreements Good.Pkg"]
+            # A failed manager never stores the hash of the new package set
+            assert equal ((load-state $home).hashes | get -o "pkg:winget") $winget_hash
+        }
+    }
+}
+
+export def test_pkg_filter_mise_trust_and_timeout_kills_child_tree [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let sb = $env.YGG_SANDBOX
+        write-pkg-module $home "linux" "pacman = [\"curl\"]\ncargo = [\"bat\"]\nmise = [\"ripgrep\"]"
+        # Sandbox mise config exists -> trust step logged before `mise use`
+        mkdir ($sb | path join ".config" "mise")
+        "[tools]\n" | save -f ($sb | path join ".config" "mise" "config.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+            let plan = (resolve-effective-plan $home)
+            let res = (install-packages $plan --pkg mise --sandbox $sb)
+            assert equal $res.failed []
+            assert equal (read-log $log) [
+                "mise trust --yes ~/.config/mise/config.toml",
+                "mise use --path ~/.config/mise/config.local.toml ripgrep"
+            ]
+
+            # --pkg together with --skip-packages is an error
+            let err = (try { install-packages $plan --pkg mise --skip-packages; "ok" } catch { |e| $e.msg })
+            assert ($err | str contains "--pkg")
+            assert ($err | str contains "--skip-packages")
+
+            # Without mise packages in the plan there is no trust line
+            rm -f $log
+            write-pkg-module $home "linux" "cargo = [\"bat\"]"
+            install-packages (resolve-effective-plan $home) --sandbox $sb | ignore
+            assert equal (read-log $log) ["cargo install bat"]
+        }
+    }
+
+    # Timeout kills the whole process tree (nu -c -> sleep) and leaves no stale message behind
+    let marker = "30.0713"
+    let t0 = (date now)
+    let r1 = (run-with-timeout ["nu", "-c", ("^sleep " + $marker)] 1)
+    let elapsed = ((date now) - $t0)
+    sleep 300ms
+    let alive = ((^pgrep -f ("sleep " + $marker) | complete).exit_code == 0)
+    if $alive {
+        ^pkill -KILL -f ("sleep " + $marker) | complete | ignore
+    }
+    assert equal $r1.timed_out true
+    assert equal $r1.exit_code 124
+    assert ($elapsed < 10sec) $"run-with-timeout took ($elapsed)"
+    assert (not $alive) "child sleep process survived the timeout"
+
+    let r2 = (run-with-timeout ["nu", "-c", "print ok"] 5)
+    assert equal $r2.timed_out false
+    assert equal $r2.exit_code 0
+    assert equal ($r2.stdout | str trim) "ok"
+
+    # Direct external process is killed too
+    let marker2 = "30.0714"
+    let r3 = (run-with-timeout ["sleep", $marker2] 1)
+    sleep 300ms
+    let alive2 = ((^pgrep -f ("sleep " + $marker2) | complete).exit_code == 0)
+    if $alive2 {
+        ^pkill -KILL -f ("sleep " + $marker2) | complete | ignore
+    }
+    assert equal $r3.timed_out true
+    assert (not $alive2) "direct sleep process survived the timeout"
+
+    # Timeout 0 runs inline without a job
+    let r4 = (run-with-timeout ["nu", "-c", "print inline"] 0)
+    assert equal ($r4.stdout | str trim) "inline"
+    assert equal $r4.timed_out false
+}
+
+export def test_package_set_hash_cache_and_refresh [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        write-pkg-module $home "linux" "cargo = [\"bat\"]"
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+            # Dry-run never stores the hash
+            let dry = (install-packages (resolve-effective-plan $home) --dry-run)
+            assert equal $dry.executed ["cargo install bat"]
+            assert equal ((load-state $home).hashes | get -o "pkg:cargo") null
+
+            # 1. First run installs and stores the hash
+            let r1 = (install-packages (resolve-effective-plan $home))
+            assert equal (read-log $log) ["cargo install bat"]
+            let h1 = ((load-state $home).hashes | get -o "pkg:cargo")
+            assert ($h1 != null)
+            assert equal $r1.skipped []
+
+            # 2. Same plan: manager skipped, nothing logged
+            rm -f $log
+            let r2 = (install-packages (resolve-effective-plan $home))
+            assert ("cargo" in $r2.skipped)
+            assert equal (read-log $log) []
+            assert equal $r2.executed []
+
+            # Dry-run reports the cached skip as well
+            let d2 = (install-packages (resolve-effective-plan $home) --dry-run)
+            assert ("cargo" in $d2.skipped)
+            assert equal $d2.executed []
+
+            # 3. --refresh-packages bypasses the cache
+            let r3 = (install-packages (resolve-effective-plan $home) --refresh-packages)
+            assert equal (read-log $log) ["cargo install bat"]
+            assert equal $r3.skipped []
+
+            # 4. Explicit --pkg bypasses the cache
+            rm -f $log
+            install-packages (resolve-effective-plan $home) --pkg cargo | ignore
+            assert equal (read-log $log) ["cargo install bat"]
+
+            # 5. A new package in the manifest triggers the manager again
+            rm -f $log
+            write-pkg-module $home "linux" "cargo = [\"bat\", \"fd-find\"]"
+            install-packages (resolve-effective-plan $home) | ignore
+            assert equal (read-log $log) ["cargo install bat fd-find"]
+            let h2 = ((load-state $home).hashes | get -o "pkg:cargo")
+            assert ($h2 != $h1)
+
+            # 6. A failed install does not store the new hash
+            rm -f $log
+            write-pkg-module $home "linux" "cargo = [\"bat\", \"fd-find\", \"eza\"]"
+            with-env { YGG_MOCK_PKG_FAIL: "cargo" } {
+                let r6 = (install-packages (resolve-effective-plan $home))
+                assert equal ($r6.failed | length) 1
+                assert equal $r6.failed.0.reason "error"
+            }
+            assert equal ((load-state $home).hashes | get -o "pkg:cargo") $h2
+
+            # pacman never participates in the cache
+            write-pkg-module $home "linux" "pacman = [\"curl\"]"
+            install-packages (resolve-effective-plan $home) | ignore
+            assert equal ((load-state $home).hashes | get -o "pkg:pacman") null
+        }
+    }
+}

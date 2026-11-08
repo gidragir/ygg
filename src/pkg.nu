@@ -1,45 +1,239 @@
 # src/pkg.nu
 # Yggdrasil configuration manager — Package providers driver
 
-use state.nu [detect-host-os]
+use state.nu [detect-host-os, get-ygg-home, load-state, save-state, expand-target-path]
 
-# Formulate package installation command for a specific provider
-def format-pkg-command [mgr: string, pkgs: list<string>]: nothing -> string {
-    let pkg_args = ($pkgs | str join " ")
+# RFC-005: winget "already installed" / "no applicable upgrade" exit codes count as success
+const WINGET_OK_CODES = [0, -1978335135, -1978335189]
+
+# Managers whose package-set hash is never cached (RFC-014): fast `pacman -T` precheck instead
+const UNCACHED_MGRS = ["pacman", "paru"]
+
+# Managers checked with `pacman -T` before installing (RFC-022)
+const NATIVE_MGRS = ["pacman", "paru"]
+
+# RFC-005 / RFC-013: package installation commands as argv lists (one invocation per entry)
+def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>> {
     match $mgr {
-        "pacman" => $"sudo pacman -S --needed --noconfirm ($pkg_args)",
-        "paru" => $"paru -S --needed --noconfirm ($pkg_args)",
-        "mise" => $"try { mise trust -y ~/.config/mise/config.toml } catch { }; mise use --path ~/.config/mise/config.local.toml ($pkg_args)",
-        "cargo" => $"cargo install ($pkg_args)",
-        "winget" => $"winget install --exact --accept-source-agreements --accept-package-agreements ($pkg_args)",
-        "scoop" => $"scoop install ($pkg_args)",
-        "pnpm" => $"pnpm add -g ($pkg_args)",
-        "uv" => $"uv tool install ($pkg_args)",
-        _ => $"($mgr) install ($pkg_args)"
+        "winget" => ($pkgs | each { |p| [winget install --exact --disable-interactivity --accept-source-agreements --accept-package-agreements $p] }),
+        "scoop" => ($pkgs | each { |p| [scoop install $p] }),
+        "uv" => ($pkgs | each { |p| [uv tool install $p] }),
+        "pacman" => [[sudo pacman -S --needed --noconfirm ...$pkgs]],
+        "paru" => [[paru -S --needed --noconfirm ...$pkgs]],
+        "mise" => [[mise use --path "~/.config/mise/config.local.toml" ...$pkgs]],
+        "cargo" => [[cargo install ...$pkgs]],
+        "pnpm" => [[pnpm add -g ...$pkgs]],
+        _ => [[$mgr install ...$pkgs]]
     }
 }
 
-# Install packages according to the resolved effective plan
+# Packages addressed by one argv invocation (per-package managers carry the last argument)
+def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string> {
+    if ($mgr in ["winget", "scoop", "uv"]) { [($argv | last)] } else { $pkgs }
+}
+
+# RFC-013: default per-invocation timeout in seconds (0 = no timeout)
+def default-pkg-timeout [mgr: string]: nothing -> int {
+    match $mgr {
+        "winget" | "scoop" | "uv" | "mise" | "pnpm" => 300,
+        "cargo" | "paru" | "pacman" => 0,
+        _ => 0
+    }
+}
+
+# Kill a job and its whole process tree. The pids are read from `job list` strictly
+# BEFORE `job kill`: afterwards the entry is gone and child processes would be orphaned.
+def kill-job-tree [jid: int]: nothing -> nothing {
+    let pids = (try { job list | where id == $jid | get -o 0.pids | default [] } catch { [] })
+    if ($nu.os-info.family == "windows") {
+        for pid in $pids {
+            try { ^taskkill /T /F /PID ($pid | into string) | complete | ignore } catch { }
+        }
+    } else {
+        for pid in $pids {
+            try { ^pkill -KILL -P ($pid | into string) | complete | ignore } catch { }
+            try { ^kill -KILL ($pid | into string) | complete | ignore } catch { }
+        }
+    }
+    try { job kill $jid | ignore } catch { }
+}
+
+# Run an external command (argv form) with an optional timeout in seconds (<= 0: no timeout,
+# runs inline without `job spawn`). On timeout the process tree is killed and
+# { exit_code: 124, timed_out: true } is returned.
+export def run-with-timeout [argv: list<string>, timeout_sec: int]: nothing -> record {
+    let bin = ($argv | first)
+    let args = ($argv | skip 1)
+    if $timeout_sec <= 0 {
+        return (try {
+            ^$bin ...$args | complete
+        } catch { |e|
+            { exit_code: 127, stdout: "", stderr: $e.msg }
+        } | insert timed_out false)
+    }
+    # A unique tag is required: a killed job still delivers its result later, and an
+    # untagged `job recv` in the next call would receive that stale message.
+    let tag = (random int 1..1000000000)
+    let jid = (job spawn {
+        let r = (try {
+            ^$bin ...$args | complete
+        } catch { |e|
+            { exit_code: 127, stdout: "", stderr: $e.msg }
+        })
+        $r | job send 0 --tag $tag
+    })
+    try {
+        job recv --tag $tag --timeout ($timeout_sec * 1sec) | insert timed_out false
+    } catch {
+        kill-job-tree $jid
+        { exit_code: 124, stdout: "", stderr: $"timed out after ($timeout_sec)s", timed_out: true }
+    }
+}
+
+def is-mock-mode []: nothing -> bool {
+    ($env.YGG_MOCK_PKG_LOG? | default "") != ""
+}
+
+def csv-env [name: string]: nothing -> list<string> {
+    $env | get -o $name | default "" | split row "," | each { |s| $s | str trim } | where { |it| $it != "" }
+}
+
+# RFC-022: packages not installed yet, determined with a single `pacman -T`
+# (mock: installed packages come from YGG_MOCK_PKG_INSTALLED, pacman is never run)
+def missing-native-pkgs [pkgs: list<string>]: nothing -> list<string> {
+    if (is-mock-mode) {
+        let installed = (csv-env "YGG_MOCK_PKG_INSTALLED")
+        return ($pkgs | where { |p| not ($p in $installed) })
+    }
+    let res = (try { ^pacman -T ...$pkgs | complete } catch { { exit_code: -1, stdout: "", stderr: "" } })
+    match $res.exit_code {
+        0 => [],
+        127 => ($res.stdout | lines | each { |l| $l | str trim } | where { |l| $l != "" }),
+        _ => $pkgs
+    }
+}
+
+# RFC-022: without a TTY (or with YGG_NONINTERACTIVE=1) sudo must work without a password
+# (mock: YGG_MOCK_SUDO_DENIED=1 simulates missing rights, sudo is never run)
+def sudo-available []: nothing -> bool {
+    if (is-mock-mode) {
+        return (($env.YGG_MOCK_SUDO_DENIED? | default "") != "1")
+    }
+    let non_interactive = (not (is-terminal --stdin)) or (($env.YGG_NONINTERACTIVE? | default "") == "1")
+    if not $non_interactive {
+        return true
+    }
+    (try { ^sudo -n true | complete } catch { { exit_code: 1 } }).exit_code == 0
+}
+
+# RFC-014: SHA-256 of the sorted, de-duplicated package list of one manager
+def pkg-set-hash [pkgs: list<string>]: nothing -> string {
+    $pkgs | uniq | sort | str join "\n" | hash sha256
+}
+
+# Expand leading `~` in argv for real execution (the mock log keeps the `~/...` form)
+def expand-argv [argv: list<string>]: nothing -> list<string> {
+    $argv | each { |a|
+        if ($a == "~") or ($a | str starts-with "~/") { $a | path expand } else { $a }
+    }
+}
+
+# RFC-013: provider preparation commands (`mise trust --yes` for existing mise configs)
+def provider-prep-argvs [mgr: string, sandbox: string]: nothing -> list<list<string>> {
+    if ($mgr != "mise") {
+        return []
+    }
+    ["~/.config/mise/config.toml", "~/.config/mise/config.local.toml"]
+    | where { |p| (expand-target-path $p --sandbox=$sandbox) | path exists }
+    | each { |p| [mise trust --yes $p] }
+}
+
+# Run (or mock-log) provider preparation; failures are warnings only
+def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: nothing -> list<string> {
+    mut done = []
+    for argv in (provider-prep-argvs $mgr $sandbox) {
+        let cmd_str = ($argv | str join " ")
+        if (is-mock-mode) {
+            $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
+        } else {
+            let r = (run-with-timeout (expand-argv $argv) $timeout)
+            if ($r.exit_code != 0) {
+                print -e $"[ygg] Warning: '($cmd_str)' failed: ($r.stderr | str trim)"
+            }
+        }
+        $done = ($done | append $cmd_str)
+    }
+    $done
+}
+
+# Execute one install invocation (mock-aware). Returns { ok, reason, stderr }
+def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, timeout: int]: nothing -> record {
+    let cmd_str = ($argv | str join " ")
+    if (is-mock-mode) {
+        let mock_fails = (csv-env "YGG_MOCK_PKG_FAIL")
+        let hit = ($mock_fails | any { |f|
+            ($f == $mgr) or ($inv_pkgs | any { |p| $f == ($mgr + ":" + $p) })
+        })
+        if $hit {
+            return { ok: false, reason: "error", stderr: $"Package manager '($mgr)' error: simulated failure" }
+        }
+        $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
+        return { ok: true, reason: "", stderr: "" }
+    }
+    let r = (run-with-timeout (expand-argv $argv) $timeout)
+    if $r.timed_out {
+        return { ok: false, reason: "timeout", stderr: $r.stderr }
+    }
+    let ok_codes = if ($mgr == "winget") { $WINGET_OK_CODES } else { [0] }
+    if ($r.exit_code in $ok_codes) {
+        { ok: true, reason: "", stderr: "" }
+    } else {
+        { ok: false, reason: "error", stderr: ($r.stderr | default "") }
+    }
+}
+
+# Install packages according to the resolved effective plan.
+# Call forms: `install-packages $ygg_home $plan ...` or `install-packages $plan ...` (YGG_HOME).
 export def install-packages [
-    plan: record,
+    home_or_plan: any,
+    maybe_plan?: any,
     --dry-run,
     --skip-packages (-S),
+    --pkg: string = "",
+    --pkg-timeout: int = -1,
+    --refresh-packages,
     --sandbox: string = ""
-]: nothing -> record<executed: list<string>, failed: list<record<mgr: string, stderr: string>>> {
-    if $skip_packages {
-        return { executed: [], failed: [] }
+]: nothing -> record<executed: list<string>, skipped: list<string>, failed: list<record<mgr: string, pkg: string, reason: string, stderr: string>>> {
+    let ygg_home = if ($maybe_plan == null) { get-ygg-home } else { $home_or_plan }
+    let plan = if ($maybe_plan == null) { $home_or_plan } else { $maybe_plan }
+    let selected = ($pkg | split row "," | each { |s| $s | str trim } | where { |it| $it != "" })
+    let empty_res = { executed: [], skipped: [], failed: [] }
+
+    if ($selected | is-not-empty) and $skip_packages {
+        error make { msg: "--pkg cannot be combined with --skip-packages" }
     }
-    # Skip package installation when inside a sandbox or sandbox path is passed
+    if $skip_packages {
+        return $empty_res
+    }
     # In sandbox without mock logging, protect host package managers from execution
     let env_sb = ($env.YGG_SANDBOX? | default "")
-    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
-    if ($mock_log == "") and (($sandbox != "") or ($env_sb != "")) {
-        return { executed: [], failed: [] }
+    let effective_sb = if ($sandbox != "") { $sandbox } else { $env_sb }
+    let mock = (is-mock-mode)
+    if (not $mock) and ($effective_sb != "") {
+        return $empty_res
     }
 
     let pkgs_record = ($plan.packages? | default {})
+
+    for s in $selected {
+        let has = (($pkgs_record | get -o $s | default []) | is-not-empty)
+        if not $has {
+            print -e $"[ygg] Warning: --pkg '($s)' has no packages in the plan."
+        }
+    }
+
     if ($pkgs_record | columns | is-empty) {
-        return { executed: [], failed: [] }
+        return $empty_res
     }
 
     let host_os = (detect-host-os)
@@ -51,17 +245,21 @@ export def install-packages [
         } else {
             ["mise", "cargo", "pnpm", "uv", "pacman", "paru"]
         }
-    } else if ($host_os.os == "macos") {
-        ["mise", "cargo", "pnpm", "uv"]
     } else {
         ["mise", "cargo", "pnpm", "uv"]
     }
 
+    let hashes = ((load-state $ygg_home).hashes? | default {})
     mut executed: list<string> = []
-    mut failed: list<record<mgr: string, stderr: string>> = []
+    mut skipped: list<string> = []
+    mut failed: list<record> = []
+    mut new_hashes: record = {}
 
     for mgr in ($pkgs_record | columns) {
         if not ($mgr in $allowed_mgrs) {
+            continue
+        }
+        if ($selected | is-not-empty) and not ($mgr in $selected) {
             continue
         }
 
@@ -73,15 +271,13 @@ export def install-packages [
         } else {
             []
         }
-
         if ($pkgs | is-empty) {
             continue
         }
 
         # RFC-002: skip managers that are not installed (mockable via YGG_MOCK_PKG_MISSING)
-        let mock_missing = ($env.YGG_MOCK_PKG_MISSING? | default "" | split row "," | each { |s| $s | str trim } | where { |it| $it != "" })
-        let is_missing = if ($mock_log != "") {
-            ($mgr in $mock_missing)
+        let is_missing = if $mock {
+            ($mgr in (csv-env "YGG_MOCK_PKG_MISSING"))
         } else {
             (which $mgr | is-empty)
         }
@@ -90,35 +286,65 @@ export def install-packages [
             continue
         }
 
-        let cmd_str = (format-pkg-command $mgr $pkgs)
-
-        if $dry_run {
-            $executed = ($executed | append $cmd_str)
+        # RFC-014: package-set cache (bypassed by --refresh-packages and an explicit --pkg)
+        let cacheable = not ($mgr in $UNCACHED_MGRS)
+        let set_hash = (pkg-set-hash $pkgs)
+        let hash_key = $"pkg:($mgr)"
+        if $cacheable and (not $refresh_packages) and ($selected | is-empty) and (($hashes | get -o $hash_key) == $set_hash) {
+            $skipped = ($skipped | append $mgr)
             continue
         }
 
-        if ($mock_log != "") {
-            let mock_fails = ($env.YGG_MOCK_PKG_FAIL? | default "" | split row "," | each { |s| $s | str trim } | where { |it| $it != "" })
-            if ($mgr in $mock_fails) {
-                let err_msg = $"Package manager '($mgr)' error: simulated failure"
-                print -e $err_msg
-                $failed = ($failed | append { mgr: $mgr, stderr: $err_msg })
+        # RFC-022: only packages that are not installed yet reach pacman / paru
+        let todo = if ($mgr in $NATIVE_MGRS) { missing-native-pkgs $pkgs } else { $pkgs }
+        if ($todo | is-empty) {
+            continue
+        }
+
+        let timeout = if ($pkg_timeout >= 0) { $pkg_timeout } else { default-pkg-timeout $mgr }
+        let argvs = (pkg-argv-list $mgr $todo)
+
+        if $dry_run {
+            let prep = (provider-prep-argvs $mgr $effective_sb | each { |a| $a | str join " " })
+            $executed = ($executed | append $prep | append ($argvs | each { |a| $a | str join " " }))
+            continue
+        }
+
+        if ($mgr in $NATIVE_MGRS) and not (sudo-available) {
+            let msg = $"Package manager '($mgr)' requires sudo, which is not available non-interactively. Run 'sudo -v' first or install manually: ($todo | str join ' ')"
+            print -e $"[ygg] Error: ($msg)"
+            $failed = ($failed | append { mgr: $mgr, pkg: ($todo | str join " "), reason: "sudo_required", stderr: $msg })
+            continue
+        }
+
+        let prep_done = (prepare-provider-environment $mgr $effective_sb $timeout)
+        $executed = ($executed | append $prep_done)
+
+        mut mgr_failed = false
+        for argv in $argvs {
+            let inv_pkgs = (argv-pkgs $mgr $argv $todo)
+            let r = (run-install-argv $mgr $argv $inv_pkgs $timeout)
+            if $r.ok {
+                $executed = ($executed | append ($argv | str join " "))
             } else {
-                # Mock mode: append command to the specified log file
-                $"($cmd_str)\n" | save -a $mock_log
-                $executed = ($executed | append $cmd_str)
+                $mgr_failed = true
+                let pkg_str = ($inv_pkgs | str join " ")
+                print -e $"Package manager '($mgr)' failed for '($pkg_str)' \(($r.reason)\): ($r.stderr | str trim)"
+                $failed = ($failed | append { mgr: $mgr, pkg: $pkg_str, reason: $r.reason, stderr: $r.stderr })
             }
-        } else {
-            # Real execution via Nushell
-            let res = (^nu -c $cmd_str | complete)
-            if $res.exit_code != 0 {
-                print -e $"Package manager '($mgr)' error: ($res.stderr)"
-                $failed = ($failed | append { mgr: $mgr, stderr: $res.stderr })
-            } else {
-                $executed = ($executed | append $cmd_str)
-            }
+        }
+
+        if $cacheable and (not $mgr_failed) {
+            $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
         }
     }
 
-    { executed: $executed, failed: $failed }
+    # Hash is stored only for fully successful managers on a real (or mock-logged) run
+    if ($new_hashes | columns | is-not-empty) {
+        let st = (load-state $ygg_home)
+        let merged = ($st.hashes? | default {} | merge $new_hashes)
+        save-state $ygg_home ($st | upsert hashes $merged)
+    }
+
+    { executed: $executed, skipped: $skipped, failed: $failed }
 }

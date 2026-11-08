@@ -529,3 +529,67 @@ pacman = ["curl"]
         }
     }
 }
+
+export def test_cli_pkg_selection_cache_and_failed_package_names [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let pkg_log = ($home | path join "pkg.log")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let mod_src = ($home | path join "pkg-mod")
+        mkdir $mod_src ($home | path join "modules") $sb
+        'name = "pkg-mod"
+os = ["linux", "cachyos"]
+[packages]
+pacman = ["curl"]
+cargo = ["bat"]
+mise = ["ripgrep"]
+' | save -f ($mod_src | path join "ygg.toml")
+        ^ln -s $mod_src ($home | path join "modules" "pkg-mod")
+        "[[modules]]\nname = \"pkg-mod\"\n" | save -f ($home | path join "host.toml")
+        let log_lines = { || if ($pkg_log | path exists) { open --raw $pkg_log | lines | where { |l| $l != "" } } else { [] } }
+
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $pkg_log } {
+            # --pkg with --skip-packages is rejected before anything runs
+            let e1 = (^nu $ygg_bin apply --pkg mise --skip-packages --sandbox $sb | complete)
+            assert ($e1.exit_code != 0)
+            assert ($e1.stderr | str contains "--skip-packages")
+            assert equal (do $log_lines) []
+
+            # diff --pkg shows only the selected manager
+            let d1 = (^nu $ygg_bin diff --pkg cargo --sandbox $sb | complete)
+            assert equal $d1.exit_code 0 $d1.stderr
+            let pkg1 = ($d1.stdout | lines | each { |l| $l | str trim } | where { |l| $l starts-with "PKG" })
+            assert equal ($pkg1 | length) 1
+            assert ($pkg1.0 | str contains "cargo install bat")
+
+            # First apply installs everything, the second one skips cached managers
+            let a1 = (^nu $ygg_bin apply --pkg-timeout 30 --sandbox $sb | complete)
+            assert equal $a1.exit_code 0 $a1.stderr
+            assert ((do $log_lines) | any { |l| $l == "cargo install bat" })
+            assert ((do $log_lines) | any { |l| $l | str contains "mise use" })
+            rm -f $pkg_log
+            let a2 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $a2.exit_code 0 $a2.stderr
+            assert (not ((do $log_lines) | any { |l| $l | str contains "cargo" }))
+            assert ((do $log_lines) | any { |l| $l | str contains "pacman" })
+
+            let d2 = (^nu $ygg_bin diff --sandbox $sb | complete)
+            assert ($d2.stdout | lines | any { |l| ($l | str trim | str starts-with "PKG") and ($l | str contains "cargo SKIP (cached)") })
+
+            # --refresh-packages bypasses the cache
+            rm -f $pkg_log
+            let a3 = (^nu $ygg_bin apply --refresh-packages --sandbox $sb | complete)
+            assert equal $a3.exit_code 0 $a3.stderr
+            assert ((do $log_lines) | any { |l| $l == "cargo install bat" })
+        }
+
+        # Failing package names are listed in the final error
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $pkg_log, YGG_MOCK_PKG_FAIL: "cargo:bat" } {
+            let f = (^nu $ygg_bin apply --pkg cargo --sandbox $sb | complete)
+            assert ($f.exit_code != 0)
+            assert ($f.stderr | str contains "cargo")
+            assert ($f.stderr | str contains "bat")
+            assert ($f.stdout | str contains "Applied 1 module")
+        }
+    }
+}

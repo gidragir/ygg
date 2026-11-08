@@ -31,7 +31,8 @@ def main [--version (-v)] {
     print "  ygg add <source> [--scope <scopes>] [--dry-run] [--force]  Add local directory or git repo and apply"
     print "  ygg remove <name>                        Remove a module and unlink its files"
     print "  ygg apply [--dry-run] [--force] [--all]  Apply configurations, links, packages and setup"
-    print "  ygg diff [--all]                         Show planned changes without modifying anything"
+    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages]"
+    print "  ygg diff [--all] [--pkg <m1,m2>]         Show planned changes without modifying anything"
     print "  ygg update                               Update git modules via rebase and apply"
     print "  ygg save                                 Save reverse-copied GUI/app edits back to modules"
     print "  ygg status                               Display module sync and git status table"
@@ -94,9 +95,11 @@ def "main add" [
     --force (-f),
     --skip-packages (-S),
     --pkg: string = "",
+    --pkg-timeout: int = -1,
+    --refresh-packages,
     --sandbox: string = ""
 ] {
-    # --pkg (manager selection, RFC-013) is accepted for the CLI contract and wired in a later stage
+    assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
 
@@ -127,7 +130,7 @@ def "main add" [
 
     if $dry_run {
         try {
-            apply-plan --dry-run --force=$force --skip-packages=$skip_packages --sandbox=$effective_sandbox --extra-modules $extra
+            apply-plan --dry-run --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --extra-modules $extra
         } catch { |e|
             discard-staged-module $prep
             error make { msg: $e.msg }
@@ -152,7 +155,14 @@ def "main add" [
     let add_res = (register-staged-module $ygg_home $prep --force=$force)
     print $"Added module ($add_res.name)"
 
-    apply-plan --force=$force --skip-packages=$skip_packages --sandbox=$effective_sandbox
+    apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox
+}
+
+# RFC-013: manager selection and --skip-packages are mutually exclusive
+def assert-pkg-flags [pkg: string, skip_packages: bool] {
+    if ($pkg | str trim | is-not-empty) and $skip_packages {
+        error make { msg: "--pkg cannot be combined with --skip-packages" }
+    }
 }
 
 # Remove a module and unlink its managed files
@@ -176,9 +186,12 @@ def "main apply" [
     --force (-f),
     --all (-a),
     --skip-packages (-S),
+    --pkg: string = "",
+    --pkg-timeout: int = -1,
+    --refresh-packages,
     --sandbox: string = ""
 ] {
-    apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --sandbox=$sandbox
+    apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox
 }
 
 # Apply pipeline shared by `apply`, `diff` and `add` (--extra-modules: virtual modules, RFC-012)
@@ -187,9 +200,13 @@ def apply-plan [
     --force,
     --all,
     --skip-packages,
+    --pkg: string = "",
+    --pkg-timeout: int = -1,
+    --refresh-packages,
     --sandbox: string = "",
     --extra-modules: list<record> = []
 ] {
+    assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") {
         $sandbox
     } else {
@@ -223,7 +240,7 @@ def apply-plan [
     if $dry_run {
         # RFC-011: plan only, nothing on the host changes
         report-collisions $resolved
-        let pkg_res = (install-packages $plan --dry-run --skip-packages=$skip_packages --sandbox=$effective_sandbox)
+        let pkg_res = (install-packages $ygg_home $plan --dry-run --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
         for o in $ops {
             if $all or ($o.op != "OK") {
                 print-op-line $o
@@ -231,6 +248,9 @@ def apply-plan [
         }
         for cmd in $pkg_res.executed {
             print ("  " + ("PKG" | fill --alignment left --width 15) + " " + $cmd)
+        }
+        for mgr in $pkg_res.skipped {
+            print ("  " + ("PKG" | fill --alignment left --width 15) + " " + $mgr + " SKIP (cached)")
         }
         compile-environment $ygg_home $plan --dry-run --force=$force --sandbox=$effective_sandbox | ignore
         for mod_entry in $plan_mods {
@@ -247,7 +267,7 @@ def apply-plan [
     }
 
     # 1. Install packages
-    let pkg_res = (install-packages $plan --skip-packages=$skip_packages --sandbox=$effective_sandbox)
+    let pkg_res = (install-packages $ygg_home $plan --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
 
     # 2. Deploy links and file copies (PRUNE first; per-link failures are collected)
     let link_res = (apply-links $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
@@ -268,8 +288,8 @@ def apply-plan [
 
     mut errors = []
     if ($pkg_res.failed | is-not-empty) {
-        let failed_mgrs = ($pkg_res.failed | get mgr | str join ", ")
-        $errors = ($errors | append $"Package installation failed for: ($failed_mgrs)")
+        let failed_pkgs = ($pkg_res.failed | each { |f| $f.mgr + ": " + $f.pkg + " (" + $f.reason + ")" } | str join ", ")
+        $errors = ($errors | append ("Package installation failed for: " + $failed_pkgs))
     }
     if ($link_res.failed | is-not-empty) {
         $errors = ($errors | append $"($link_res.failed | length) link\(s\) failed: ($link_res.failed | get dest | str join ', ')")
@@ -284,10 +304,10 @@ def "main diff" [
     --all (-a),
     --skip-packages (-S),
     --pkg: string = "",
+    --refresh-packages,
     --sandbox: string = ""
 ] {
-    # --pkg (manager selection, RFC-013) is accepted for the CLI contract and wired into apply in a later stage
-    main apply --dry-run --all=$all --skip-packages=$skip_packages --sandbox=$sandbox
+    main apply --dry-run --all=$all --skip-packages=$skip_packages --pkg=$pkg --refresh-packages=$refresh_packages --sandbox=$sandbox
 }
 
 # Update git modules via rebase and apply if clean
