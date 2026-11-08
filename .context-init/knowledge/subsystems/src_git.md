@@ -3,10 +3,10 @@ directory: src/git.nu
 source:
   kind: git
   blob_sha: 07df63c3b21d4c5d2a0578e598c9751e8c8a2230
-  commit_sha: cbe6f55f9c93a1c852c25c768b190ed5077ae844
+  commit_sha: 23db0a16cc70b05c766b715633609bf942d801bb
 generated_by:
   component: context-init
-  role: init
+  role: update
   model: none
 freshness:
   total_entries: 1
@@ -39,9 +39,6 @@ export def register-staged-module [ygg_home: string, prep: record, --force]: not
 export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>
 export def remove-module [ygg_home: string, name: string]: nothing -> nothing
 export def update-modules [ygg_home: string]: nothing -> list<record>
-export def copy-sync-status [state: record]: nothing -> table<dest: string, module: string, status: string>
-export def link-entry-ok [dest: string, entry: record]: nothing -> bool
-export def modules-status [ygg_home: string]: nothing -> table
 ```
 
 ## 🧪 Запуск и тестирование

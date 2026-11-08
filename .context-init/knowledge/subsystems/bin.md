@@ -3,10 +3,10 @@ directory: bin/ygg.nu
 source:
   kind: git
   blob_sha: 44e5ec82c169af7404b5bddb814c10c10e140bcb
-  commit_sha: cbe6f55f9c93a1c852c25c768b190ed5077ae844
+  commit_sha: 23db0a16cc70b05c766b715633609bf942d801bb
 generated_by:
   component: context-init
-  role: init
+  role: update
   model: none
 freshness:
   total_entries: 1
@@ -38,16 +38,7 @@ def assert-pkg-flags [pkg: string, skip_packages: bool]
 def "main remove" [name: string]
 def print-op-line [o: record]
 def "main apply" [ --dry-run (-n), --force (-f), --all (-a), --skip-packages (-S), --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "" ]
-def apply-plan [ --dry-run, --force, --all, --skip-packages, --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "", --extra-modules: list<record> = [] ]
-def "main diff" [ --all (-a), --skip-packages (-S), --pkg: string = "", --refresh-packages, --sandbox: string = "" ]
-def "main update" []
-def "main save" [ --sandbox: string = "", --force ]
-def "main status" [--json]
-def "main doctor" [--json, --sandbox: string = ""]
-def "main onchange" [ key: string, watch: string, cmd: string, --target: string = "" ]
-def "main merge-json" [ src_fragment: string, dest_json: string, --mode: string = "0600" ]
-def "main export-secrets" [ dest_dotenv: string, --keys: string = "[REDACTED]"
-def "main safe-link" [src: string, dest: string]
+def apply-plan [ --dry-run,
 ```
 
 ## 🧪 Запуск и тестирование

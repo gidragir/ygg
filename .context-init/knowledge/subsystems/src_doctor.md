@@ -3,10 +3,10 @@ directory: src/doctor.nu
 source:
   kind: git
   blob_sha: 3024b7d4e93aacb5bcdc0065f430fde80dda94b4
-  commit_sha: cbe6f55f9c93a1c852c25c768b190ed5077ae844
+  commit_sha: 23db0a16cc70b05c766b715633609bf942d801bb
 generated_by:
   component: context-init
-  role: init
+  role: update
   model: none
 freshness:
   total_entries: 1
@@ -40,10 +40,6 @@ def check-sync [state: record]: nothing -> list<record>
 def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record>
 def check-tools [plan: record]: nothing -> list<record>
 def check-collisions [resolved: record]: nothing -> list<record>
-def check-shadow [ygg_home: string, targets: table]: nothing -> list<record>
-def check-secrets [ygg_home: string, plan: record]: nothing -> list<record>
-def check-canonical [plan: record, targets: table]: nothing -> list<record>
-export def run-doctor [ ygg_home: string, --sandbox: string = "" ]: nothing -> table<check: string, severity: string, target: string, detail: string, fix: string>
 ```
 
 ## 🧪 Запуск и тестирование

@@ -16,7 +16,7 @@
 | Подсистема | Роль / Назначение | Точки входа | L1 Карточка |
 | :--- | :--- | :--- | :--- |
 | **Bin** | Модуль и компоненты директории `bin` (1 файлов) | `-` | [subsystems/bin.md](subsystems/bin.md) |
-| **Docs** | Модуль и компоненты директории `docs` (6 файлов) | `-` | [subsystems/docs.md](subsystems/docs.md) |
+| **Docs** | Модуль и компоненты директории `docs` (8 файлов) | `-` | [subsystems/docs.md](subsystems/docs.md) |
 | **Scripts** | Модуль и компоненты директории `scripts` (2 файлов) | `-` | [subsystems/scripts.md](subsystems/scripts.md) |
 | **Doctor** | Модуль и компоненты директории `src/doctor` (1 файлов) | `-` | [subsystems/src_doctor.md](subsystems/src_doctor.md) |
 | **Env** | Модуль и компоненты директории `src/env` (1 файлов) | `-` | [subsystems/src_env.md](subsystems/src_env.md) |
