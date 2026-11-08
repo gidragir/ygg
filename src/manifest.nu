@@ -79,6 +79,11 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         [$mod_os_raw]
     }
 
+    mut raw_path = ($raw.path? | default [])
+    if not (($raw_path | describe) starts-with "list") {
+        $raw_path = [$raw_path]
+    }
+
     mut manifest = {
         name: $mod_name,
         os: $norm_os,
@@ -89,7 +94,33 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         save: ($raw.save? | default {}),
         env: ($raw.env? | default {}),
         aliases: ($raw.aliases? | default {}),
+        path: $raw_path,
         scope: ($raw.scope? | default {})
+    }
+
+    if ($manifest.env.path? != null) {
+        let ep = if (($manifest.env.path | describe) starts-with "list") { $manifest.env.path } else { [$manifest.env.path] }
+        $manifest.path = ($manifest.path | append $ep | uniq)
+        $manifest.env = ($manifest.env | reject path)
+    }
+
+    for s_name in ($manifest.scope | columns) {
+        let s_val = ($manifest.scope | get $s_name)
+        mut s_scope = $s_val
+        mut s_path = ($s_val.path? | default [])
+        if not (($s_path | describe) starts-with "list") {
+            $s_path = [$s_path]
+        }
+        if ($s_val.env?.path? != null) {
+            let p = if (($s_val.env.path | describe) starts-with "list") { $s_val.env.path } else { [$s_val.env.path] }
+            $s_path = ($s_path | append $p | uniq)
+            let clean_env = ($s_val.env | reject path)
+            $s_scope = ($s_scope | upsert env $clean_env)
+        }
+        if not ($s_path | is-empty) {
+            $s_scope = ($s_scope | upsert path $s_path)
+        }
+        $manifest.scope = ($manifest.scope | upsert $s_name $s_scope)
     }
 
     # 1. packages.toml
@@ -154,19 +185,47 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
     let env_file = ($mod_dir | path join "env.toml")
     if ($env_file | path exists) {
         let ext = (open $env_file)
-        if ($ext.env? != null) {
-            $manifest.env = ($manifest.env | merge $ext.env)
+        if ($ext.path? != null) {
+            let p = if (($ext.path | describe) starts-with "list") { $ext.path } else { [$ext.path] }
+            let cur_path = ($manifest.path? | default [])
+            $manifest.path = ($cur_path | append $p | uniq)
         }
-        for col in ($ext | columns | where { |c| $c != "env" and $c != "scope" }) {
+        if ($ext.env? != null) {
+            mut env_map = $ext.env
+            if ($env_map.path? != null) {
+                let p = if (($env_map.path | describe) starts-with "list") { $env_map.path } else { [$env_map.path] }
+                let cur_path = ($manifest.path? | default [])
+                $manifest.path = ($cur_path | append $p | uniq)
+                $env_map = ($env_map | reject path)
+            }
+            $manifest.env = ($manifest.env | merge $env_map)
+        }
+        for col in ($ext | columns | where { |c| $c != "env" and $c != "scope" and $c != "path" }) {
             $manifest.env = ($manifest.env | upsert $col ($ext | get $col))
         }
         if ($ext.scope? != null) {
             for s_name in ($ext.scope | columns) {
                 let s_val = ($ext.scope | get $s_name)
-                let s_env = if ($s_val.env? != null) { $s_val.env } else { $s_val }
+                mut s_env = if ($s_val.env? != null) { $s_val.env } else { $s_val }
                 let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_env = ($cur_scope.env? | default {})
-                let updated_scope = ($cur_scope | upsert env ($cur_scope_env | merge $s_env))
+                let cur_scope_path = ($cur_scope.path? | default [])
+
+                mut new_scope_path = $cur_scope_path
+                if ($s_val.path? != null) {
+                    let p = if (($s_val.path | describe) starts-with "list") { $s_val.path } else { [$s_val.path] }
+                    $new_scope_path = ($new_scope_path | append $p | uniq)
+                }
+                if ($s_env.path? != null) {
+                    let p = if (($s_env.path | describe) starts-with "list") { $s_env.path } else { [$s_env.path] }
+                    $new_scope_path = ($new_scope_path | append $p | uniq)
+                    $s_env = ($s_env | reject path)
+                }
+
+                mut updated_scope = ($cur_scope | upsert env ($cur_scope_env | merge $s_env))
+                if not ($new_scope_path | is-empty) {
+                    $updated_scope = ($updated_scope | upsert path $new_scope_path)
+                }
                 $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
             }
         }
@@ -215,6 +274,7 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
     mut plan_packages = {}
     mut plan_env = {}
     mut plan_aliases = {}
+    mut plan_path = []
 
     for mod_entry in $active_modules {
         let mod_name = $mod_entry.name
@@ -255,6 +315,11 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
         mut mod_env = $manifest.env
         # Collect module's aliases
         mut mod_aliases = $manifest.aliases
+        # Collect module's path
+        mut mod_path = ($manifest.path? | default [])
+        if not (($mod_path | describe) starts-with "list") {
+            $mod_path = [$mod_path]
+        }
 
         # Merge in active scopes for this module
         for s_name in $active_scopes {
@@ -284,8 +349,20 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
                 if ($scope_data.aliases? != null) {
                     $mod_aliases = ($mod_aliases | merge $scope_data.aliases)
                 }
+                # path in scope
+                if ($scope_data.path? != null) {
+                    let p = if (($scope_data.path | describe) starts-with "list") { $scope_data.path } else { [$scope_data.path] }
+                    $mod_path = ($mod_path | append $p | uniq)
+                }
             }
         }
+
+        for p in $mod_path {
+            if ($p | str contains "%") {
+                error make { msg: $"Path entry '($p)' contains '%' which is not supported on Windows user Path (.NET writes REG_SZ where % variables are not expanded)" }
+            }
+        }
+        $plan_path = ($plan_path | append $mod_path | uniq)
 
         # Handle excludes for links and save
         let excludes = ($mod_entry.exclude? | default [])
@@ -369,6 +446,7 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
         save: $plan_save,
         packages: $plan_packages,
         env: $plan_env,
-        aliases: $plan_aliases
+        aliases: $plan_aliases,
+        path: $plan_path
     }
 }

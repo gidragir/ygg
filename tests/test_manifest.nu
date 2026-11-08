@@ -251,3 +251,59 @@ export def test_load_module_manifest_validation_failures [] {
         assert equal $res3 true
     }
 }
+
+export def test_plan_collects_path_from_modules_and_scopes [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "m1")
+        let m2 = ($home | path join "modules" "m2")
+        mkdir $m1 $m2
+
+        'name = "m1"
+os = ["linux", "windows"]
+' | save -f ($m1 | path join "ygg.toml")
+
+        'path = ["~/a"]
+[scope.work]
+path = ["~/b"]
+' | save -f ($m1 | path join "env.toml")
+
+        'name = "m2"
+os = ["linux", "windows"]
+' | save -f ($m2 | path join "ygg.toml")
+
+        'path = ["~/a", "~/c"]
+' | save -f ($m2 | path join "env.toml")
+
+        '[[modules]]
+name = "m1"
+scopes = ["work"]
+[[modules]]
+name = "m2"
+' | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        assert equal $plan.path ["~/a", "~/b", "~/c"]
+    }
+}
+
+export def test_plan_rejects_percent_in_path [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "m1")
+        mkdir $m1
+
+        'name = "m1"
+os = ["linux", "windows"]
+' | save -f ($m1 | path join "ygg.toml")
+
+        'path = ["%JAVA_HOME%/bin"]
+' | save -f ($m1 | path join "env.toml")
+
+        '[[modules]]
+name = "m1"
+' | save -f ($home | path join "host.toml")
+
+        let failed = (try { resolve-effective-plan $home; false } catch { true })
+        assert $failed
+    }
+}
+

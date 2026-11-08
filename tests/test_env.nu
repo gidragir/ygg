@@ -175,3 +175,18 @@ export def test_env_dry_run_no_files_written [] {
         assert (not ($env_nu | path exists))
     }
 }
+
+export def test_windows_env_script_escapes_and_merges_path [] {
+    let s = (format-windows-env-script { K: "it's" } ["~/a", "C:/b"] "C:/Users/u")
+    assert ($s | str contains "$ErrorActionPreference = 'Stop'")
+    assert ($s | str contains "SetEnvironmentVariable('K', 'it''s', 'User')")
+    assert ($s | str contains "GetEnvironmentVariable('Path', 'User')")
+    assert ($s | str contains "'C:\\Users\\u\\a'")
+    assert ($s | str contains "-notcontains")
+}
+
+export def test_windows_env_script_skips_path_block_when_empty [] {
+    let s = (format-windows-env-script { K: "v" } [] "C:/Users/u")
+    assert (not ($s | str contains "'Path'"))
+}
+

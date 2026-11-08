@@ -3,6 +3,56 @@
 
 use state.nu [detect-host-os, expand-target-path]
 
+# Format consolidated PowerShell script to update Windows User Environment (HKCU\Environment)
+export def format-windows-env-script [clean_env: record, path_entries: list<string>, user_home: string]: nothing -> string {
+    mut lines = [
+        "$ErrorActionPreference = 'Stop'"
+    ]
+
+    for k in ($clean_env | columns) {
+        let v = ($clean_env | get $k | into string)
+        let esc_k = ($k | str replace --all "'" "''")
+        let esc_v = ($v | str replace --all "'" "''")
+        let line = ("[Environment]::SetEnvironmentVariable('" + $esc_k + "', '" + $esc_v + "', 'User')")
+        $lines = ($lines | append $line)
+    }
+
+    if not ($path_entries | is-empty) {
+        let clean_home = ($user_home | str trim -r -c "/" | str trim -r -c "\\")
+        mut want_items = []
+        for entry in $path_entries {
+            let resolved = if ($entry == "~") {
+                $clean_home
+            } else if ($entry | str starts-with "~/") or ($entry | str starts-with "~\\") {
+                let rel = ($entry | str substring 2..)
+                $"($clean_home)\\($rel)"
+            } else {
+                $entry
+            }
+            let with_backslashes = ($resolved | str replace --all "/" "\\")
+            let esc_entry = ($with_backslashes | str replace --all "'" "''")
+            $want_items = ($want_items | append ("'" + $esc_entry + "'"))
+        }
+
+        let want_str = ($want_items | str join ", ")
+        let line_want = ("$want = @(" + $want_str + ")")
+        let line_cur = ("$cur = " + "[Environment]::GetEnvironmentVariable('Path', 'User')")
+        let line_items = "$items = @(if ($cur) { $cur -split ';' | Where-Object { $_ } })"
+        let line_new = "$new = @($want + ($items | Where-Object { $want -notcontains $_ }))"
+        let line_set = ("[Environment]::SetEnvironmentVariable('Path', ($new -join ';'), 'User')")
+
+        $lines = ($lines | append [
+            $line_want,
+            $line_cur,
+            $line_items,
+            $line_new,
+            $line_set
+        ])
+    }
+
+    ($lines | str join "\n") + "\n"
+}
+
 # Compile environment variables, secrets, and aliases across active modules and hosts
 export def compile-environment [
     ygg_home: string,
@@ -174,11 +224,13 @@ export def compile-environment [
                     }
                 } catch { }
             }
-        } else if ($host_os.os == "windows") {
-            for k in ($clean_env | columns) {
-                let v = ($clean_env | get $k)
-                let ps_cmd = $"[Environment]::SetEnvironmentVariable\('($k)', '($v | str replace --all "'" "''")', 'User'\)"
-                try { ^powershell -NoProfile -Command $ps_cmd | complete | ignore } catch { }
+        } else if ($host_os.os == "windows") and ($nu.os-info.family == "windows") {
+            let path_entries = ($plan.path? | default [])
+            let user_home = ($env.USERPROFILE? | default ($env.HOME? | default ("~" | path expand)))
+            let script = (format-windows-env-script $clean_env $path_entries $user_home)
+            let res = (^powershell -NoProfile -Command $script | complete)
+            if $res.exit_code != 0 {
+                error make { msg: $"Failed to update Windows environment: ($res.stderr)" }
             }
         }
     }
