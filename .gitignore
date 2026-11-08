@@ -6,3 +6,21 @@
 .DS_Store
 Thumbs.db
 mise.local.toml
+
+# Zero-Secrets & Token Leak Prevention
+.env
+.env.*
+!.env.example
+*.token
+*.key
+*.pem
+id_rsa
+id_ed25519
+
+# SQLite Runtime State Hygiene
+*.sqlite
+*.db
+*.db-shm
+*.db-wal
+state.db
+kanban.db
