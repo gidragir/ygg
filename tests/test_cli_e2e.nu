@@ -170,3 +170,19 @@ export def test_add_does_not_overwrite_broken_host_toml [] {
     }
 }
 
+export def test_sandbox_without_ygg_home_is_refused [] {
+    with-temp-ygg { |home|
+        let fake_home = ($home | path join "fake_user_home")
+        mkdir $fake_home
+        let sb = ($home | path join "preview")
+        mkdir $sb
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+
+        let res = (with-env { HOME: $fake_home, YGG_HOME: "", YGG_SANDBOX: $sb } { ^nu $ygg_bin apply --sandbox $sb | complete })
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "YGG_HOME")
+        assert (not (($fake_home | path join ".ygg") | path exists))
+    }
+}
+
+

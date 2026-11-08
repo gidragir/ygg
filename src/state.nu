@@ -11,6 +11,22 @@ export def get-ygg-home []: nothing -> string {
     }
 }
 
+# Ensure YGG_HOME is explicitly set when running in sandbox mode
+export def assert-sandbox-home [sandbox: string]: nothing -> nothing {
+    let effective = if ($sandbox != "") {
+        $sandbox
+    } else {
+        ($env.YGG_SANDBOX? | default "")
+    }
+
+    if ($effective != "") {
+        let env_home = ($env.YGG_HOME? | default "")
+        if ($env_home == "") {
+            error make { msg: "Running with --sandbox or YGG_SANDBOX requires explicit YGG_HOME to prevent mutating host ~/.ygg" }
+        }
+    }
+}
+
 # Ensure base directory structure in YGG_HOME
 export def ensure-ygg-dirs [ygg_home: string]: nothing -> nothing {
     mkdir ($ygg_home | path join "modules")

@@ -66,3 +66,39 @@ export def test_backup_moves_regular_file_outside_config [] {
         assert ($bak | str starts-with ($home | path join ".state" "backups"))
     }
 }
+
+export def test_assert_sandbox_home [] {
+    # 1. No sandbox -> success
+    with-env { YGG_SANDBOX: "", YGG_HOME: "" } {
+        assert-sandbox-home ""
+    }
+
+    # 2. Sandbox provided, YGG_HOME set -> success
+    with-env { YGG_SANDBOX: "", YGG_HOME: "/tmp/ygg-home" } {
+        assert-sandbox-home "/tmp/preview"
+    }
+
+    # 3. YGG_SANDBOX in env, YGG_HOME set -> success
+    with-env { YGG_SANDBOX: "/tmp/preview", YGG_HOME: "/tmp/ygg-home" } {
+        assert-sandbox-home ""
+    }
+
+    # 4. Sandbox provided, YGG_HOME empty -> error
+    let err_arg = (try {
+        with-env { YGG_SANDBOX: "", YGG_HOME: "" } {
+            assert-sandbox-home "/tmp/preview"
+        }
+        ""
+    } catch { |e| $e.msg })
+    assert ($err_arg | str contains "YGG_HOME")
+
+    # 5. YGG_SANDBOX in env, YGG_HOME empty -> error
+    let err_env = (try {
+        with-env { YGG_SANDBOX: "/tmp/preview", YGG_HOME: "" } {
+            assert-sandbox-home ""
+        }
+        ""
+    } catch { |e| $e.msg })
+    assert ($err_env | str contains "YGG_HOME")
+}
+

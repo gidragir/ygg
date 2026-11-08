@@ -69,6 +69,9 @@ def "main add" [
     --scope (-s): string = "",
     --sandbox: string = ""
 ] {
+    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+    assert-sandbox-home $effective_sandbox
+
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
 
@@ -109,14 +112,15 @@ def "main apply" [
     --force (-f),
     --sandbox: string = ""
 ] {
-    let ygg_home = (get-ygg-home)
-    ensure-ygg-dirs $ygg_home
-
     let effective_sandbox = if ($sandbox != "") {
         $sandbox
     } else {
         ($env.YGG_SANDBOX? | default "")
     }
+    assert-sandbox-home $effective_sandbox
+
+    let ygg_home = (get-ygg-home)
+    ensure-ygg-dirs $ygg_home
 
     let plan = (resolve-effective-plan $ygg_home)
 
@@ -162,9 +166,11 @@ def "main update" [] {
 
 # Save reverse-copied files back to their source modules
 def "main save" [--sandbox: string = ""] {
+    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+    assert-sandbox-home $effective_sandbox
+
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
-    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     let plan = (resolve-effective-plan $ygg_home)
     let saved = (save-copied-files $ygg_home $plan --sandbox=$effective_sandbox)
     print $"Saved ($saved | length) file\(s\)."
