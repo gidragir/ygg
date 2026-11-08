@@ -282,3 +282,18 @@ export def test_sdk_functions_respect_ygg_dry_run [] {
         }
     }
 }
+
+export def test_onchange_wildcard_pattern_does_not_call_path_exists_on_glob [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let mod_dir = ($home | path join "modules" "m")
+        mkdir ($mod_dir | path join "cfg")
+        "a: 1\n" | save -f ($mod_dir | path join "cfg" "one.yaml")
+        with-env { YGG_HOME: $home, YGG_MODULE_DIR: $mod_dir, YGG_FORCE: "false" } {
+            let r1 = (onchange "globs" ["cfg/*.yaml", "nonexistent/*.yaml"] { })
+            assert equal $r1 true
+            let r2 = (onchange "globs" ["cfg/*.yaml", "nonexistent/*.yaml"] { })
+            assert equal $r2 false
+        }
+    }
+}

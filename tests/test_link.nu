@@ -579,3 +579,25 @@ os = ["windows"]
         }
     }
 }
+
+export def test_ensure_executable_sets_mode_and_suppresses_stderr [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "m")
+        mkdir ($m | path join "bin")
+        let s = ($m | path join "bin" "tool.sh")
+        "#!/bin/sh\necho ok\n" | save -f $s
+        ^chmod 0644 $s
+        'name = "m"
+os = ["linux"]
+[links]
+"bin/tool.sh" = "~/.local/bin/tool.sh"
+' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        apply-links $home (resolve-effective-plan $home) --sandbox $sb
+        let mode = (ls -lD $s | get 0.mode)
+        let m9 = ($mode | str substring (($mode | str length) - 9)..)
+        assert ($m9 =~ '^..x')
+    }
+}

@@ -31,7 +31,14 @@ export def onchange [
             ($mod_dir | path join $pattern)
         }
 
-        if (($resolved_pattern | path exists) or (($resolved_pattern | path type) != null)) and not ($resolved_pattern | str contains "*") and not ($resolved_pattern | str contains "?") {
+        let has_wildcard = ($resolved_pattern | str contains "*") or ($resolved_pattern | str contains "?")
+        let is_exact = if not $has_wildcard {
+            try { ($resolved_pattern | path exists) or (($resolved_pattern | path type) != null) } catch { false }
+        } else {
+            false
+        }
+
+        if $is_exact {
             let ptype = ($resolved_pattern | path type)
             if ($ptype == "dir") {
                 let dir_files = (try { glob ($resolved_pattern | path join "**" "*") } catch { [] })

@@ -1,5 +1,6 @@
 @echo off
 rem bin/ygg.cmd - Windows batch shim for Yggdrasil configuration manager
+setlocal
 where nu >nul 2>nul
 if %ERRORLEVEL% neq 0 (
     if exist "%USERPROFILE%\.local\bin\nu.exe" (
@@ -8,9 +9,12 @@ if %ERRORLEVEL% neq 0 (
         set "PATH=%LOCALAPPDATA%\Programs\nu\bin;%PATH%"
     ) else if exist "%LOCALAPPDATA%\Microsoft\WinGet\Links\nu.exe" (
         set "PATH=%LOCALAPPDATA%\Microsoft\WinGet\Links;%PATH%"
+    ) else if exist "%ProgramFiles%\nu\bin\nu.exe" (
+        set "PATH=%ProgramFiles%\nu\bin;%PATH%"
+    ) else if exist "%USERPROFILE%\scoop\shims\nu.exe" (
+        set "PATH=%USERPROFILE%\scoop\shims;%PATH%"
     )
 )
-setlocal
 if exist "%~dp0ygg.nu" (
     set "YGG_SCRIPT=%~dp0ygg.nu"
 ) else if defined YGG_ENGINE_DIR (

@@ -3,7 +3,7 @@
 
 use manifest.nu [load-host-config, save-host-config, load-module-manifest, validate-module-os]
 use link.nu [unlink-module, is-link-or-junction, remove-link-only]
-use state.nu [detect-host-os, load-state, ensure-ygg-dirs]
+use state.nu [detect-host-os, load-state, ensure-ygg-dirs, to-win32-path]
 
 # Add a module from a local path or Git repository URL / shorthand (owner/repo)
 export def add-module [
@@ -36,8 +36,8 @@ export def add-module [
 
         let exp_src = ($source | path expand)
         if ($nu.os-info.family == "windows") {
-            let win_dest = ($mod_dest | str replace -a "/" "\\")
-            let win_src = ($exp_src | str replace -a "/" "\\")
+            let win_dest = (to-win32-path $mod_dest)
+            let win_src = (to-win32-path $exp_src)
             ^cmd /c mklink /J $win_dest $win_src | complete | ignore
         } else {
             ^ln -sfn $exp_src $mod_dest

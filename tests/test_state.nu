@@ -102,3 +102,17 @@ export def test_assert_sandbox_home [] {
     assert ($err_env | str contains "YGG_HOME")
 }
 
+
+export def test_to_win32_path_preserves_symlink_and_replaces_slashes [] {
+    with-temp-ygg { |home|
+        let real_dir = ($home | path join "real_dir")
+        let link_dir = ($home | path join "lnk")
+        mkdir $real_dir
+        ^ln -s $real_dir $link_dir
+
+        let win_p = (to-win32-path $link_dir)
+        assert (not ($win_p | str contains "/"))
+        assert ($win_p | str ends-with "\\lnk")
+        assert (not ($win_p | str ends-with "\\real_dir"))
+    }
+}

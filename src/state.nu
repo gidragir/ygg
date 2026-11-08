@@ -242,3 +242,9 @@ export def backup-existing [ygg_home: string, target_path: string]: nothing -> s
 
     $dest_path
 }
+
+# Convert a path to Windows form for cmd.exe arguments. Uses `path expand -n` so
+# symlinks are NOT resolved to their targets (Zero-Data-Loss for del/rmdir).
+export def to-win32-path [p: string]: nothing -> string {
+    $p | path expand -n | str replace -a "/" "\\"
+}

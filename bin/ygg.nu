@@ -3,7 +3,27 @@
 
 use ../src *
 
-def main [] {
+const YGG_VERSION = "0.1.0"
+
+# Print ygg version (with short git commit when run from a git checkout)
+def "main version" [] {
+    let root = ($env.FILE_PWD? | default "." | path dirname)
+    let commit = (try {
+        (^git -C $root rev-parse --short HEAD | complete).stdout | str trim
+    } catch { "" })
+
+    if ($commit != "") {
+        print $"ygg ($YGG_VERSION) \(commit ($commit)\)"
+    } else {
+        print $"ygg ($YGG_VERSION)"
+    }
+}
+
+def main [--version (-v)] {
+    if $version {
+        main version
+        return
+    }
     print "Yggdrasil (ygg) — Minimalist cross-platform modular configuration manager"
     print ""
     print "Usage:"
@@ -14,6 +34,7 @@ def main [] {
     print "  ygg update                               Update git modules via rebase and apply"
     print "  ygg save                                 Save reverse-copied GUI/app edits back to modules"
     print "  ygg status                               Display module sync and git status table"
+    print "  ygg version                              Print version (also --version / -v)"
     print ""
     print "SDK Subcommands (for setup.nu scripts):"
     print "  ygg onchange <key> <watch> <cmd>         Conditionally run command if watched files change"

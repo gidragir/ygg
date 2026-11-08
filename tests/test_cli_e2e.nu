@@ -258,3 +258,30 @@ pacman = ["curl"]
         assert equal (open --raw ($sb | path join ".config" "ollama" "models.txt")) "host_model_state"
     }
 }
+
+export def test_cli_version_flag_and_subcommand [] {
+    let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+    let v1 = (^nu $ygg_bin --version | complete)
+    let v2 = (^nu $ygg_bin -v | complete)
+    let v3 = (^nu $ygg_bin version | complete)
+    assert equal $v1.exit_code 0
+    assert ($v1.stdout | str starts-with "ygg 0.1.0")
+    assert equal ($v1.stdout | str trim) ($v2.stdout | str trim)
+    assert equal ($v1.stdout | str trim) ($v3.stdout | str trim)
+}
+
+export def test_ygg_cmd_shim_search_paths_and_setlocal [] {
+    let cmd_file = ($env.FILE_PWD | path join "../bin/ygg.cmd" | path expand)
+    let raw = (open --raw $cmd_file)
+    let pos_setlocal = ($raw | str index-of "setlocal")
+    let pos_path = ($raw | str index-of "set \"PATH=")
+    assert ($pos_setlocal >= 0)
+    assert ($pos_setlocal < $pos_path)
+
+    let p1 = ($raw | str index-of "%USERPROFILE%\\.local\\bin\\nu.exe")
+    let p2 = ($raw | str index-of "%LOCALAPPDATA%\\Programs\\nu\\bin\\nu.exe")
+    let p3 = ($raw | str index-of "%LOCALAPPDATA%\\Microsoft\\WinGet\\Links\\nu.exe")
+    let p4 = ($raw | str index-of "%ProgramFiles%\\nu\\bin\\nu.exe")
+    let p5 = ($raw | str index-of "%USERPROFILE%\\scoop\\shims\\nu.exe")
+    assert (($p1 < $p2) and ($p2 < $p3) and ($p3 < $p4) and ($p4 < $p5))
+}

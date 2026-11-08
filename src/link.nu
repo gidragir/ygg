@@ -1,7 +1,19 @@
 # src/link.nu
 # Yggdrasil configuration manager — File linker, unfolding, 3-way sync & safe pruning
 
-use state.nu [load-state, save-state, expand-target-path, backup-existing, detect-host-os]
+use state.nu [load-state, save-state, expand-target-path, backup-existing, detect-host-os, to-win32-path]
+
+# Make a file executable (owner) if it is not already; chmod stderr is suppressed.
+# In nu 0.116 `ls -lD` mode is a 9-char string ("rwxr-xr-x") without a type char.
+def ensure-executable [p: string]: nothing -> nothing {
+    let mode = (try { ls -lD $p | get -o 0.mode | default "" } catch { "" })
+    if ($mode | str length) >= 9 {
+        let m9 = ($mode | str substring (($mode | str length) - 9)..)
+        if not ($m9 =~ '^..x') {
+            try { ^chmod +x $p | complete | ignore } catch { }
+        }
+    }
+}
 
 # Check if target path is a symlink or NTFS junction (including dangling symlinks)
 export def is-link-or-junction [path: string]: nothing -> bool {
@@ -17,7 +29,7 @@ export def is-link-or-junction [path: string]: nothing -> bool {
     if ($nu.os-info.family == "windows") {
         let parent = ($path | path dirname)
         let name = ($path | path basename)
-        let win_parent = ($parent | str replace -a "/" "\\")
+        let win_parent = (to-win32-path $parent)
         let dir_res = (try {
             ^cmd /c dir /a:l /b $win_parent | complete
         } catch {
@@ -58,7 +70,7 @@ export def remove-link-only [path: string]: nothing -> nothing {
     }
 
     if ($nu.os-info.family == "windows") {
-        let win_path = ($path | str replace -a "/" "\\")
+        let win_path = (to-win32-path $path)
         if ($ptype == "dir") or $is_link {
             # Try rmdir (strictly without /S!) for NTFS junction
             let rmdir_res = (try { ^cmd /c rmdir $win_path | complete } catch { { exit_code: 1 } })
@@ -319,8 +331,8 @@ export def apply-links [
                         if $is_windows {
                             if $is_item_dir {
                                 if ($nu.os-info.family == "windows") {
-                                    let win_target = ($target_item | str replace -a "/" "\\")
-                                    let win_src = ($src_item | str replace -a "/" "\\")
+                                    let win_target = (to-win32-path $target_item)
+                                    let win_src = (to-win32-path $src_item)
                                     ^cmd /c mklink /J $win_target $win_src
                                 } else {
                                     ^ln -sfn $src_item $target_item
@@ -356,7 +368,7 @@ export def apply-links [
                             ^ln -sfn $src_item $target_item
                             let parent_name = ($target_item | path dirname | path basename)
                             if not $is_item_dir and ($parent_name == "bin") {
-                                try { ^chmod +x $src_item }
+                                ensure-executable $src_item
                             }
                             let link_record = {
                                 module: $mod_name,
@@ -386,8 +398,8 @@ export def apply-links [
                 if $is_windows {
                     if $is_src_dir {
                         if ($nu.os-info.family == "windows") {
-                            let win_dest = ($dest | str replace -a "/" "\\")
-                            let win_src = ($src_path | str replace -a "/" "\\")
+                            let win_dest = (to-win32-path $dest)
+                            let win_src = (to-win32-path $src_path)
                             ^cmd /c mklink /J $win_dest $win_src
                         } else {
                             ^ln -sfn $src_path $dest
@@ -425,7 +437,7 @@ export def apply-links [
                     ^ln -sfn $src_path $dest
                     let parent_name = ($dest | path dirname | path basename)
                     if not $is_src_dir and ($parent_name == "bin") {
-                        try { ^chmod +x $src_path }
+                        ensure-executable $src_path
                     }
                     let link_record = {
                         module: $mod_name,
