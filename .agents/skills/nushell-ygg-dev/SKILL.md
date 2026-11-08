@@ -204,3 +204,44 @@ if $res.exit_code != 0 {
       }
   }
   ```
+
+## 15. Сохранение путей симлинков на Windows (`to-win32-path` и `path expand -n`)
+
+Обычный `path expand` на Windows разыменовывает симлинки до реального пути. Для команд удаления ссылок (`rmdir`, `del`) это приводит к удалению содержимого целевого каталога вместо самой ссылки.
+* **Всегда используй `path expand -n` при конвертации в Win32:**
+  ```nushell
+  export def to-win32-path [p: string]: nothing -> string {
+      $p | path expand -n | str replace -a "/" "\\"
+  }
+  ```
+
+## 16. Префикс-гарды для деструктивных файловых операций
+
+При удалении временных рабочих каталогов (например, клонов репозиториев) проверяй принадлежность пути служебной поддиректории:
+```nushell
+let safe_subpath = ([".state", "tmp"] | path join)
+if ($tmp != "") and ($tmp | path exists) and ($tmp | str contains $safe_subpath) {
+    rm -rf $tmp
+}
+```
+
+## 17. Чтение режимов файлов и бита исполнения (`ls -lD` в Nu 0.116)
+
+В Nushell 0.116 колонка `mode` вывода `ls -lD` возвращает 9 символов прав (`rwxr-xr-x`) без начального символа типа (`-`/`d`/`l`).
+* Для проверки прав владельца на исполнение проверяй последние 9 символов:
+  ```nushell
+  let mode_tail = ($mode | str substring (($mode | str length) - 9)..)
+  let is_exec = ($mode_tail =~ '^..x')
+  ```
+
+## 18. Надежное уничтожение дерева процессов (`kill-job-tree`)
+
+Внешний запуск подпроцессов в Nushell через `job` требует фиксации PID **до** вызова `job kill`:
+```nushell
+let pids = (try { job list | where id == $jid | get -o 0.pids | default [] } catch { [] })
+job kill $jid | complete | ignore
+for pid in $pids {
+    try { ^kill -9 $pid | complete | ignore } catch { }
+}
+```
+
