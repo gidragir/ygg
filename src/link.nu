@@ -5,8 +5,9 @@ use state.nu [load-state, save-state, expand-target-path, backup-existing, detec
 
 # Make a file executable (owner) if it is not already; chmod stderr is suppressed.
 # In nu 0.116 `ls -lD` mode is a 9-char string ("rwxr-xr-x") without a type char.
+# `ls -lD` is lstat: stat the resolved path so a symlinked source reports its real mode.
 def ensure-executable [p: string]: nothing -> nothing {
-    let mode = (try { ls -lD $p | get -o 0.mode | default "" } catch { "" })
+    let mode = (try { ls -lD ($p | path expand) | get -o 0.mode | default "" } catch { "" })
     if ($mode | str length) >= 9 {
         let m9 = ($mode | str substring (($mode | str length) - 9)..)
         if not ($m9 =~ '^..x') {
@@ -211,7 +212,7 @@ export def resolve-link-targets [
                     $candidates = ($candidates | append ($base | merge {
                         src: $it.name,
                         dest: ($dest_dir | path join ($it.name | path basename)),
-                        is_dir: ($it.type == "dir"),
+                        is_dir: (($it.name | path type) == "dir"),
                         is_glob_child: true,
                         glob_dest_dir: $dest_dir,
                         specificity: 0
@@ -313,140 +314,110 @@ export def resolve-link-targets [
     }
 }
 
-# Create or keep a Unix symlink idempotently (RFC-009). Returns the operation: OK | LINK | RELINK | BACKUP_REPLACE.
-def link-unix [ygg_home: string, src: string, dest: string]: nothing -> string {
-    if (link-target-matches $dest $src) {
-        return "OK"
+# Move a real file or directory to $YGG_HOME/.state/backups/<timestamp>/ and report it (RFC-011)
+def backup-with-notice [ygg_home: string, target: string]: nothing -> string {
+    let bkp = (backup-existing $ygg_home $target)
+    if ($bkp != "") {
+        print $"[ygg] Backed up existing '($target)' -> '($bkp)'"
     }
-    if (is-link-or-junction $dest) {
-        swap-symlink-atomic $src $dest
-        return "RELINK"
-    }
-    if (($dest | path type) != null) {
-        backup-existing $ygg_home $dest | ignore
-        ^ln -s $src $dest
-        return "BACKUP_REPLACE"
-    }
-    mkdir ($dest | path dirname)
-    ^ln -s $src $dest
-    "LINK"
+    $bkp
 }
 
-# 3-way hash synchronization helper for copied files ([save] and Windows single-file links)
-def sync-single-file [
+def has-wildcard [p: string]: nothing -> bool {
+    ($p | str contains "*") or ($p | str contains "?")
+}
+
+def file-hash [p: string]: nothing -> string {
+    if ($p | path exists) and (($p | path type) != "dir") {
+        open --raw $p | hash sha256
+    } else {
+        ""
+    }
+}
+
+# Read-only 3-way classification of a tracked copy ([save] and Windows single-file links).
+# op: OK | COPY | CONFLICT; detail: seeded_host | seeded_module | pulled_to_module | pushed_to_host |
+# force_to_host | force_to_module (COPY), already_synced | converged | none (OK), conflict (CONFLICT).
+# copy_record.last_synced_hash is the hash both sides will have after run-copy-sync.
+def plan-copy-sync [
     state: record,
     module_name: string,
     src: string,
     dest: string,
     force: bool
-]: nothing -> record {
-    let existing_copy = ($state.copies | get -o $dest)
-    let last_synced_hash = ($existing_copy.last_synced_hash? | default "")
+]: nothing -> record<op: string, detail: string, copy_record: record> {
+    let last = (($state.copies | get -o $dest).last_synced_hash? | default "")
+    let src_hash = (file-hash $src)
+    let dest_hash = (file-hash $dest)
+    let src_exists = ($src_hash != "")
+    let dest_exists = ($dest_hash != "")
+    let res = { |op: string, detail: string, h: string|
+        { op: $op, detail: $detail, copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $h } }
+    }
 
-    let src_exists = ($src | path exists)
-    let src_hash = if $src_exists { open --raw $src | hash sha256 } else { "" }
-
-    let dest_exists = ($dest | path exists)
-    let dest_hash = if $dest_exists { open --raw $dest | hash sha256 } else { "" }
-
-    # Case 1: Force overwrite seeds host from module
-    if $force {
+    if $force and ($src_exists or $dest_exists) {
+        if $src_exists and $dest_exists and ($src_hash == $dest_hash) {
+            return (do $res "OK" "already_synced" $src_hash)
+        }
         if $src_exists {
-            mkdir ($dest | path dirname)
-            cp -f $src $dest
-            let new_hash = (open --raw $dest | hash sha256)
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $new_hash },
-                action: "force_to_host"
-            }
-        } else if $dest_exists {
-            mkdir ($src | path dirname)
-            cp -f $dest $src
-            let new_hash = (open --raw $src | hash sha256)
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $new_hash },
-                action: "force_to_module"
-            }
+            return (do $res "COPY" "force_to_host" $src_hash)
         }
+        return (do $res "COPY" "force_to_module" $dest_hash)
     }
 
-    # Case 2: Initial sync (no previous baseline hash recorded)
-    if ($last_synced_hash == "") {
-        if $dest_exists and $src_exists {
-            if ($src_hash == $dest_hash) {
-                return {
-                    copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $src_hash },
-                    action: "already_synced"
-                }
-            } else {
-                # Initial collision: both exist and differ without baseline
-                return {
-                    copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: "" },
-                    action: "conflict"
-                }
-            }
-        } else if $src_exists and not $dest_exists {
-            mkdir ($dest | path dirname)
-            cp -f $src $dest
-            let new_hash = (open --raw $dest | hash sha256)
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $new_hash },
-                action: "seeded_host"
-            }
-        } else if $dest_exists and not $src_exists {
-            mkdir ($src | path dirname)
-            cp -f $dest $src
-            let new_hash = (open --raw $src | hash sha256)
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $new_hash },
-                action: "seeded_module"
-            }
-        } else {
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: "" },
-                action: "none"
-            }
-        }
+    if not ($src_exists or $dest_exists) {
+        return (do $res "OK" "none" $last)
+    }
+    if $src_exists and not $dest_exists {
+        return (do $res "COPY" "seeded_host" $src_hash)
+    }
+    if $dest_exists and not $src_exists {
+        return (do $res "COPY" "seeded_module" $dest_hash)
     }
 
-    # Case 3: 3-way synchronization with existing baseline
-    if ($dest_hash != $last_synced_hash) and ($src_hash == $last_synced_hash) {
+    # Both sides exist
+    if ($last == "") {
+        if ($src_hash == $dest_hash) {
+            return (do $res "OK" "already_synced" $src_hash)
+        }
+        return (do $res "CONFLICT" "conflict" "")
+    }
+    if ($dest_hash != $last) and ($src_hash == $last) {
         # Changed ONLY on host (e.g. GUI edit) -> pull into module repo
-        mkdir ($src | path dirname)
-        cp -f $dest $src
-        return {
-            copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $dest_hash },
-            action: "pulled_to_module"
-        }
-    } else if ($dest_hash == $last_synced_hash) and ($src_hash != $last_synced_hash) {
-        # Changed ONLY in module repo -> push to host
-        mkdir ($dest | path dirname)
-        cp -f $src $dest
-        return {
-            copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $src_hash },
-            action: "pushed_to_host"
-        }
-    } else if ($dest_hash != $last_synced_hash) and ($src_hash != $last_synced_hash) {
-        if ($dest_hash == $src_hash) {
-            # Both changed to identical content
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $dest_hash },
-                action: "converged"
-            }
-        } else {
-            # Mutual edits conflict
-            return {
-                copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $last_synced_hash },
-                action: "conflict"
-            }
-        }
-    } else {
-        # Neither changed
-        return {
-            copy_record: { module: $module_name, src: $src, dest: $dest, last_synced_hash: $last_synced_hash },
-            action: "none"
-        }
+        return (do $res "COPY" "pulled_to_module" $dest_hash)
     }
+    if ($dest_hash == $last) and ($src_hash != $last) {
+        # Changed ONLY in module repo -> push to host
+        return (do $res "COPY" "pushed_to_host" $src_hash)
+    }
+    if ($dest_hash != $last) and ($src_hash != $last) {
+        if ($dest_hash == $src_hash) {
+            return (do $res "OK" "converged" $dest_hash)
+        }
+        return (do $res "CONFLICT" "conflict" $last)
+    }
+    do $res "OK" "none" $last
+}
+
+# Execute the file transfer planned by plan-copy-sync
+def run-copy-sync [p: record]: nothing -> nothing {
+    let src = $p.copy_record.src
+    let dest = $p.copy_record.dest
+    match $p.detail {
+        "seeded_host" | "pushed_to_host" | "force_to_host" => {
+            mkdir ($dest | path dirname)
+            cp -f $src $dest
+        }
+        "seeded_module" | "pulled_to_module" | "force_to_module" => {
+            mkdir ($src | path dirname)
+            cp -f $dest $src
+        }
+        _ => { }
+    }
+}
+
+def warn-copy-conflict [dest: string]: nothing -> nothing {
+    print -e $"[ygg] Warning: 3-way sync conflict on '($dest)' \(both host and module modified\). Preserving host version. Run 'ygg apply --force' to take the module version or 'ygg save --force' to keep the host version."
 }
 
 # Generate a .cmd shim for .nu / .ps1 executable scripts in bin/ on Windows
@@ -467,250 +438,337 @@ def write-cmd-shim [dest: string]: nothing -> string {
     ""
 }
 
+# Read-only classification of a stale tracked copy: rm_unchanged_copy | backup_edited_copy | forget
+def copy-prune-detail [dest: string, last_synced_hash: string]: nothing -> string {
+    if (is-link-or-junction $dest) or (($dest | path type) != "file") {
+        return "forget"
+    }
+    if ($last_synced_hash != "") and ((open --raw $dest | hash sha256) == $last_synced_hash) {
+        "rm_unchanged_copy"
+    } else {
+        "backup_edited_copy"
+    }
+}
+
 # Safely prune a tracked file copy: delete cleanly if unedited on host, otherwise backup
 def prune-copy [ygg_home: string, dest: string, last_synced_hash: string]: nothing -> nothing {
-    if (is-link-or-junction $dest) {
-        return
-    }
-    let ptype: any = ($dest | path type)
-    if ($ptype != "file") {
-        return
-    }
-
-    let current_hash = (open --raw $dest | hash sha256)
-    if ($last_synced_hash != "") and ($current_hash == $last_synced_hash) {
-        try { rm -f $dest }
-    } else {
-        backup-existing $ygg_home $dest | ignore
+    match (copy-prune-detail $dest $last_synced_hash) {
+        "rm_unchanged_copy" => { rm -f $dest }
+        "backup_edited_copy" => { backup-with-notice $ygg_home $dest | ignore }
+        _ => { }
     }
 }
 
-# Prepare destination before linking: remove link/junction, preserve tracked copy if unchanged, or backup
-def prepare-dest [
-    state: record,
+# Read-only classification of a stale state.links entry: unlink | backup_dir_copy | rm_unchanged_copy |
+# backup_edited_copy | forget (record only, nothing on disk is touched)
+def link-prune-detail [state: record, dest: string, entry: record]: nothing -> string {
+    if (is-link-or-junction $dest) {
+        return "unlink"
+    }
+    let t = ($entry.type? | default "")
+    if ($t == "dir_copy") and (($dest | path type) == "dir") {
+        return "backup_dir_copy"
+    }
+    if ($t == "copy") {
+        let last = (($state.copies | get -o $dest).last_synced_hash? | default "")
+        return (copy-prune-detail $dest $last)
+    }
+    "forget"
+}
+
+# Print one diagnostic line per destination for cross-module overrides (RFC-010)
+export def report-collisions [resolved: record]: nothing -> nothing {
+    for c in ($resolved.collisions? | default [] | group-by dest | values | each { |g| $g | last }) {
+        print -e $"[ygg] Collision: destination '($c.dest)' claimed by '($c.loser_module)' is overridden by '($c.winner_module)'"
+    }
+}
+
+# Expand [save] targets with wildcard destinations into concrete files
+def expand-save-targets [save_targets: list]: nothing -> list {
+    $save_targets | each { |s|
+        let matches = if (has-wildcard $s.dest) { glob $s.dest } else { [$s.dest] }
+        $matches | each { |d| $s | merge { dest: $d } }
+    } | flatten
+}
+
+# Build the operation plan (RFC-011). Only reads the filesystem and state.
+# Rows: PRUNE first (stale state.links / state.copies), then one row per resolved.targets entry
+# (same order), then one row per expanded [save] destination.
+export def compute-link-ops [
     ygg_home: string,
-    dest: string,
-    keeps_copy: bool,
-    force: bool
-]: nothing -> nothing {
-    if (is-link-or-junction $dest) {
-        remove-link-only $dest
-        return
+    resolved: record,
+    --force,
+    --sandbox: string = ""
+]: nothing -> table<op: string, dest: string, src: string, module: string, key: string, detail: string> {
+    let state = (load-state $ygg_home)
+    let is_windows = ((detect-host-os).os == "windows")
+    let sep = if ($nu.os-info.family == "windows") { "\\" } else { "/" }
+    let targets = ($resolved.targets? | default [])
+    let target_dests = ($targets | each { |t| $t.dest })
+    let save_rows = (expand-save-targets ($resolved.save_targets? | default []))
+    let copy_dests = ($targets | where { |t| $is_windows and not $t.is_dir } | each { |t| $t.dest }
+        | append ($save_rows | each { |r| $r.dest }))
+    let link_keys = ($state.links | columns)
+
+    mut ops = []
+    # 1. PRUNE rows (executed first)
+    for d in $link_keys {
+        if $d not-in $target_dests {
+            let entry = ($state.links | get $d)
+            $ops = ($ops | append {
+                op: "PRUNE", dest: $d, src: ($entry.src? | default ""), module: ($entry.module? | default ""),
+                key: "", detail: (link-prune-detail $state $d $entry)
+            })
+        }
+    }
+    for d in ($state.copies | columns) {
+        # A copy record whose dest is still a link target is only forgotten (the link op handles the disk)
+        if ($d not-in $copy_dests) and ($d not-in $target_dests) and ($d not-in $link_keys) {
+            let entry = ($state.copies | get $d)
+            $ops = ($ops | append {
+                op: "PRUNE", dest: $d, src: ($entry.src? | default ""), module: ($entry.module? | default ""),
+                key: "", detail: (copy-prune-detail $d ($entry.last_synced_hash? | default ""))
+            })
+        }
+    }
+    let prune_prefixes = ($ops | each { |o| (normalize-case $o.dest) + $sep })
+
+    # 2. Link targets
+    for t in $targets {
+        let dest = $t.dest
+        let existing_type = (($state.links | get -o $dest).type? | default "")
+        let ptype: any = ($dest | path type)
+        let under_prune = ($prune_prefixes | any { |p| (normalize-case $dest) | str starts-with $p })
+        let r = if $under_prune {
+            # Parent link is pruned first: the path will not exist when this target is created
+            if $is_windows and not $t.is_dir { { op: "COPY", detail: "seeded_host" } } else { { op: "LINK", detail: "" } }
+        } else if ($existing_type == "dir_copy") and ($ptype == "dir") and not (is-link-or-junction $dest) and not (link-target-matches $dest $t.src) {
+            { op: "OK", detail: "dir_copy preserved" }
+        } else if $is_windows and not $t.is_dir {
+            let tracked = ($dest in ($state.copies | columns))
+            let differs = ((file-hash $dest) != (file-hash $t.src))
+            if (is-link-or-junction $dest) or ($ptype == "dir") {
+                { op: "BACKUP_REPLACE", detail: "copy" }
+            } else if ($ptype == "file") and $differs and ((not $tracked) or $force) {
+                { op: "BACKUP_REPLACE", detail: "copy" }
+            } else {
+                let p = (plan-copy-sync $state $t.module $t.src $dest $force)
+                { op: $p.op, detail: $p.detail }
+            }
+        } else if (link-target-matches $dest $t.src) and ($dest | path exists) {
+            { op: "OK", detail: "" }
+        } else if (is-link-or-junction $dest) {
+            { op: "RELINK", detail: "" }
+        } else if ($ptype != null) {
+            { op: "BACKUP_REPLACE", detail: "" }
+        } else {
+            { op: "LINK", detail: "" }
+        }
+        $ops = ($ops | append { op: $r.op, dest: $dest, src: $t.src, module: $t.module, key: $t.key, detail: $r.detail })
     }
 
-    let ptype: any = ($dest | path type)
-    if ($ptype == null) {
-        return
+    # 3. [save] targets
+    for s in $save_rows {
+        let p = (plan-copy-sync $state $s.module $s.src $s.dest $force)
+        $ops = ($ops | append { op: $p.op, dest: $s.dest, src: $s.src, module: $s.module, key: $s.key, detail: $p.detail })
     }
-
-    let is_tracked_copy = ($dest in ($state.copies | columns))
-    if $keeps_copy and (not $force) and $is_tracked_copy and ($ptype == "file") {
-        return
-    }
-
-    backup-existing $ygg_home $dest | ignore
+    $ops
 }
 
-# Apply resolved links (RFC-010 priorities), idempotent/atomic symlinks (RFC-009), Windows junction
-# fallback (RFC-006), .cmd shims, 3-way copy sync, and prune stale links
+# Apply resolved links (RFC-010 priorities) from the operation plan (RFC-011): pre-flight barrier,
+# PRUNE first, idempotent/atomic symlinks (RFC-009), Windows junction fallback (RFC-006), .cmd shims,
+# 3-way copy sync. Per-link failures are collected in `failed` instead of aborting.
 export def apply-links [
     ygg_home: string,
     plan: record,
     --dry-run,
     --force,
     --sandbox: string = ""
-]: nothing -> record {
+]: nothing -> record<applied: list<string>, pruned: list<string>, copies: list<string>, failed: list<record<dest: string, src: string, module: string, stderr: string>>> {
     mut state = (load-state $ygg_home)
-    let host_os = (detect-host-os)
-    let is_windows = ($host_os.os == "windows")
+    let is_windows = ((detect-host-os).os == "windows")
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
 
     let resolved = (resolve-link-targets $plan --sandbox $effective_sandbox)
+    let ops = (compute-link-ops $ygg_home $resolved --force=$force --sandbox $effective_sandbox)
 
-    # 0. Checks before any host mutation (also in dry-run)
-    if ($resolved.nesting_conflicts | is-not-empty) {
-        let lines = ($resolved.nesting_conflicts | each { |n|
-            $"  - '($n.child_dest)' \(($n.module): ($n.key)\) is inside directory link '($n.parent_dest)' \(($n.parent_module): ($n.parent_key)\)"
-        })
-        error make { msg: ("Shared directory ownership conflict: nested link targets\n" + ($lines | str join "\n")) }
+    # 0. Barrier before any host mutation (also in dry-run)
+    let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --sandbox $effective_sandbox)
+    if ($problems | is-not-empty) {
+        error make { msg: (format-preflight-errors $problems) }
+    }
+    report-collisions $resolved
+
+    let prune_ops = ($ops | where op == "PRUNE")
+    if $dry_run {
+        return { applied: [], pruned: ($prune_ops | get -o dest | default []), copies: [], failed: [] }
     }
 
-    let glob_dirs = ($plan.links? | default []
-        | where { |l| $l.is_glob? | default false }
-        | each { |l|
-            let clean_dest_raw = ($l.dest_raw | str replace --regex '[\\/]\*$' '')
-            expand-target-path $clean_dest_raw --sandbox $effective_sandbox | str trim -r -c "/" | str trim -r -c "\\"
-        }
-        | uniq)
-    for dest_dir in $glob_dirs {
-        # Ownership conflict check: target directory must NOT be an existing link or junction
-        if (is-link-or-junction $dest_dir) {
-            error make { msg: $"Shared directory ownership conflict: target '($dest_dir)' is a link/junction" }
-        }
-    }
-
-    # One diagnostic line per destination for cross-module overrides
-    for c in ($resolved.collisions | group-by dest | values | each { |g| $g | last }) {
-        print -e $"[ygg] Collision: destination '($c.dest)' claimed by '($c.loser_module)' is overridden by '($c.winner_module)'"
-    }
-
-    mut active_links = []
-    mut active_copies = []
     mut applied_links = []
     mut synced_copies = []
     mut pruned_links = []
     mut failed = []
 
-    if not $dry_run {
-        for dest_dir in $glob_dirs {
-            if not ($dest_dir | path exists) {
-                mkdir $dest_dir
+    # 1. PRUNE first, so a dir link -> glob transition does not trip over its own old link
+    for o in $prune_ops {
+        let dest = $o.dest
+        let link_entry = ($state.links | get -o $dest)
+        let err = (try {
+            match $o.detail {
+                "unlink" => { remove-link-only $dest }
+                "rm_unchanged_copy" => { rm -f $dest }
+                "backup_edited_copy" | "backup_dir_copy" => { backup-with-notice $ygg_home $dest | ignore }
+                _ => { }
             }
+            let shim = ($link_entry.cmd_shim? | default "")
+            if ($shim != "") and ($shim | path exists) {
+                try { remove-link-only $shim }
+            }
+            ""
+        } catch { |e| $e.msg })
+        if ($err != "") {
+            $failed = ($failed | append { dest: $dest, src: $o.src, module: $o.module, stderr: $err })
+            continue
+        }
+        if ($link_entry != null) {
+            $state.links = ($state.links | reject $dest)
+            $pruned_links = ($pruned_links | append $dest)
+        }
+        if ($dest in ($state.copies | columns)) {
+            $state.copies = ($state.copies | reject $dest)
         }
     }
 
-    # 1. Process resolved link targets (winners only)
-    for tgt in $resolved.targets {
+    # 2. Glob destination directories are real directories
+    for d in ($resolved.targets | where { |t| $t.glob_dest_dir != "" } | get -o glob_dest_dir | default [] | uniq) {
+        if (($d | path type) == null) {
+            mkdir $d
+        }
+    }
+
+    # 3. Link targets (rows follow the PRUNE rows in resolved.targets order)
+    let target_ops = ($ops | where op != "PRUNE" | first ($resolved.targets | length))
+    mut active_copies = []
+    for pair in ($resolved.targets | zip $target_ops) {
+        let tgt = $pair.0
+        let row = $pair.1
         let dest = $tgt.dest
         let src_path = $tgt.src
         let mod_name = $tgt.module
-        let is_src_dir = $tgt.is_dir
-        $active_links = ($active_links | append $dest)
+        let op = $row.op
 
-        if $dry_run {
-            continue
-        }
-
-        if $is_windows {
-            if $is_src_dir {
-                let existing = ($state.links | get -o $dest)
-                let existing_type = ($existing.type? | default "")
-                if (link-target-matches $dest $src_path) {
-                    # OK: no rmdir/mklink, only refresh the state record
-                    let keep_type = if ($existing_type in ["junction", "symlink"]) { $existing_type } else { "junction" }
-                    $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: $keep_type, cmd_shim: "" })
-                } else if ($existing_type == "dir_copy") and (($dest | path type) == "dir") and not (is-link-or-junction $dest) {
-                    # RFC-006: dir_copy is not re-created automatically (host edits must survive)
-                    print -e $"[ygg] Warning: '($dest)' is a directory copy \(dir_copy\) and is not synchronized automatically."
-                    $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: "dir_copy", cmd_shim: "" })
-                } else {
-                    let prep_err = (try {
-                        if (is-link-or-junction $dest) {
-                            remove-link-only $dest
-                        } else if (($dest | path type) != null) {
-                            backup-existing $ygg_home $dest | ignore
-                        }
-                        mkdir ($dest | path dirname)
-                        ""
-                    } catch { |e| $e.msg })
-                    let res = if ($prep_err == "") {
-                        create-windows-dir-link $src_path $dest
+        if $is_windows and not $tgt.is_dir {
+            # Single file on Windows: 3-way copy sync (a link or directory in the way is replaced first)
+            $active_copies = ($active_copies | append $dest)
+            let res = (try {
+                if ($op == "BACKUP_REPLACE") {
+                    if (is-link-or-junction $dest) {
+                        remove-link-only $dest
                     } else {
-                        { ok: false, type: "", stderr: $prep_err }
-                    }
-                    if $res.ok {
-                        $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: $res.type, cmd_shim: "" })
-                        $applied_links = ($applied_links | append $dest)
-                    } else {
-                        print -e $"[ygg] Warning: failed to link '($dest)' -> '($src_path)': ($res.stderr)"
-                        $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: $res.stderr })
+                        backup-with-notice $ygg_home $dest | ignore
                     }
                 }
-            } else {
-                # Single file on Windows: 3-way copy sync
-                prepare-dest $state $ygg_home $dest true $force
                 mkdir ($dest | path dirname)
                 let cmd_shim = (write-cmd-shim $dest)
-                let sync_res = (sync-single-file $state $mod_name $src_path $dest $force)
-                if ($sync_res.action == "conflict") {
-                    print -e $"[ygg] Warning: 3-way sync conflict on '($dest)' \(both host and module modified\). Preserving host version. Run 'ygg apply --force' to take the module version or 'ygg save --force' to keep the host version."
+                let p = (plan-copy-sync $state $mod_name $src_path $dest $force)
+                run-copy-sync $p
+                if ($p.op == "CONFLICT") {
+                    warn-copy-conflict $dest
                 }
-                $state.copies = ($state.copies | upsert $dest $sync_res.copy_record)
-                $active_copies = ($active_copies | append $dest)
-                $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: "copy", cmd_shim: $cmd_shim })
-                $applied_links = ($applied_links | append $dest)
+                { err: "", shim: $cmd_shim, copy_record: $p.copy_record }
+            } catch { |e| { err: $e.msg, shim: "", copy_record: {} } })
+            if ($res.err != "") {
+                $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: $res.err })
+                continue
             }
-        } else {
-            # Unix symlink: no-op when already correct, atomic swap otherwise
-            let op = (link-unix $ygg_home $src_path $dest)
-            let parent_name = ($dest | path dirname | path basename)
-            if not $is_src_dir and ($parent_name == "bin") {
-                ensure-executable $src_path
-            }
-            $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: "symlink", cmd_shim: "" })
+            $state.copies = ($state.copies | upsert $dest $res.copy_record)
+            $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: "copy", cmd_shim: $res.shim })
             if ($op != "OK") {
                 $applied_links = ($applied_links | append $dest)
             }
+            continue
         }
-    }
 
-    # 2. Process resolved [save] targets (3-way sync copy)
-    for save_item in $resolved.save_targets {
-        let src_path = $save_item.src
-        let mod_name = $save_item.module
-        let expanded_dest = $save_item.dest
-
-        let dest_matches = if ($expanded_dest | str contains "*") or ($expanded_dest | str contains "?") {
-            glob $expanded_dest
+        if ($op == "OK") {
+            let existing_type = (($state.links | get -o $dest).type? | default "")
+            let keep_type = if ($row.detail == "dir_copy preserved") {
+                print -e $"[ygg] Warning: '($dest)' is a directory copy \(dir_copy\) and is not synchronized automatically."
+                "dir_copy"
+            } else if $is_windows and ($existing_type in ["junction", "symlink"]) {
+                $existing_type
+            } else if $is_windows {
+                "junction"
+            } else {
+                "symlink"
+            }
+            $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: $keep_type, cmd_shim: "" })
         } else {
-            [$expanded_dest]
-        }
-
-        for dest_file in $dest_matches {
-            $active_copies = ($active_copies | append $dest_file)
-            if not $dry_run {
-                let sync_res = (sync-single-file $state $mod_name $src_path $dest_file $force)
-                if ($sync_res.action == "conflict") {
-                    print -e $"[ygg] Warning: 3-way sync conflict on '($dest_file)' \(both host and module modified\). Preserving host version. Run 'ygg apply --force' to take the module version or 'ygg save --force' to keep the host version."
+            let res = (try {
+                if ($op == "BACKUP_REPLACE") {
+                    if (is-link-or-junction $dest) {
+                        remove-link-only $dest
+                    } else {
+                        backup-with-notice $ygg_home $dest | ignore
+                    }
                 }
-                $state.copies = ($state.copies | upsert $dest_file $sync_res.copy_record)
-                $synced_copies = ($synced_copies | append $dest_file)
-            }
-        }
-    }
-
-    # 3. Pruning stale links
-    let old_links = ($state.links | columns)
-    for old_dest in $old_links {
-        if $old_dest not-in $active_links {
-            if not $dry_run {
-                let old_record = ($state.links | get $old_dest)
-                if (is-link-or-junction $old_dest) {
-                    remove-link-only $old_dest
-                } else if ($old_record.type? == "copy") {
-                    let copy_entry = ($state.copies | get -o $old_dest)
-                    let last_hash = ($copy_entry.last_synced_hash? | default "")
-                    prune-copy $ygg_home $old_dest $last_hash
-                } else if ($old_record.type? == "dir_copy") and (($old_dest | path type) == "dir") {
-                    # RFC-006: a directory copy is never deleted, only moved to backups
-                    backup-existing $ygg_home $old_dest | ignore
+                if $is_windows {
+                    if ($op == "RELINK") {
+                        remove-link-only $dest
+                    }
+                    mkdir ($dest | path dirname)
+                    create-windows-dir-link $src_path $dest
+                } else if ($op == "RELINK") {
+                    swap-symlink-atomic $src_path $dest
+                    { ok: true, type: "symlink", stderr: "" }
+                } else {
+                    mkdir ($dest | path dirname)
+                    let r = (^ln -s $src_path $dest | complete)
+                    { ok: ($r.exit_code == 0), type: "symlink", stderr: ($r.stderr | str trim) }
                 }
-                let shim = ($old_record.cmd_shim? | default "")
-                if ($shim != "") and ($shim | path exists) {
-                    try { remove-link-only $shim }
-                }
+            } catch { |e| { ok: false, type: "", stderr: $e.msg } })
+            if not $res.ok {
+                $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: $res.stderr })
+                continue
             }
-            $state.links = ($state.links | reject $old_dest)
-            $pruned_links = ($pruned_links | append $old_dest)
+            $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: $res.type, cmd_shim: "" })
+            $applied_links = ($applied_links | append $dest)
+        }
+
+        if not $is_windows and not $tgt.is_dir and (($dest | path dirname | path basename) == "bin") {
+            ensure-executable $src_path
         }
     }
 
-    # 4. Prune stale copies
-    let old_copies = ($state.copies | columns)
-    for old_dest in $old_copies {
-        if $old_dest not-in $active_copies {
-            if not $dry_run {
-                let copy_entry = ($state.copies | get -o $old_dest)
-                let last_hash = ($copy_entry.last_synced_hash? | default "")
-                prune-copy $ygg_home $old_dest $last_hash
+    # 4. [save] targets (3-way sync copy)
+    let save_ops = ($ops | where op != "PRUNE" | skip ($resolved.targets | length))
+    for row in $save_ops {
+        let dest_file = $row.dest
+        $active_copies = ($active_copies | append $dest_file)
+        let res = (try {
+            let p = (plan-copy-sync $state $row.module $row.src $dest_file $force)
+            run-copy-sync $p
+            if ($p.op == "CONFLICT") {
+                warn-copy-conflict $dest_file
             }
-            $state.copies = ($state.copies | reject $old_dest)
+            { err: "", copy_record: $p.copy_record }
+        } catch { |e| { err: $e.msg, copy_record: {} } })
+        if ($res.err != "") {
+            $failed = ($failed | append { dest: $dest_file, src: $row.src, module: $row.module, stderr: $res.err })
+            continue
+        }
+        $state.copies = ($state.copies | upsert $dest_file $res.copy_record)
+        $synced_copies = ($synced_copies | append $dest_file)
+    }
+
+    # 5. Forget copy records that are no longer copies (e.g. a Windows file turned into a directory link)
+    let failed_dests = ($failed | each { |f| $f.dest })
+    for d in ($state.copies | columns) {
+        if ($d not-in $active_copies) and ($d not-in $failed_dests) {
+            $state.copies = ($state.copies | reject $d)
         }
     }
 
-    if not $dry_run {
-        save-state $ygg_home $state
-    }
+    save-state $ygg_home $state
 
     {
         applied: $applied_links,
@@ -811,7 +869,7 @@ export def unlink-module [ygg_home: string, module_name: string]: nothing -> int
             } else if ($entry.type? == "dir_copy") {
                 # RFC-006: a directory copy is never deleted, only moved to backups
                 if (($dest | path type) == "dir") {
-                    backup-existing $ygg_home $dest | ignore
+                    backup-with-notice $ygg_home $dest | ignore
                 }
             } else {
                 let copy_entry = ($state.copies | get -o $dest)
@@ -841,20 +899,40 @@ export def unlink-module [ygg_home: string, module_name: string]: nothing -> int
     $count
 }
 
-# Pre-flight validation of the plan before any host mutation (Stage 0: missing link sources)
+# Relative paths of all files (hidden included, symlinks excluded) below `dir`, sorted (RFC-021)
+def relative-files [dir: string]: nothing -> list<string> {
+    if not ($dir | path exists) {
+        return []
+    }
+    glob --no-dir --no-symlink ($dir | path join "**" "*")
+    | each { |f| $f | path relative-to $dir }
+    | sort
+}
+
+# Files of host directory `dest` that a directory link to `src` would hide (only relative paths compared)
+export def shadowed-files [dest: string, src: string]: nothing -> list<string> {
+    let tracked = (relative-files $src)
+    relative-files $dest | where { |f| $f not-in $tracked }
+}
+
+# Pre-flight validation of the plan before any host mutation (RFC-020). Read-only.
+# Reasons: missing_source, invalid_mode_source, nesting_conflict, ownership_conflict, shadowed_files.
+# --force only lifts shadowed_files (RFC-021, with a warning); --quiet suppresses that warning.
 export def preflight-check [
     ygg_home: string,
     plan: record,
     resolved: record = {},
     ops: table = [],
     --force,
+    --quiet,
     --sandbox: string = ""
 ]: nothing -> list<record<module: string, key: string, reason: string, detail: string>> {
     mut problems = []
+
+    # 1. Every link candidate of the effective plan (losing candidates too: RFC-020 p.2 "all links")
     for link in ($plan.links? | default []) {
         let src = $link.src_path
-        let has_wildcard = ($src | str contains "*") or ($src | str contains "?")
-        let exists = if $has_wildcard {
+        let exists = if (has-wildcard $src) {
             false
         } else {
             try { ($src | path exists) } catch { false }
@@ -866,8 +944,74 @@ export def preflight-check [
                 reason: "missing_source",
                 detail: $"Source path '($src)' does not exist"
             })
+        } else if (($link.mode? | default "") == "dir") and (($src | path type) != "dir") {
+            $problems = ($problems | append {
+                module: $link.module,
+                key: $link.key,
+                reason: "invalid_mode_source",
+                detail: $"mode = \"dir\" requires a directory source, but '($src)' is a ($src | path type)"
+            })
         }
     }
+
+    # 2. Nested link targets (RFC-010 p.4)
+    for n in ($resolved.nesting_conflicts? | default []) {
+        $problems = ($problems | append {
+            module: $n.module,
+            key: $n.key,
+            reason: "nesting_conflict",
+            detail: $"Shared directory ownership conflict: '($n.child_dest)' is inside directory link '($n.parent_dest)' \(($n.parent_module? | default ''): ($n.parent_key? | default '')\)"
+        })
+    }
+
+    let targets = ($resolved.targets? | default [])
+    let prune_norms = ($ops | where { |o| $o.op == "PRUNE" } | each { |o| normalize-case $o.dest })
+
+    # 3. Glob destination directory must not be a foreign link/junction (own stale link is PRUNEd first)
+    for g in ($targets | where { |t| $t.glob_dest_dir != "" } | group-by glob_dest_dir | values) {
+        let first_t = ($g | first)
+        let dir = $first_t.glob_dest_dir
+        if (is-link-or-junction $dir) and ((normalize-case $dir) not-in $prune_norms) {
+            $problems = ($problems | append {
+                module: $first_t.module,
+                key: $first_t.key,
+                reason: "ownership_conflict",
+                detail: $"Shared directory ownership conflict: target '($dir)' is a link/junction not managed by this run"
+            })
+        }
+    }
+
+    # 4. Directory shadowing (RFC-021): a directory link replacing a real host directory
+    let replace_dests = ($ops | where { |o| $o.op == "BACKUP_REPLACE" } | each { |o| $o.dest })
+    for t in ($targets | where { |t| $t.is_dir and ($t.dest in $replace_dests) }) {
+        let dest = $t.dest
+        if (($dest | path type) != "dir") or (is-link-or-junction $dest) {
+            continue
+        }
+        let extra = (shadowed-files $dest $t.src)
+        if ($extra | is-empty) {
+            continue
+        }
+        let shown = ($extra | first 20 | each { |f| "      " + $f } | str join "\n")
+        let more = if (($extra | length) > 20) { "\n      ... and " + ((($extra | length) - 20) | into string) + " more" } else { "" }
+        let confirmed = ((($t.mode? | default "") == "dir") or $force)
+        if not $confirmed {
+            let glob_key = (($t.key | str trim -r -c "/") + "/*")
+            $problems = ($problems | append {
+                module: $t.module,
+                key: $t.key,
+                reason: "shadowed_files",
+                detail: ($"directory '($dest)' has ($extra | length) file\(s\) not present in '($t.src)' that the link would hide:\n" + $shown + $more
+                    + "\n    Resolve with one of:\n"
+                    + $"      1. link entries individually: \"($glob_key)\" = \"<target>/*\" \(or per-file links\)\n"
+                    + "      2. confirm the replacement in the manifest: mode = \"dir\"\n"
+                    + "      3. run with --force (the directory is moved to .state/backups/)")
+            })
+        } else if not $quiet {
+            print -e ($"[ygg] Warning: directory '($dest)' will be replaced by a link; ($extra | length) host file\(s\) not in the module move to .state/backups/:\n" + $shown + $more)
+        }
+    }
+
     $problems
 }
 

@@ -285,3 +285,126 @@ export def test_ygg_cmd_shim_search_paths_and_setlocal [] {
     let p5 = ($raw | str index-of "%USERPROFILE%\\scoop\\shims\\nu.exe")
     assert (($p1 < $p2) and ($p2 < $p3) and ($p3 < $p4) and ($p4 < $p5))
 }
+
+# Byte-level snapshot of a directory tree (type, symlink literal target, file sha256) without following links
+def snapshot-tree [root: string]: nothing -> list<string> {
+    if not ($root | path exists) {
+        return []
+    }
+    mut out = []
+    for it in (ls -la $root | sort-by name) {
+        let rel = ($it.name | path relative-to $root)
+        if ($it.type == "symlink") {
+            $out = ($out | append $"L ($rel) -> ($it.target)")
+        } else if ($it.type == "dir") {
+            $out = ($out | append $"D ($rel) ($it.mode)")
+            $out = ($out | append (snapshot-tree $it.name | each { |l| $l | str replace --regex '^(\w) ' ('$1 ' + $rel + '/') }))
+        } else {
+            $out = ($out | append $"F ($rel) ($it.mode) (open --raw $it.name | hash sha256)")
+        }
+    }
+    $out
+}
+
+def snapshot-all [home: string, sb: string]: nothing -> record {
+    let state_file = ($home | path join ".state" "state.json")
+    {
+        sandbox: (snapshot-tree $sb),
+        state: (if ($state_file | path exists) { open --raw $state_file | hash sha256 } else { "" }),
+        backups: (snapshot-tree ($home | path join ".state" "backups"))
+    }
+}
+
+export def test_ygg_diff_and_dry_run_plan_output [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "plan-mod")
+        mkdir ($mod_src | path join "niri") ($sb | path join ".config")
+        "layout {}\n" | save -f ($mod_src | path join "niri" "config.kdl")
+        "add_newline = false\n" | save -f ($mod_src | path join "starship.toml")
+        "host-version\n" | save -f ($sb | path join ".config" "starship.toml")
+        'name = "plan-mod"
+os = ["linux", "cachyos"]
+[links]
+niri = "~/.config/niri"
+"starship.toml" = "~/.config/starship.toml"
+' | save -f ($mod_src | path join "ygg.toml")
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "plan-mod")
+        "[[modules]]\nname = \"plan-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let niri = ($sb | path join ".config" "niri")
+        let star = ($sb | path join ".config" "starship.toml")
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            # 1. diff and apply --dry-run show the plan and change nothing
+            for args in [["diff"], ["apply", "--dry-run"]] {
+                let before = (snapshot-all $home $sb)
+                let res = (^nu $ygg_bin ...$args --sandbox $sb | complete)
+                assert equal $res.exit_code 0 $res.stderr
+                let out_lines = ($res.stdout | lines | each { |l| $l | str trim })
+                assert ($out_lines | any { |l| ($l | str starts-with "LINK") and ($l | str contains $niri) })
+                assert ($out_lines | any { |l| ($l | str starts-with "BACKUP_REPLACE") and ($l | str contains $star) })
+                assert ($res.stdout | str contains "Plan: 2 change(s), 0 unchanged across 1 module(s). No changes made.")
+                assert (not ($res.stdout | str contains "Applied"))
+                assert equal (snapshot-all $home $sb) $before
+            }
+
+            # 2. Real apply prints the backup notice; the file is at the reported path
+            let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            let notice = ($ap.stdout | lines | where { |l| $l | str starts-with ("[ygg] Backed up existing '" + $star + "'") })
+            assert equal ($notice | length) 1
+            let bkp = ($notice | first | parse --regex "-> '(?P<p>.+)'$" | get 0.p)
+            assert equal (open --raw $bkp) "host-version\n"
+            assert equal ($star | path type) "symlink"
+
+            # 3. diff after apply hides OK lines by default, --all shows them; no change on disk
+            let before2 = (snapshot-all $home $sb)
+            let d1 = (^nu $ygg_bin diff --sandbox $sb | complete)
+            assert equal $d1.exit_code 0 $d1.stderr
+            assert (not ($d1.stdout | lines | any { |l| $l | str trim | str starts-with "OK" }))
+            assert ($d1.stdout | str contains "Plan: 0 change(s), 2 unchanged across 1 module(s). No changes made.")
+            let d2 = (^nu $ygg_bin diff --all --sandbox $sb | complete)
+            assert equal $d2.exit_code 0 $d2.stderr
+            let ok_lines = ($d2.stdout | lines | each { |l| $l | str trim } | where { |l| $l | str starts-with "OK" })
+            assert equal ($ok_lines | length) 2
+            assert ($ok_lines | any { |l| $l | str contains $niri })
+            assert equal (snapshot-all $home $sb) $before2
+        }
+    }
+}
+
+export def test_apply_exits_1_when_a_link_fails [] {
+    if ((^id -u | str trim) == "0") {
+        return
+    }
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "fail-mod")
+        let locked = ($sb | path join ".config" "locked")
+        mkdir $mod_src $locked
+        "a\n" | save -f ($mod_src | path join "a.txt")
+        "b\n" | save -f ($mod_src | path join "b.txt")
+        'name = "fail-mod"
+os = ["linux", "cachyos"]
+[links]
+"a.txt" = "~/.config/locked/a.txt"
+"b.txt" = "~/.config/b.txt"
+' | save -f ($mod_src | path join "ygg.toml")
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "fail-mod")
+        "[[modules]]\nname = \"fail-mod\"\n" | save -f ($home | path join "host.toml")
+        ^chmod 555 $locked
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            ^nu $ygg_bin apply --sandbox $sb | complete
+        })
+        ^chmod 755 $locked
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains ($locked | path join "a.txt"))
+        # Other links are still applied
+        assert equal (($sb | path join ".config" "b.txt") | path type) "symlink"
+    }
+}

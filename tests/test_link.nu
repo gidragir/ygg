@@ -727,6 +727,12 @@ name = "late"
         assert equal ($n | first | get module) "m2"
         assert equal ($n | first | get key) "f.txt"
 
+        # Nesting is reported by preflight-check (before package managers)
+        let ops = (compute-link-ops $home $resolved --sandbox $sb)
+        let problems = (preflight-check $home $plan $resolved $ops --sandbox $sb)
+        assert equal ($problems | get reason) ["nesting_conflict"]
+        assert ($problems | first | get detail | str contains "ownership conflict")
+
         # Nesting is an error even in dry-run, and nothing is created
         let err = (try { apply-links $home $plan --sandbox $sb --dry-run; "" } catch { |e| $e.msg })
         assert ($err | str contains "ownership conflict")
@@ -866,5 +872,211 @@ export def test_dir_copy_kept_on_apply_and_backed_up_on_prune_and_unlink [] {
             let b2 = (glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt") | each { |f| open --raw $f })
             assert ("host-edit-2\n" in $b2)
         }
+    }
+}
+
+# Run nushell code in a child process with src modules loaded; returns `complete` record (stdout/stderr capture)
+def run-link-nu [code: string]: nothing -> record {
+    let src = ($env.FILE_PWD | path join ".." "src" | path expand)
+    let prelude = ("use " + ($src | path join "state.nu") + " *; use " + ($src | path join "manifest.nu") + " *; use " + ($src | path join "link.nu") + " *; ")
+    ^nu -c ($prelude + $code) | complete
+}
+
+export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "dotfiles")
+        mkdir ($m | path join "OpenRGB")
+        "preset\n" | save -f ($m | path join "OpenRGB" "off.orp")
+        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB\" = { target = \"~/.config/OpenRGB\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
+        let dest = ($sb | path join ".config" "OpenRGB")
+
+        # Fresh plan: LINK
+        let p0 = (resolve-effective-plan $home)
+        let ops0 = (compute-link-ops $home (resolve-link-targets $p0 --sandbox $sb) --sandbox $sb)
+        assert equal ($ops0 | get op) ["LINK"]
+        assert equal ($ops0 | first | get dest) $dest
+        assert equal ($ops0 | columns | sort) ([op dest src module key detail] | sort)
+
+        apply-links $home $p0 --sandbox $sb | ignore
+        assert equal ($dest | path type) "symlink"
+        # Repeated plan: OK only
+        let ops1 = (compute-link-ops $home (resolve-link-targets $p0 --sandbox $sb) --sandbox $sb)
+        assert equal ($ops1 | get op) ["OK"]
+
+        # Switch to glob: PRUNE of the own old link comes first, then LINK of the child
+        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
+        let p1 = (resolve-effective-plan $home)
+        let r1 = (resolve-link-targets $p1 --sandbox $sb)
+        let ops2 = (compute-link-ops $home $r1 --sandbox $sb)
+        assert equal ($ops2 | first | get op) "PRUNE"
+        assert equal ($ops2 | first | get dest) $dest
+        assert equal ($ops2 | first | get detail) "unlink"
+        assert equal ($ops2 | where op == "LINK" | get dest) [($dest | path join "off.orp")]
+        assert ((preflight-check $home $p1 $r1 $ops2 --sandbox $sb) | is-empty)
+
+        let res = (apply-links $home $p1 --sandbox $sb)
+        assert equal $res.pruned [$dest]
+        assert ($res.failed | is-empty)
+        assert equal ($dest | path type) "dir"
+        assert equal (($dest | path join "off.orp") | path type) "symlink"
+        assert equal (open --raw ($m | path join "OpenRGB" "off.orp")) "preset\n"
+    }
+
+    # Unmanaged symlink at the glob root stays an ownership conflict (preflight and apply-links)
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "dotfiles")
+        mkdir ($m | path join "OpenRGB") ($sb | path join "elsewhere") ($sb | path join ".config")
+        "preset\n" | save -f ($m | path join "OpenRGB" "off.orp")
+        "foreign\n" | save -f ($sb | path join "elsewhere" "keep.txt")
+        let dest = ($sb | path join ".config" "OpenRGB")
+        ^ln -s ($sb | path join "elsewhere") $dest
+        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let r = (resolve-link-targets $plan --sandbox $sb)
+        let ops = (compute-link-ops $home $r --sandbox $sb)
+        assert (($ops | where op == "PRUNE") | is-empty)
+        let problems = (preflight-check $home $plan $r $ops --sandbox $sb)
+        assert equal ($problems | get reason) ["ownership_conflict"]
+        let err = (try { apply-links $home $plan --sandbox $sb; "" } catch { |e| $e.msg })
+        assert ($err | str contains "ownership_conflict")
+        assert equal ($dest | path type) "symlink"
+        assert (not (($sb | path join "elsewhere" "off.orp") | path exists))
+        assert equal (ls ($sb | path join "elsewhere") | length) 1
+    }
+}
+
+export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
+    let setup = { |home: string, link_value: string|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "dotfiles")
+        mkdir ($m | path join "OpenRGB") ($sb | path join ".config" "OpenRGB")
+        "preset\n" | save -f ($m | path join "OpenRGB" "off.orp")
+        "host-preset\n" | save -f ($sb | path join ".config" "OpenRGB" "off.orp")
+        "runtime\n" | save -f ($sb | path join ".config" "OpenRGB" "profile.orp")
+        "calib\n" | save -f ($sb | path join ".config" "OpenRGB" ".calib")
+        ("name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB\" = " + $link_value + "\n") | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
+    }
+
+    # 1. Plain directory link over a real host dir with extra files -> shadowed_files, host untouched
+    with-temp-ygg { |home|
+        do $setup $home '"~/.config/OpenRGB"'
+        let sb = ($home | path join "sb")
+        let dest = ($sb | path join ".config" "OpenRGB")
+        let src = ($home | path join "modules" "dotfiles" "OpenRGB")
+        assert equal (shadowed-files $dest $src) [".calib", "profile.orp"]
+
+        let plan = (resolve-effective-plan $home)
+        let r = (resolve-link-targets $plan --sandbox $sb)
+        let ops = (compute-link-ops $home $r --sandbox $sb)
+        assert equal ($ops | get op) ["BACKUP_REPLACE"]
+        let problems = (preflight-check $home $plan $r $ops --sandbox $sb)
+        assert equal ($problems | get reason) ["shadowed_files"]
+        let detail = ($problems | first | get detail)
+        assert ($detail | str contains "profile.orp")
+        assert ($detail | str contains ".calib")
+        assert ($detail | str contains "mode = \"dir\"")
+        assert ($detail | str contains "--force")
+        assert ($detail | str contains "OpenRGB/*")
+
+        let err = (try { apply-links $home $plan --sandbox $sb; "" } catch { |e| $e.msg })
+        assert ($err | str contains "shadowed_files")
+        assert equal ($dest | path type) "dir"
+        assert equal (ls -a $dest | length) 3
+        assert (glob ($home | path join ".state" "backups" "**" "*") | is-empty)
+
+        # --force: passes with a warning; old dir is moved into .state/backups with a notice
+        let pf = (run-link-nu ("let p = (resolve-effective-plan '" + $home + "'); let r = (resolve-link-targets $p --sandbox '" + $sb + "'); let o = (compute-link-ops '" + $home + "' $r --force --sandbox '" + $sb + "'); preflight-check '" + $home + "' $p $r $o --force --sandbox '" + $sb + "' | length"))
+        assert equal $pf.exit_code 0
+        assert equal ($pf.stdout | str trim) "0"
+        assert ($pf.stderr | str contains "profile.orp")
+        let ap = (run-link-nu ("apply-links '" + $home + "' (resolve-effective-plan '" + $home + "') --force --sandbox '" + $sb + "' | to nuon"))
+        assert equal $ap.exit_code 0
+        assert ($ap.stdout | str contains ("[ygg] Backed up existing '" + $dest + "'"))
+        assert equal ($dest | path type) "symlink"
+        let bk = (glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp"))
+        assert equal ($bk | length) 1
+        assert ((($bk | first | path dirname) | path join ".calib") | path exists)
+    }
+
+    # 2. mode = "dir" confirms the replacement: warning + backup
+    with-temp-ygg { |home|
+        do $setup $home '{ target = "~/.config/OpenRGB", mode = "dir" }'
+        let sb = ($home | path join "sb")
+        let dest = ($sb | path join ".config" "OpenRGB")
+        let plan = (resolve-effective-plan $home)
+        let r = (resolve-link-targets $plan --sandbox $sb)
+        assert ((preflight-check $home $plan $r (compute-link-ops $home $r --sandbox $sb) --sandbox $sb) | is-empty)
+        let ap = (run-link-nu ("apply-links '" + $home + "' (resolve-effective-plan '" + $home + "') --sandbox '" + $sb + "' | to nuon"))
+        assert equal $ap.exit_code 0
+        assert ($ap.stderr | str contains "profile.orp")
+        assert ($ap.stdout | str contains "[ygg] Backed up existing")
+        assert equal ($dest | path type) "symlink"
+        assert equal (glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp") | length) 1
+    }
+
+    # 3. Host dir whose files all exist in the source: no shadowing, preflight passes
+    with-temp-ygg { |home|
+        do $setup $home '"~/.config/OpenRGB"'
+        let sb = ($home | path join "sb")
+        rm ($sb | path join ".config" "OpenRGB" "profile.orp") ($sb | path join ".config" "OpenRGB" ".calib")
+        let plan = (resolve-effective-plan $home)
+        let r = (resolve-link-targets $plan --sandbox $sb)
+        assert ((preflight-check $home $plan $r (compute-link-ops $home $r --sandbox $sb) --sandbox $sb) | is-empty)
+    }
+
+    # 4. mode = "dir" with a file source -> invalid_mode_source
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "dotfiles")
+        mkdir $m
+        "x\n" | save -f ($m | path join "OpenRGB")
+        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB\" = { target = \"~/.config/OpenRGB\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
+        let plan = (resolve-effective-plan $home)
+        let r = (resolve-link-targets $plan --sandbox $sb)
+        let problems = (preflight-check $home $plan $r (compute-link-ops $home $r --sandbox $sb) --sandbox $sb)
+        assert equal ($problems | get reason) ["invalid_mode_source"]
+    }
+}
+
+export def test_ensure_executable_follows_symlinked_source [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "m")
+        mkdir ($m | path join "bin") ($m | path join "real")
+        let real = ($m | path join "real" "tool.sh")
+        "#!/bin/sh\necho ok\n" | save -f $real
+        ^chmod 0644 $real
+        ^ln -s $real ($m | path join "bin" "tool.sh")
+        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"bin/tool.sh\" = \"~/.local/bin/tool.sh\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        apply-links $home (resolve-effective-plan $home) --sandbox $sb | ignore
+        let mode = (ls -lD $real | get 0.mode)
+        let m9 = ($mode | str substring (($mode | str length) - 9)..)
+        assert ($m9 =~ '^..x')
+    }
+}
+
+export def test_is_dir_consistent_for_symlinked_dir_sources [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "m")
+        mkdir ($m | path join "realdir") ($m | path join "g")
+        "x\n" | save -f ($m | path join "realdir" "x.txt")
+        ^ln -s ($m | path join "realdir") ($m | path join "g" "linked")
+        ^ln -s ($m | path join "realdir") ($m | path join "explicit")
+        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"g/*\" = \"~/.config/g/*\"\n\"explicit\" = \"~/.config/explicit\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        let t = (resolve-link-targets (resolve-effective-plan $home) --sandbox $sb).targets
+        let glob_child = ($t | where key == "g/*" | first)
+        let explicit = ($t | where key == "explicit" | first)
+        assert equal $glob_child.is_dir $explicit.is_dir
     }
 }

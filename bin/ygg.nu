@@ -30,7 +30,8 @@ def main [--version (-v)] {
     print "  ygg init [name] [--os <os_list>]        Initialize a new module with ygg.toml and .gitignore"
     print "  ygg add <source> [--scope <scopes>]      Add local directory or git repo and apply"
     print "  ygg remove <name>                        Remove a module and unlink its files"
-    print "  ygg apply [--dry-run] [--force]          Apply configurations, links, packages and setup"
+    print "  ygg apply [--dry-run] [--force] [--all]  Apply configurations, links, packages and setup"
+    print "  ygg diff [--all]                         Show planned changes without modifying anything"
     print "  ygg update                               Update git modules via rebase and apply"
     print "  ygg save                                 Save reverse-copied GUI/app edits back to modules"
     print "  ygg status                               Display module sync and git status table"
@@ -128,10 +129,18 @@ def "main remove" [name: string] {
     print $"Removed module ($name)"
 }
 
+# Print one planned operation line: "  <OP>  <dest>  (<module>: <key>) <detail>"
+def print-op-line [o: record] {
+    let owner = if ($o.key != "") { $o.module + ": " + $o.key } else { $o.module }
+    let detail = if ($o.detail != "") { " " + $o.detail } else { "" }
+    print ("  " + ($o.op | fill --alignment left --width 15) + " " + $o.dest + "  (" + $owner + ")" + $detail)
+}
+
 # Apply configurations, links, packages and setup across all modules
 def "main apply" [
     --dry-run (-n),
     --force (-f),
+    --all (-a),
     --skip-packages (-S),
     --sandbox: string = ""
 ] {
@@ -154,31 +163,85 @@ def "main apply" [
         error make { msg: "Plan contains 0 modules but active links exist. Refusing to prune all links without --force." }
     }
 
-    let problems = (preflight-check $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
+    # 0. Pre-flight barrier (RFC-020): before package managers and before any link change.
+    # On a real run the shadowing warning is printed later by apply-links.
+    let resolved = (resolve-link-targets $plan --sandbox=$effective_sandbox)
+    let ops = (compute-link-ops $ygg_home $resolved --force=$force --sandbox=$effective_sandbox)
+    let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --quiet=(not $dry_run) --sandbox=$effective_sandbox)
     if ($problems | is-not-empty) {
         error make { msg: (format-preflight-errors $problems) }
     }
 
-    # 1. Install packages
-    let pkg_res = (install-packages $plan --dry-run=$dry_run --skip-packages=$skip_packages --sandbox=$effective_sandbox)
+    let mod_count = ($plan_mods | length)
 
-    # 2. Deploy links and file copies
-    apply-links $ygg_home $plan --dry-run=$dry_run --force=$force --sandbox=$effective_sandbox | ignore
+    if $dry_run {
+        # RFC-011: plan only, nothing on the host changes
+        report-collisions $resolved
+        let pkg_res = (install-packages $plan --dry-run --skip-packages=$skip_packages --sandbox=$effective_sandbox)
+        for o in $ops {
+            if $all or ($o.op != "OK") {
+                print-op-line $o
+            }
+        }
+        for cmd in $pkg_res.executed {
+            print ("  " + ("PKG" | fill --alignment left --width 15) + " " + $cmd)
+        }
+        compile-environment $ygg_home $plan --dry-run --force=$force --sandbox=$effective_sandbox | ignore
+        for mod_entry in $plan_mods {
+            let mod_dir = ($mod_entry.dir? | default ($ygg_home | path join "modules" ($mod_entry.name? | default "")))
+            if ($mod_dir | path join "setup.nu" | path exists) {
+                print ("  " + ("SETUP" | fill --alignment left --width 15) + " " + ($mod_entry.name? | default "") + "  (YGG_DRY_RUN=true)")
+            }
+            run-module-setup $ygg_home $mod_entry --dry-run --force=$force --sandbox=$effective_sandbox
+        }
+        let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length))
+        let unchanged = ($ops | where op == "OK" | length)
+        print $"Plan: ($changes) change\(s\), ($unchanged) unchanged across ($mod_count) module\(s\). No changes made."
+        return
+    }
+
+    # 1. Install packages
+    let pkg_res = (install-packages $plan --skip-packages=$skip_packages --sandbox=$effective_sandbox)
+
+    # 2. Deploy links and file copies (PRUNE first; per-link failures are collected)
+    let link_res = (apply-links $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
 
     # 3. Compile shell environments and aliases
-    compile-environment $ygg_home $plan --dry-run=$dry_run --force=$force --sandbox=$effective_sandbox | ignore
+    compile-environment $ygg_home $plan --force=$force --sandbox=$effective_sandbox | ignore
 
     # 4. Run module procedural setup scripts
-    for mod_entry in ($plan.modules? | default []) {
-        run-module-setup $ygg_home $mod_entry --dry-run=$dry_run --force=$force --sandbox=$effective_sandbox
+    for mod_entry in $plan_mods {
+        run-module-setup $ygg_home $mod_entry --force=$force --sandbox=$effective_sandbox
     }
 
-    print $"Applied ($plan.modules? | default [] | length) module\(s\)."
+    print $"Applied ($mod_count) module\(s\)."
 
+    for f in $link_res.failed {
+        print -e $"[ygg] Error: failed to link '($f.dest)' -> '($f.src)' \(($f.module)\): ($f.stderr)"
+    }
+
+    mut errors = []
     if ($pkg_res.failed | is-not-empty) {
         let failed_mgrs = ($pkg_res.failed | get mgr | str join ", ")
-        error make { msg: $"Package installation failed for: ($failed_mgrs)" }
+        $errors = ($errors | append $"Package installation failed for: ($failed_mgrs)")
     }
+    if ($link_res.failed | is-not-empty) {
+        $errors = ($errors | append $"($link_res.failed | length) link\(s\) failed: ($link_res.failed | get dest | str join ', ')")
+    }
+    if ($errors | is-not-empty) {
+        error make { msg: ($errors | str join "; ") }
+    }
+}
+
+# Show planned changes across all modules without modifying the filesystem
+def "main diff" [
+    --all (-a),
+    --skip-packages (-S),
+    --pkg: string = "",
+    --sandbox: string = ""
+] {
+    # --pkg (manager selection, RFC-013) is accepted for the CLI contract and wired into apply in a later stage
+    main apply --dry-run --all=$all --skip-packages=$skip_packages --sandbox=$sandbox
 }
 
 # Update git modules via rebase and apply if clean
