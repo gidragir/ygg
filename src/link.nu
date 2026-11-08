@@ -193,6 +193,68 @@ def sync-single-file [
     }
 }
 
+# Generate a .cmd shim for .nu / .ps1 executable scripts in bin/ on Windows
+def write-cmd-shim [dest: string]: nothing -> string {
+    let ext = ($dest | path parse | get extension)
+    let parent_name = ($dest | path dirname | path basename)
+    if ($parent_name == "bin") and ($ext in ["nu", "ps1"]) {
+        let stem = ($dest | path parse | get stem)
+        let cmd_shim = (($dest | path dirname) | path join $"($stem).cmd")
+        let shim_content = if ($ext == "nu") {
+            $"@echo off\r\nnu \"%~dp0($dest | path basename)\" %*\r\n"
+        } else {
+            $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"%~dp0($dest | path basename)\" %*\r\n"
+        }
+        $shim_content | save -f $cmd_shim
+        return $cmd_shim
+    }
+    ""
+}
+
+# Safely prune a tracked file copy: delete cleanly if unedited on host, otherwise backup
+def prune-copy [ygg_home: string, dest: string, last_synced_hash: string]: nothing -> nothing {
+    if (is-link-or-junction $dest) {
+        return
+    }
+    let ptype: any = ($dest | path type)
+    if ($ptype != "file") {
+        return
+    }
+
+    let current_hash = (open --raw $dest | hash sha256)
+    if ($last_synced_hash != "") and ($current_hash == $last_synced_hash) {
+        try { rm -f $dest }
+    } else {
+        backup-existing $ygg_home $dest | ignore
+    }
+}
+
+# Prepare destination before linking: remove link/junction, preserve tracked copy if unchanged, or backup
+def prepare-dest [
+    state: record,
+    ygg_home: string,
+    dest: string,
+    keeps_copy: bool,
+    force: bool
+]: nothing -> nothing {
+    if (is-link-or-junction $dest) {
+        remove-link-only $dest
+        return
+    }
+
+    let ptype: any = ($dest | path type)
+    if ($ptype == null) {
+        return
+    }
+
+    let is_tracked_copy = ($dest in ($state.copies | columns))
+    if $keeps_copy and (not $force) and $is_tracked_copy and ($ptype == "file") {
+        return
+    }
+
+    backup-existing $ygg_home $dest | ignore
+}
+
 # Apply planned links, /* unfolding, .cmd shims, 3-way copy sync, and prune stale links
 export def apply-links [
     ygg_home: string,
@@ -246,15 +308,11 @@ export def apply-links [
                     let src_item = $it.name
                     $active_links = ($active_links | append $target_item)
 
-                    if not $dry_run {
-                        if (is-link-or-junction $target_item) {
-                            remove-link-only $target_item
-                        } else if ($target_item | path exists) {
-                            backup-existing $ygg_home $target_item
-                        }
+                    let is_item_dir = ($it.type == "dir")
+                    let keeps_copy = ($is_windows and not $is_item_dir)
 
-                        mut cmd_shim = ""
-                        let is_item_dir = ($it.type == "dir")
+                    if not $dry_run {
+                        prepare-dest $state $ygg_home $target_item $keeps_copy $force
 
                         if $is_windows {
                             if $is_item_dir {
@@ -263,26 +321,31 @@ export def apply-links [
                                 } else {
                                     ^ln -sfn $src_item $target_item
                                 }
+                                let link_record = {
+                                    module: $mod_name,
+                                    src: $src_item,
+                                    type: "junction",
+                                    cmd_shim: ""
+                                }
+                                $state.links = ($state.links | upsert $target_item $link_record)
+                                $applied_links = ($applied_links | append $target_item)
                             } else {
-                                # Check if executable script in bin
-                                let ext = ($target_item | path parse | get extension)
-                                let parent_name = ($target_item | path dirname | path basename)
-                                if ($parent_name == "bin") and ($ext in ["nu", "ps1"]) {
-                                    let stem = ($target_item | path parse | get stem)
-                                    $cmd_shim = (($target_item | path dirname) | path join $"($stem).cmd")
-                                    let shim_content = if ($ext == "nu") {
-                                        $"@echo off\r\nnu \"%~dp0($target_item | path basename)\" %*\r\n"
-                                    } else {
-                                        $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"%~dp0($target_item | path basename)\" %*\r\n"
-                                    }
-                                    $shim_content | save -f $cmd_shim
+                                let cmd_shim = (write-cmd-shim $target_item)
+                                let sync_res = (sync-single-file $state $mod_name $src_item $target_item $force)
+                                if ($sync_res.action == "conflict") {
+                                    print -e $"[ygg] Warning: 3-way sync conflict on '($target_item)' \(both host and module modified\). Preserving host version. Run 'ygg apply --force' to take the module version or 'ygg save --force' to keep the host version."
                                 }
+                                $state.copies = ($state.copies | upsert $target_item $sync_res.copy_record)
+                                $active_copies = ($active_copies | append $target_item)
 
-                                if ($nu.os-info.family == "windows") {
-                                    cp -f $src_item $target_item
-                                } else {
-                                    ^ln -sfn $src_item $target_item
+                                let link_record = {
+                                    module: $mod_name,
+                                    src: $src_item,
+                                    type: "copy",
+                                    cmd_shim: $cmd_shim
                                 }
+                                $state.links = ($state.links | upsert $target_item $link_record)
+                                $applied_links = ($applied_links | append $target_item)
                             }
                         } else {
                             # Unix symlink
@@ -291,26 +354,15 @@ export def apply-links [
                             if not $is_item_dir and ($parent_name == "bin") {
                                 try { ^chmod +x $src_item }
                             }
-                        }
-
-                        let is_copy = ($is_windows and not $is_item_dir)
-                        let link_record = {
-                            module: $mod_name,
-                            src: $src_item,
-                            type: (if $is_windows { if $is_item_dir { "junction" } else { "copy" } } else { "symlink" }),
-                            cmd_shim: $cmd_shim
-                        }
-                        $state.links = ($state.links | upsert $target_item $link_record)
-                        if $is_copy {
-                            let item_hash = (if ($src_item | path exists) { open --raw $src_item | hash sha256 } else { "" })
-                            $state.copies = ($state.copies | upsert $target_item {
+                            let link_record = {
                                 module: $mod_name,
                                 src: $src_item,
-                                dest: $target_item,
-                                last_synced_hash: $item_hash
-                            })
+                                type: "symlink",
+                                cmd_shim: ""
+                            }
+                            $state.links = ($state.links | upsert $target_item $link_record)
+                            $applied_links = ($applied_links | append $target_item)
                         }
-                        $applied_links = ($applied_links | append $target_item)
                     }
                 }
             }
@@ -319,17 +371,13 @@ export def apply-links [
             let dest = (expand-target-path $dest_raw --sandbox $effective_sandbox)
             $active_links = ($active_links | append $dest)
 
+            let is_src_dir = ((try { $src_path | path type }) == "dir")
+            let keeps_copy = ($is_windows and not $is_src_dir)
+
             if not $dry_run {
-                if (is-link-or-junction $dest) {
-                    remove-link-only $dest
-                } else if ($dest | path exists) {
-                    backup-existing $ygg_home $dest
-                }
+                prepare-dest $state $ygg_home $dest $keeps_copy $force
 
                 mkdir ($dest | path dirname)
-
-                let is_src_dir = ((try { $src_path | path type }) == "dir")
-                mut cmd_shim = ""
 
                 if $is_windows {
                     if $is_src_dir {
@@ -348,22 +396,11 @@ export def apply-links [
                         $applied_links = ($applied_links | append $dest)
                     } else {
                         # Single file on Windows: 3-way copy sync
-                        let parent_name = ($dest | path dirname | path basename)
-                        let ext = ($dest | path parse | get extension)
-                        if ($parent_name == "bin") and ($ext in ["nu", "ps1"]) {
-                            let stem = ($dest | path parse | get stem)
-                            $cmd_shim = (($dest | path dirname) | path join $"($stem).cmd")
-                            let shim_content = if ($ext == "nu") {
-                                $"@echo off\r\nnu \"%~dp0($dest | path basename)\" %*\r\n"
-                            } else {
-                                $"@echo off\r\npwsh -NoProfile -ExecutionPolicy Bypass -File \"%~dp0($dest | path basename)\" %*\r\n"
-                            }
-                            $shim_content | save -f $cmd_shim
-                        }
+                        let cmd_shim = (write-cmd-shim $dest)
 
                         let sync_res = (sync-single-file $state $mod_name $src_path $dest $force)
                         if ($sync_res.action == "conflict") {
-                            print -e $"[ygg] Warning: 3-way sync conflict on '($dest)' (both host and module modified). Preserving host version."
+                            print -e $"[ygg] Warning: 3-way sync conflict on '($dest)' \(both host and module modified\). Preserving host version. Run 'ygg apply --force' to take the module version or 'ygg save --force' to keep the host version."
                         }
                         $state.copies = ($state.copies | upsert $dest $sync_res.copy_record)
                         $active_copies = ($active_copies | append $dest)
@@ -416,7 +453,7 @@ export def apply-links [
             if not $dry_run {
                 let sync_res = (sync-single-file $state $mod_name $src_path $dest_file $force)
                 if ($sync_res.action == "conflict") {
-                    print -e $"[ygg] Warning: 3-way sync conflict on '($dest_file)' (both host and module modified). Preserving host version."
+                    print -e $"[ygg] Warning: 3-way sync conflict on '($dest_file)' \(both host and module modified\). Preserving host version. Run 'ygg apply --force' to take the module version or 'ygg save --force' to keep the host version."
                 }
                 $state.copies = ($state.copies | upsert $dest_file $sync_res.copy_record)
                 $synced_copies = ($synced_copies | append $dest_file)
@@ -432,8 +469,10 @@ export def apply-links [
                 let old_record = ($state.links | get $old_dest)
                 if (is-link-or-junction $old_dest) {
                     remove-link-only $old_dest
-                } else if ($old_record.type? == "copy") and ($old_dest | path exists) {
-                    try { rm -f $old_dest }
+                } else if ($old_record.type? == "copy") {
+                    let copy_entry = ($state.copies | get -o $old_dest)
+                    let last_hash = ($copy_entry.last_synced_hash? | default "")
+                    prune-copy $ygg_home $old_dest $last_hash
                 }
                 let shim = ($old_record.cmd_shim? | default "")
                 if ($shim != "") and ($shim | path exists) {
@@ -450,9 +489,9 @@ export def apply-links [
     for old_dest in $old_copies {
         if $old_dest not-in $active_copies {
             if not $dry_run {
-                if ($old_dest | path exists) and not (is-link-or-junction $old_dest) {
-                    try { rm -f $old_dest }
-                }
+                let copy_entry = ($state.copies | get -o $old_dest)
+                let last_hash = ($copy_entry.last_synced_hash? | default "")
+                prune-copy $ygg_home $old_dest $last_hash
             }
             $state.copies = ($state.copies | reject $old_dest)
         }
@@ -548,8 +587,10 @@ export def unlink-module [ygg_home: string, module_name: string]: nothing -> int
         if ($entry.module? | default "") == $module_name {
             if (is-link-or-junction $dest) {
                 remove-link-only $dest
-            } else if ($dest | path exists) {
-                try { rm -f $dest }
+            } else {
+                let copy_entry = ($state.copies | get -o $dest)
+                let last_hash = ($copy_entry.last_synced_hash? | default "")
+                prune-copy $ygg_home $dest $last_hash
             }
 
             let shim = ($entry.cmd_shim? | default "")

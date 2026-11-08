@@ -308,3 +308,238 @@ export def test_glob_dest_with_trailing_star [] {
         assert (not ($sb | path join ".local/bin/*" | path exists))
     }
 }
+
+export def test_windows_glob_file_copies_survive_repeated_apply [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "app_cfg")
+        mkdir ($m | path join "cfg")
+        "v1\n" | save -f ($m | path join "cfg" "a.yaml")
+
+        'name = "app_cfg"
+os = ["windows"]
+[links]
+"cfg/*" = "~/.config/app/*"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"app_cfg\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let plan = (resolve-effective-plan $home)
+            apply-links $home $plan --sandbox $sb
+            apply-links $home $plan --sandbox $sb
+
+            let target = ($sb | path join ".config" "app" "a.yaml")
+            let state_json = ($home | path join ".state" "state.json")
+            assert equal ($target | path type) "file"
+            assert equal (open --raw $target) "v1\n"
+            assert ($target in ((open $state_json).copies | columns))
+            let backups = (glob ($home | path join ".state" "backups" "**" "a.yaml"))
+            assert ($backups | is-empty)
+        }
+    }
+}
+
+export def test_windows_single_file_link_survives_repeated_apply [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "app_cfg")
+        mkdir $m
+        "v1\n" | save -f ($m | path join "app.toml")
+
+        'name = "app_cfg"
+os = ["windows"]
+[links]
+"app.toml" = "~/.config/app.toml"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"app_cfg\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let plan = (resolve-effective-plan $home)
+            apply-links $home $plan --sandbox $sb
+            apply-links $home $plan --sandbox $sb
+            apply-links $home $plan --sandbox $sb
+
+            let target = ($sb | path join ".config" "app.toml")
+            assert equal (open --raw $target) "v1\n"
+            let backups = (glob ($home | path join ".state" "backups" "**" "app.toml"))
+            assert ($backups | is-empty)
+        }
+    }
+}
+
+export def test_windows_copy_three_way_for_link_and_glob [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "mod1")
+        mkdir ($m | path join "cfg")
+        "init-single\n" | save -f ($m | path join "single.toml")
+        "init-glob\n" | save -f ($m | path join "cfg" "file.txt")
+
+        'name = "mod1"
+os = ["windows"]
+[links]
+"single.toml" = "~/.config/single.toml"
+"cfg/*" = "~/.config/cfg/*"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"mod1\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let plan = (resolve-effective-plan $home)
+            apply-links $home $plan --sandbox $sb
+
+            let target_single = ($sb | path join ".config" "single.toml")
+            let target_glob = ($sb | path join ".config" "cfg" "file.txt")
+            let repo_single = ($m | path join "single.toml")
+            let repo_glob = ($m | path join "cfg" "file.txt")
+
+            assert equal (open --raw $target_single) "init-single\n"
+            assert equal (open --raw $target_glob) "init-glob\n"
+
+            # 1. Host edit -> apply -> module updated
+            "host-edit-single\n" | save -f $target_single
+            "host-edit-glob\n" | save -f $target_glob
+            apply-links $home $plan --sandbox $sb
+            assert equal (open --raw $repo_single) "host-edit-single\n"
+            assert equal (open --raw $repo_glob) "host-edit-glob\n"
+
+            # 2. Module edit -> apply -> host updated
+            "mod-edit-single\n" | save -f $repo_single
+            "mod-edit-glob\n" | save -f $repo_glob
+            apply-links $home $plan --sandbox $sb
+            assert equal (open --raw $target_single) "mod-edit-single\n"
+            assert equal (open --raw $target_glob) "mod-edit-glob\n"
+
+            # 3. Both sides different -> apply -> neither modified (conflict)
+            "both-host-single\n" | save -f $target_single
+            "both-mod-single\n" | save -f $repo_single
+            "both-host-glob\n" | save -f $target_glob
+            "both-mod-glob\n" | save -f $repo_glob
+            apply-links $home $plan --sandbox $sb
+            assert equal (open --raw $target_single) "both-host-single\n"
+            assert equal (open --raw $repo_single) "both-mod-single\n"
+            assert equal (open --raw $target_glob) "both-host-glob\n"
+            assert equal (open --raw $repo_glob) "both-mod-glob\n"
+
+            # 4. Apply with --force -> host = module, previous host version in backups
+            apply-links $home $plan --sandbox $sb --force
+            assert equal (open --raw $target_single) "both-mod-single\n"
+            assert equal (open --raw $target_glob) "both-mod-glob\n"
+
+            let b_single = (glob ($home | path join ".state" "backups" "**" "single.toml"))
+            assert equal ($b_single | length) 1
+            assert equal (open --raw ($b_single | first)) "both-host-single\n"
+
+            let b_glob = (glob ($home | path join ".state" "backups" "**" "file.txt"))
+            assert equal ($b_glob | length) 1
+            assert equal (open --raw ($b_glob | first)) "both-host-glob\n"
+        }
+    }
+}
+
+export def test_windows_stale_copy_with_host_edit_goes_to_backups [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "app_cfg")
+        mkdir ($m | path join "cfg")
+        "v1\n" | save -f ($m | path join "cfg" "a.yaml")
+
+        'name = "app_cfg"
+os = ["windows"]
+[links]
+"cfg/*" = "~/.config/app/*"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"app_cfg\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let plan = (resolve-effective-plan $home)
+            apply-links $home $plan --sandbox $sb
+
+            let target = ($sb | path join ".config" "app" "a.yaml")
+            assert ($target | path exists)
+
+            # Host edit
+            "edited-on-host\n" | save -f $target
+
+            # Remove file from module
+            rm ($m | path join "cfg" "a.yaml")
+
+            # Apply again to prune stale links/copies
+            let new_plan = (resolve-effective-plan $home)
+            apply-links $home $new_plan --sandbox $sb
+
+            assert (not ($target | path exists))
+            let backups = (glob ($home | path join ".state" "backups" "**" "a.yaml"))
+            assert equal ($backups | length) 1
+            assert equal (open --raw ($backups | first)) "edited-on-host\n"
+        }
+    }
+}
+
+export def test_windows_stale_unedited_copy_is_removed_without_backup [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "app_cfg")
+        mkdir ($m | path join "cfg")
+        "v1\n" | save -f ($m | path join "cfg" "a.yaml")
+
+        'name = "app_cfg"
+os = ["windows"]
+[links]
+"cfg/*" = "~/.config/app/*"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"app_cfg\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let plan = (resolve-effective-plan $home)
+            apply-links $home $plan --sandbox $sb
+
+            let target = ($sb | path join ".config" "app" "a.yaml")
+            assert ($target | path exists)
+
+            # Remove file from module
+            rm ($m | path join "cfg" "a.yaml")
+
+            # Apply again to prune stale links/copies
+            let new_plan = (resolve-effective-plan $home)
+            apply-links $home $new_plan --sandbox $sb
+
+            assert (not ($target | path exists))
+            let backups = (glob ($home | path join ".state" "backups" "**" "a.yaml"))
+            assert ($backups | is-empty)
+        }
+    }
+}
+
+export def test_windows_copy_turned_directory_is_backed_up [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "mod1")
+        mkdir $m
+        "file-content\n" | save -f ($m | path join "item")
+
+        'name = "mod1"
+os = ["windows"]
+[links]
+"item" = "~/.config/item"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"mod1\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            # 1. First apply: "item" is a single file copy
+            let plan1 = (resolve-effective-plan $home)
+            apply-links $home $plan1 --sandbox $sb
+            let target = ($sb | path join ".config" "item")
+            assert equal ($target | path type) "file"
+            assert equal (open --raw $target) "file-content\n"
+
+            # 2. In module, replace file "item" with a directory "item" containing "sub.txt"
+            rm ($m | path join "item")
+            mkdir ($m | path join "item")
+            "sub-content\n" | save -f ($m | path join "item" "sub.txt")
+
+            # 3. Second apply: file should be backed up and junction (symlink) created without error
+            let plan2 = (resolve-effective-plan $home)
+            apply-links $home $plan2 --sandbox $sb
+            assert equal ($target | path type) "symlink"
+            assert equal (open --raw ($target | path join "sub.txt")) "sub-content\n"
+
+            let backups = (glob ($home | path join ".state" "backups" "**" "item"))
+            assert equal ($backups | length) 1
+            assert equal (open --raw ($backups | first)) "file-content\n"
+        }
+    }
+}
