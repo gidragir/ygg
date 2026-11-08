@@ -5,6 +5,23 @@ use std/assert
 
 const YGG_BIN = (path self | path dirname | path dirname | path join "bin" "ygg.nu")
 const WT_ROOT = "/data/projects/worktree/ygg-phase2"
+const YGG_SRC = (path self | path dirname | path dirname | path join "src")
+
+# `ygg apply` under sandbox never installs packages (install-packages returns early), so the effective
+# package commands are computed in-process in a child nu: mock log set, no sandbox arg, YGG_SANDBOX unset.
+def effective-packages [sb: record]: nothing -> string {
+    "" | save -f $sb.pkg_log
+    let res = (with-env {
+        HOME: $sb.home,
+        YGG_HOME: $sb.ygg_home,
+        YGG_HOST_OS_OVERRIDE: "cachyos",
+        YGG_MOCK_PKG_LOG: $sb.pkg_log
+    } {
+        ^nu -I $YGG_SRC -c 'hide-env -i YGG_SANDBOX; use manifest.nu [resolve-effective-plan]; use pkg.nu [install-packages]; install-packages (resolve-effective-plan $env.YGG_HOME) | ignore'
+    } | complete)
+    assert ($res.exit_code == 0) $"in-process package resolution failed: ($res.stderr)"
+    open --raw $sb.pkg_log
+}
 
 def make-sandbox [name: string]: nothing -> record<root: string, ygg_home: string, home: string, pkg_log: string> {
     let id = (random chars --length 6)
@@ -134,7 +151,7 @@ GEMINI_API_KEY = "gem-test-key"
         assert (($sb.home | path join ".config" "systemd" "user" "openrgb.service") | path exists)
         let disp_pc = (open --raw ($sb.home | path join ".config" "niri" "cfg" "display.kdl"))
         assert ($disp_pc | str contains "DP-2") "PC display.kdl must configure desktop DP-2 monitor"
-        let pkgs_pc = (open --raw $sb.pkg_log)
+        let pkgs_pc = (effective-packages $sb)
         assert ($pkgs_pc | str contains "openrgb") "PC packages must include openrgb"
         assert (not ($pkgs_pc | str contains "asusctl")) "PC packages must NOT include asusctl"
 
@@ -172,7 +189,7 @@ scopes = ["asus"]
         assert (not (($sb.home | path join ".zsh" "alias" "cooler.zsh") | path exists)) "cooler.zsh must be pruned on @asus"
         let disp_asus = (open --raw ($sb.home | path join ".config" "niri" "cfg" "display.kdl"))
         assert (not ($disp_asus | str contains "DP-2")) "ASUS display.kdl must not contain desktop DP-2 layout"
-        let pkgs_asus = (open --raw $sb.pkg_log)
+        let pkgs_asus = (effective-packages $sb)
         assert ($pkgs_asus | str contains "asusctl") "ASUS packages must include asusctl"
         assert (not ($pkgs_asus | str contains "openrgb")) "ASUS packages must NOT include openrgb"
     } catch { |e|
