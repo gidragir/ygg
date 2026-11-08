@@ -100,3 +100,73 @@ export def test_cli_sdk_subcommands [] {
         }
     }
 }
+
+export def test_apply_refuses_prune_all_without_force [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "my-mod")
+        mkdir ($mod_src | path join "conf")
+        "key = val" | save -f ($mod_src | path join "conf" "app.conf")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            cd $mod_src
+            ^nu $ygg_bin init "my-mod" --os "linux,cachyos"
+            "[links]\nconf = \"~/.config/conf\"\n" | save --append ($mod_src | path join "ygg.toml")
+            ^nu $ygg_bin add $mod_src
+
+            let target_link = ($sb | path join ".config" "conf")
+            assert ($target_link | path exists)
+
+            let state_file = ($home | path join ".state" "state.json")
+            let initial_state = (open $state_file)
+            assert (($initial_state.links | columns | length) > 0)
+
+            # 1. Broken host.toml -> exit_code != 0, link exists, state.links unmodified
+            let broken_toml = "[[modules\nname = invalid\n"
+            $broken_toml | save -f ($home | path join "host.toml")
+
+            let res_broken = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert ($res_broken.exit_code != 0)
+            assert ($target_link | path exists)
+            let state_after_broken = (open $state_file)
+            assert equal $state_after_broken.links $initial_state.links
+
+            # 2. modules = [] -> exit_code != 0, link exists, stderr contains --force
+            "modules = []\n" | save -f ($home | path join "host.toml")
+            let res_empty = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert ($res_empty.exit_code != 0)
+            assert ($target_link | path exists)
+            assert ($res_empty.stderr | str contains "--force")
+
+            # 3. modules = [] + apply --force -> exit_code == 0, link pruned
+            let res_force = (^nu $ygg_bin apply --force --sandbox $sb | complete)
+            assert equal $res_force.exit_code 0
+            assert (not ($target_link | path exists))
+            let state_after_force = (open $state_file)
+            assert equal ($state_after_force.links | columns | length) 0
+        }
+    }
+}
+
+export def test_add_does_not_overwrite_broken_host_toml [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "another-mod")
+        mkdir $mod_src
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            cd $mod_src
+            ^nu $ygg_bin init "another-mod" --os "linux,cachyos"
+
+            let host_file = ($home | path join "host.toml")
+            let broken_content = "[[modules\nname = bad_syntax\n"
+            $broken_content | save -f $host_file
+
+            let res = (^nu $ygg_bin add $mod_src | complete)
+            assert ($res.exit_code != 0)
+            assert equal (open --raw $host_file) $broken_content
+        }
+    }
+}
+

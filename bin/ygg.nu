@@ -120,6 +120,13 @@ def "main apply" [
 
     let plan = (resolve-effective-plan $ygg_home)
 
+    let state = (load-state $ygg_home)
+    let plan_mods = ($plan.modules? | default [])
+    let state_links = ($state.links? | default {})
+    if ($plan_mods | is-empty) and ($state_links | columns | is-not-empty) and (not $force) {
+        error make { msg: "Plan contains 0 modules but active links exist. Refusing to prune all links without --force." }
+    }
+
     # 1. Install packages
     install-packages $plan --dry-run=$dry_run --sandbox=$effective_sandbox | ignore
 

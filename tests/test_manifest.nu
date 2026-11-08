@@ -73,6 +73,14 @@ export def test_load_and_save_host_config [] {
     }
 }
 
+export def test_load_host_config_rejects_broken_toml [] {
+    with-temp-ygg { |home|
+        "[[modules\nname = bad\n" | save -f ($home | path join "host.toml")
+        let failed = (try { load-host-config $home; false } catch { true })
+        assert $failed
+    }
+}
+
 export def test_load_module_manifest_with_merges [] {
     with-temp-ygg { |home|
         let mod_dir = ($home | path join "modules" "custom")

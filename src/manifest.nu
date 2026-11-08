@@ -16,8 +16,8 @@ export def load-host-config [ygg_home: string]: nothing -> record {
         let loaded = (open $host_file)
         let mods = ($loaded.modules? | default [])
         $loaded | merge { modules: $mods }
-    } catch {
-        $default_cfg
+    } catch { |e|
+        error make { msg: $"Cannot parse ($host_file): ($e.msg). Refusing to continue." }
     }
 }
 
