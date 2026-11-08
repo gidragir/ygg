@@ -185,4 +185,38 @@ export def test_sandbox_without_ygg_home_is_refused [] {
     }
 }
 
+export def test_apply_fails_after_completing_when_package_manager_fails [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "pkg-fail-mod")
+        mkdir ($mod_src | path join "conf")
+        "key = val" | save -f ($mod_src | path join "conf" "app.conf")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env {
+            YGG_HOME: $home,
+            YGG_SANDBOX: $sb,
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: ($home | path join "pkg.log"),
+            YGG_MOCK_PKG_FAIL: "pacman"
+        } {
+            cd $mod_src
+            ^nu $ygg_bin init "pkg-fail-mod" --os "linux,cachyos"
+            "[packages]\npacman = [\"curl\"]\n\n[links]\nconf = \"~/.config/conf\"\n" | save --append ($mod_src | path join "ygg.toml")
+
+            let mod_target = ($home | path join "modules" "pkg-fail-mod")
+            mkdir ($home | path join "modules")
+            ^ln -s $mod_src $mod_target
+            "[[modules]]\nname = \"pkg-fail-mod\"\n" | save -f ($home | path join "host.toml")
+
+            let res = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert ($res.exit_code != 0)
+            assert ($res.stderr | str contains "pacman")
+            assert ($res.stdout | str contains "Applied 1 module")
+            let target_link = ($sb | path join ".config" "conf")
+            assert ($target_link | path exists)
+        }
+    }
+}
+
 

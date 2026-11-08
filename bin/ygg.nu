@@ -132,7 +132,7 @@ def "main apply" [
     }
 
     # 1. Install packages
-    install-packages $plan --dry-run=$dry_run --sandbox=$effective_sandbox | ignore
+    let pkg_res = (install-packages $plan --dry-run=$dry_run --sandbox=$effective_sandbox)
 
     # 2. Deploy links and file copies
     apply-links $ygg_home $plan --dry-run=$dry_run --force=$force --sandbox=$effective_sandbox | ignore
@@ -146,6 +146,11 @@ def "main apply" [
     }
 
     print $"Applied ($plan.modules? | default [] | length) module\(s\)."
+
+    if ($pkg_res.failed | is-not-empty) {
+        let failed_mgrs = ($pkg_res.failed | get mgr | str join ", ")
+        error make { msg: $"Package installation failed for: ($failed_mgrs)" }
+    }
 }
 
 # Update git modules via rebase and apply if clean

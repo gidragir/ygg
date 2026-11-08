@@ -32,7 +32,26 @@ mise = ["ripgrep"]' | save -f ($m1 | path join "ygg.toml")
     }
 }
 
-export def test_mock_pkg_sandbox_skips_installation [] {
+export def test_sandbox_without_mock_skips_installation [] {
+    with-temp-ygg { |home|
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["linux"]
+[packages]
+pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_SANDBOX: "/tmp/sb" } {
+            let res = (install-packages (resolve-effective-plan $home) --sandbox "/tmp/sb")
+            assert (($res | describe) starts-with "record")
+            assert equal $res.executed []
+            assert equal $res.failed []
+        }
+    }
+}
+
+export def test_mock_pkg_runs_under_sandbox [] {
     with-temp-ygg { |home|
         let log = ($home | path join "pkg.log")
         let m1 = ($home | path join "modules" "m")
@@ -43,10 +62,13 @@ os = ["linux"]
 pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
 
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_SANDBOX: "/tmp/sb" } {
             let res = (install-packages (resolve-effective-plan $home) --sandbox "/tmp/sb")
-            assert equal $res []
-            assert (not ($log | path exists))
+            assert ($log | path exists)
+            let lines = (open --raw $log)
+            assert ($lines | str contains "pacman")
+            assert (($res.executed | length) > 0)
+            assert equal $res.failed []
         }
     }
 }
@@ -64,9 +86,58 @@ pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
 
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
             let res = (install-packages (resolve-effective-plan $home) --dry-run)
-            assert (($res | length) > 0)
-            assert ($res | first | str contains "pacman")
+            assert (($res.executed | length) > 0)
+            assert ($res.executed | first | str contains "pacman")
+            assert equal $res.failed []
             assert (not ($log | path exists))
+        }
+    }
+}
+
+export def test_pkg_failure_is_reported [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["linux"]
+[packages]
+pacman = ["curl"]
+cargo = ["ripgrep"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env {
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: $log,
+            YGG_MOCK_PKG_FAIL: "pacman"
+        } {
+            let res = (install-packages (resolve-effective-plan $home))
+            assert equal ($res.failed | length) 1
+            assert equal $res.failed.0.mgr "pacman"
+            assert ($log | path exists)
+            let lines = (open --raw $log)
+            assert ($lines | str contains "cargo")
+            assert (not ($lines | str contains "pacman"))
+        }
+    }
+}
+
+export def test_mise_writes_local_config [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["linux"]
+[packages]
+mise = ["ripgrep"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+            install-packages (resolve-effective-plan $home)
+            let lines = (open --raw $log)
+            assert ($lines | str contains "mise use --path ~/.config/mise/config.local.toml ripgrep")
+            assert (not ($lines | str contains "mise use -g"))
         }
     }
 }
