@@ -39,9 +39,64 @@ name = "override"
             let dests = ($plan.links | get dest_raw)
             assert ("~/.config/rog" in $dests)
             assert (not ("~/.config/OpenRGB" in $dests))
-            let star = ($plan.links | where dest_raw == "~/.config/starship.toml" | first)
-            assert equal $star.module "override"
+            # RFC-010: plan keeps ALL candidates; winner is chosen by resolve-link-targets
+            let stars = ($plan.links | where dest_raw == "~/.config/starship.toml" | sort-by module_rank)
+            assert equal ($stars | length) 2
+            assert equal ($stars | get module_rank) [0, 1]
+            assert equal ($stars | get module) ["base", "override"]
+            assert equal ($stars | get origin_rank) [0, 0]
+            # scope link carries the scope origin_rank (> 0)
+            let rog = ($plan.links | where key == "rog" | first)
+            assert ($rog.origin_rank > 0)
         }
+    }
+}
+
+export def test_manifest_1_to_n_and_table_link_forms [] {
+    with-temp-ygg { |home|
+        let m = ($home | path join "modules" "m")
+        mkdir $m
+        'name = "m"
+os = ["linux"]
+[links]
+"glazewm" = ["~/.config/glazewm", "~/.glzr/glazewm"]
+[links."niri/cfg/*"]
+target = "~/.config/niri/cfg/*"
+on_change = "niri msg action reload-config"
+[links."openrgb"]
+target = "~/.config/OpenRGB"
+mode = "dir"
+[save]
+"settings.json" = ["~/.config/app/s.json", "~/.local/share/app/s.json"]
+' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        assert equal ($plan.links | where key == "glazewm" | length) 2
+        let niri_entry = ($plan.links | where key == "niri/cfg/*" | first)
+        assert equal $niri_entry.on_change "niri msg action reload-config"
+        let orgb_entry = ($plan.links | where key == "openrgb" | first)
+        assert equal $orgb_entry.mode "dir"
+        assert equal ($plan.save | where key == "settings.json" | length) 2
+    }
+}
+
+export def test_manifest_rejects_invalid_link_table_and_mode [] {
+    with-temp-ygg { |home|
+        let m = ($home | path join "modules" "m")
+        mkdir $m
+        # 1. Table without target
+        "name = \"m\"\nos = [\"linux\"]\n[links.a]\non_change = \"echo 1\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        assert (try { resolve-effective-plan $home; false } catch { true })
+
+        # 2. Unknown mode (e.g. merge)
+        "name = \"m\"\nos = [\"linux\"]\n[links.a]\ntarget = \"~/a\"\nmode = \"merge\"\n" | save -f ($m | path join "ygg.toml")
+        assert (try { resolve-effective-plan $home; false } catch { true })
+
+        # 3. mode with /*
+        "name = \"m\"\nos = [\"linux\"]\n[links.\"a/*\"]\ntarget = \"~/a/*\"\nmode = \"dir\"\n" | save -f ($m | path join "ygg.toml")
+        assert (try { resolve-effective-plan $home; false } catch { true })
     }
 }
 

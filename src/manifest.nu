@@ -256,6 +256,46 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
     $manifest
 }
 
+# Normalize a scalar-or-list value to list<string> (RFC-003)
+def to-string-list [value: any]: nothing -> list<string> {
+    if (($value | describe) starts-with "list") { $value } else { [$value] }
+}
+
+# Normalize a link value (string | list | table { target, on_change, mode }) (RFC-003, RFC-015, RFC-021)
+def normalize-link-value [key: string, value: any]: nothing -> record<targets: list<string>, on_change: string, mode: string> {
+    if not (($value | describe) starts-with "record") {
+        return { targets: (to-string-list $value), on_change: "", mode: "" }
+    }
+    if ($value.target? == null) {
+        error make { msg: $"Link '($key)': table form requires 'target'" }
+    }
+    let mode = ($value.mode? | default "")
+    if $mode not-in ["", "dir"] {
+        error make { msg: $"Link '($key)': unknown mode '($mode)' \(expected 'dir'\)" }
+    }
+    if ($mode != "") and ($key | str ends-with "/*") {
+        error make { msg: $"Link '($key)': mode cannot be combined with /*" }
+    }
+    { targets: (to-string-list $value.target), on_change: ($value.on_change? | default ""), mode: $mode }
+}
+
+# Replace base entries whose key is redefined in a scope; scoped entries take the scope origin_rank (RFC-010)
+def merge-link-entries [base: table, scoped: table]: nothing -> table {
+    if ($scoped | is-empty) {
+        return $base
+    }
+    let scoped_keys = ($scoped | get key)
+    $base | where { |b| $b.key not-in $scoped_keys } | append $scoped
+}
+
+# Convert a links/save record of a manifest into a candidate table with origin_rank
+def entries-with-rank [section: any, origin_rank: int]: nothing -> table {
+    if ($section == null) or (($section | describe) !~ '^record') {
+        return []
+    }
+    $section | transpose key value | each { |e| { key: $e.key, value: $e.value, origin_rank: $origin_rank } }
+}
+
 # Resolve effective plan across active modules and scopes
 export def resolve-effective-plan [ygg_home: string, --modules-filter: list<string> = []]: nothing -> record {
     let host_cfg = (load-host-config $ygg_home)
@@ -275,8 +315,11 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
     mut plan_env = {}
     mut plan_aliases = {}
     mut plan_path = []
+    mut key_order = 0
+    mut mod_rank = -1
 
     for mod_entry in $active_modules {
+        $mod_rank = $mod_rank + 1
         let mod_name = $mod_entry.name
         let mod_dir = if ($mod_entry.path? != null) and ($mod_entry.path != "") {
             if not ($mod_entry.path | path exists) {
@@ -307,10 +350,9 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
 
         # Collect module's packages
         mut mod_packages = $manifest.packages
-        # Collect module's links
-        mut mod_links = $manifest.links
-        # Collect module's save
-        mut mod_save = $manifest.save
+        # Collect module's links / save as candidate tables (origin_rank 0 = base, RFC-010)
+        mut mod_links = (entries-with-rank $manifest.links 0)
+        mut mod_save = (entries-with-rank $manifest.save 0)
         # Collect module's env
         mut mod_env = $manifest.env
         # Collect module's aliases
@@ -321,8 +363,10 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
             $mod_path = [$mod_path]
         }
 
-        # Merge in active scopes for this module
+        # Merge in active scopes for this module (origin_rank 1..N in active scope order)
+        mut scope_rank = 0
         for s_name in $active_scopes {
+            $scope_rank = $scope_rank + 1
             let scope_data = ($manifest.scope | get -o $s_name)
             if ($scope_data != null) {
                 # packages in scope
@@ -335,11 +379,11 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
                 }
                 # links in scope
                 if ($scope_data.links? != null) {
-                    $mod_links = ($mod_links | merge $scope_data.links)
+                    $mod_links = (merge-link-entries $mod_links (entries-with-rank $scope_data.links $scope_rank))
                 }
                 # save in scope
                 if ($scope_data.save? != null) {
-                    $mod_save = ($mod_save | merge $scope_data.save)
+                    $mod_save = (merge-link-entries $mod_save (entries-with-rank $scope_data.save $scope_rank))
                 }
                 # env in scope
                 if ($scope_data.env? != null) {
@@ -367,53 +411,57 @@ export def resolve-effective-plan [ygg_home: string, --modules-filter: list<stri
         # Handle excludes for links and save
         let excludes = ($mod_entry.exclude? | default [])
 
-        # Process links with collision resolution (Last-Module-Wins)
-        for link_key in ($mod_links | columns) {
-            let dest_raw = ($mod_links | get $link_key)
-            if ($link_key in $excludes) or ($dest_raw in $excludes) {
-                continue
-            }
+        # Collect ALL link candidates; priority is resolved by resolve-link-targets (RFC-003, RFC-010)
+        for entry in $mod_links {
+            let link_key = $entry.key
+            let spec = (normalize-link-value $link_key $entry.value)
+            for dest_raw in $spec.targets {
+                if ($link_key in $excludes) or ($dest_raw in $excludes) {
+                    continue
+                }
+                let clean_key = ($link_key | str replace --regex '^\./' '')
+                let base_rel = ($clean_key | str replace --regex '/\*$' '')
+                let src_path = ($mod_dir | path join $base_rel)
+                let is_glob = (($link_key | str ends-with "/*") or ($dest_raw | str ends-with "/*"))
 
-            let clean_key = ($link_key | str replace --regex '^\./' '')
-            let base_rel = ($clean_key | str replace --regex '/\*$' '')
-            let src_path = ($mod_dir | path join $base_rel)
-            let is_glob = (($link_key | str ends-with "/*") or ($dest_raw | str ends-with "/*"))
-
-            let link_record = {
-                module: $mod_name,
-                key: $link_key,
-                src_rel: $clean_key,
-                src_path: $src_path,
-                dest_raw: $dest_raw,
-                is_glob: $is_glob
-            }
-
-            if not $is_glob {
-                # Non-glob: replace existing link targeting the exact same dest_raw
-                $plan_links = ($plan_links | where { |it| $it.is_glob or ($it.dest_raw != $dest_raw) } | append $link_record)
-            } else {
-                # Glob link: append
-                $plan_links = ($plan_links | append $link_record)
+                $plan_links = ($plan_links | append {
+                    module: $mod_name,
+                    module_rank: $mod_rank,
+                    origin_rank: $entry.origin_rank,
+                    key_order: $key_order,
+                    key: $link_key,
+                    src_rel: $clean_key,
+                    src_path: $src_path,
+                    dest_raw: $dest_raw,
+                    is_glob: $is_glob,
+                    on_change: $spec.on_change,
+                    mode: $spec.mode
+                })
+                $key_order = $key_order + 1
             }
         }
 
-        # Process save
-        for save_key in ($mod_save | columns) {
-            let dest_raw = ($mod_save | get $save_key)
-            if ($save_key in $excludes) or ($dest_raw in $excludes) {
-                continue
+        # Collect ALL save candidates (1-to-N targets)
+        for entry in $mod_save {
+            let save_key = $entry.key
+            let spec = (normalize-link-value $save_key $entry.value)
+            for dest_raw in $spec.targets {
+                if ($save_key in $excludes) or ($dest_raw in $excludes) {
+                    continue
+                }
+                let clean_key = ($save_key | str replace --regex '^\./' '')
+                $plan_save = ($plan_save | append {
+                    module: $mod_name,
+                    module_rank: $mod_rank,
+                    origin_rank: $entry.origin_rank,
+                    key_order: $key_order,
+                    key: $save_key,
+                    src_rel: $clean_key,
+                    src_path: ($mod_dir | path join $clean_key),
+                    dest_raw: $dest_raw
+                })
+                $key_order = $key_order + 1
             }
-
-            let clean_key = ($save_key | str replace --regex '^\./' '')
-            let save_record = {
-                module: $mod_name,
-                key: $save_key,
-                src_rel: $clean_key,
-                src_path: ($mod_dir | path join $clean_key),
-                dest_raw: $dest_raw
-            }
-
-            $plan_save = ($plan_save | where { |it| $it.dest_raw != $dest_raw } | append $save_record)
         }
 
         # Merge packages across modules

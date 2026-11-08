@@ -601,3 +601,270 @@ os = ["linux"]
         assert ($m9 =~ '^..x')
     }
 }
+
+export def test_resolve_link_targets_priority_rules_and_collisions [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let early = ($home | path join "modules" "early")
+        let late = ($home | path join "modules" "late")
+        mkdir ($early | path join "pc") ($early | path join "zz") ($late | path join "cfg")
+        "early-pc-a\n" | save -f ($early | path join "pc" "a.kdl")
+        "early-scoped\n" | save -f ($early | path join "a.kdl")
+        "early-base-other\n" | save -f ($early | path join "other.kdl")
+        "early-zz-a\n" | save -f ($early | path join "zz" "a.kdl")
+        "early-zz-b\n" | save -f ($early | path join "zz" "b.kdl")
+        "early-same\n" | save -f ($early | path join "same.txt")
+        "late-cfg-a\n" | save -f ($late | path join "cfg" "a.kdl")
+        "late-cfg-b\n" | save -f ($late | path join "cfg" "b.kdl")
+        "late-same\n" | save -f ($late | path join "same.txt")
+
+        # Early module: explicit scope link into a dir that a LATER module globs into;
+        # base key "a.kdl" retargeted by the scope must beat base glob "zz/*".
+        'name = "early"
+os = ["linux"]
+[links]
+"a.kdl" = "~/.config/y/other.kdl"
+"zz/*" = "~/.config/y/*"
+"same.txt" = "~/.config/same.txt"
+[scope.pc.links]
+"pc/a.kdl" = "~/.config/app/a.kdl"
+"a.kdl" = "~/.config/y/a.kdl"
+' | save -f ($early | path join "ygg.toml")
+
+        # Late module: glob over ~/.config/app and an ABSOLUTE path equal to early's "~/.config/same.txt"
+        let abs_same = ($sb | path join ".config" "same.txt")
+        ('name = "late"
+os = ["linux"]
+[links]
+"cfg/*" = "~/.config/app/*"
+"same.txt" = "' + $abs_same + '"
+') | save -f ($late | path join "ygg.toml")
+
+        '[[modules]]
+name = "early"
+scopes = ["pc"]
+[[modules]]
+name = "late"
+' | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let resolved = (resolve-link-targets $plan --sandbox $sb)
+        let t = $resolved.targets
+        let app_a = ($sb | path join ".config" "app" "a.kdl")
+        let app_b = ($sb | path join ".config" "app" "b.kdl")
+        let y_a = ($sb | path join ".config" "y" "a.kdl")
+        let y_b = ($sb | path join ".config" "y" "b.kdl")
+        let y_other = ($sb | path join ".config" "y" "other.kdl")
+
+        # Rule 1: explicit scope link of EARLY module beats glob of LATE module
+        let w_app_a = ($t | where dest == $app_a)
+        assert equal ($w_app_a | length) 1
+        assert equal ($w_app_a | first | get module) "early"
+        assert equal ($w_app_a | first | get src) ($early | path join "pc" "a.kdl")
+        assert equal ($w_app_a | first | get is_glob_child) false
+        # Glob file not claimed by anyone else is still produced
+        let w_app_b = ($t | where dest == $app_b | first)
+        assert equal $w_app_b.module "late"
+        assert equal $w_app_b.is_glob_child true
+        assert equal $w_app_b.glob_dest_dir ($sb | path join ".config" "app")
+
+        # Rule 3 inside one module: scope-retargeted key beats base glob zz/*
+        let w_y_a = ($t | where dest == $y_a | first)
+        assert equal $w_y_a.src ($early | path join "a.kdl")
+        assert equal ($t | where dest == $y_other | length) 0
+        assert equal ($t | where dest == $y_b | first | get src) ($early | path join "zz" "b.kdl")
+
+        # "~/x" and absolute path are one target; later module wins (rule 2)
+        let w_same = ($t | where { |r| (normalize-case $r.dest) == (normalize-case $abs_same) })
+        assert equal ($w_same | length) 1
+        assert equal ($w_same | first | get module) "late"
+
+        # Collisions: cross-module recorded, intra-module NOT recorded
+        let c = $resolved.collisions
+        let c_app_a = ($c | where dest == $app_a)
+        assert equal ($c_app_a | length) 1
+        assert equal ($c_app_a | first | get winner_module) "early"
+        assert equal ($c_app_a | first | get loser_module) "late"
+        assert equal ($c | where dest == $y_a | length) 0
+        assert equal ($c | where { |r| ($r.dest | path basename) == "same.txt" } | length) 1
+        assert ($resolved.nesting_conflicts | is-empty)
+
+        # Unique destinations only
+        assert equal ($t | get dest | uniq | length) ($t | length)
+
+        # apply-links honours the resolution, and a second apply keeps glob/explicit overlap stable
+        apply-links $home $plan --sandbox $sb | ignore
+        assert equal (open --raw $app_a) "early-pc-a\n"
+        assert equal (open --raw $app_b) "late-cfg-b\n"
+        assert equal (open --raw $y_a) "early-scoped\n"
+        assert equal (open --raw $abs_same) "late-same\n"
+        let ino1 = (^stat -c "%i" $app_a | str trim)
+        let res2 = (apply-links $home $plan --sandbox $sb)
+        assert equal (^stat -c "%i" $app_a | str trim) $ino1
+        assert ($res2.applied | is-empty)
+    }
+
+    # Nesting: an explicit directory link that is a parent of another target
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m1 = ($home | path join "modules" "m1")
+        let m2 = ($home | path join "modules" "m2")
+        mkdir ($m1 | path join "dirsrc") $m2
+        "x\n" | save -f ($m1 | path join "dirsrc" "inner.txt")
+        "f\n" | save -f ($m2 | path join "f.txt")
+        "name = \"m1\"\nos = [\"linux\"]\n[links]\n\"dirsrc\" = \"~/.config/nest\"\n" | save -f ($m1 | path join "ygg.toml")
+        "name = \"m2\"\nos = [\"linux\"]\n[links]\n\"f.txt\" = \"~/.config/nest/f.txt\"\n" | save -f ($m2 | path join "ygg.toml")
+        "[[modules]]\nname = \"m1\"\n[[modules]]\nname = \"m2\"\n" | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let resolved = (resolve-link-targets $plan --sandbox $sb)
+        let parent = ($resolved.targets | where key == "dirsrc" | first)
+        assert equal $parent.is_dir true
+        let n = $resolved.nesting_conflicts
+        assert equal ($n | length) 1
+        assert equal ($n | first | get parent_dest) ($sb | path join ".config" "nest")
+        assert equal ($n | first | get child_dest) ($sb | path join ".config" "nest" "f.txt")
+        assert equal ($n | first | get module) "m2"
+        assert equal ($n | first | get key) "f.txt"
+
+        # Nesting is an error even in dry-run, and nothing is created
+        let err = (try { apply-links $home $plan --sandbox $sb --dry-run; "" } catch { |e| $e.msg })
+        assert ($err | str contains "ownership conflict")
+        assert (not ($sb | path join ".config" "nest" | path exists))
+    }
+}
+
+export def test_link_target_matches_and_idempotent_inode [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let wt1 = ($home | path join "wt1")
+        let wt2 = ($home | path join "wt2")
+        let manifest = "name = \"m\"\nos = [\"linux\"]\n[links]\n\"conf.toml\" = \"~/.config/conf.toml\"\n\"dirA\" = \"~/.config/thedir\"\n"
+        for wt in [$wt1, $wt2] {
+            mkdir ($wt | path join "dirA") ($wt | path join "dirB")
+            "a\n" | save -f ($wt | path join "dirA" "x.txt")
+            "b\n" | save -f ($wt | path join "dirB" "x.txt")
+            $manifest | save -f ($wt | path join "ygg.toml")
+        }
+        "v1\n" | save -f ($wt1 | path join "conf.toml")
+        "v2\n" | save -f ($wt2 | path join "conf.toml")
+        mkdir ($home | path join "modules")
+        let mod_link = ($home | path join "modules" "m")
+        ^ln -s $wt1 $mod_link
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        let conf = ($sb | path join ".config" "conf.toml")
+        let thedir = ($sb | path join ".config" "thedir")
+
+        # 1. Repeated apply is a no-op: same inode, empty applied
+        let r1 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+        assert equal ($r1.applied | length) 2
+        let ino_conf = (^stat -c "%i" $conf | str trim)
+        let ino_dir = (^stat -c "%i" $thedir | str trim)
+        let r2 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+        assert ($r2.applied | is-empty)
+        assert equal (^stat -c "%i" $conf | str trim) $ino_conf
+        assert equal (^stat -c "%i" $thedir | str trim) $ino_dir
+
+        # 2. Retarget module symlink to another worktree with the same files: still a match, inode kept
+        ^ln -sfn $wt2 $mod_link
+        assert (link-target-matches $conf ($mod_link | path join "conf.toml"))
+        let r3 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+        assert ($r3.applied | is-empty)
+        assert equal (^stat -c "%i" $conf | str trim) $ino_conf
+        assert equal (open --raw $conf) "v2\n"
+
+        # 3. Source change -> atomic swap; no .ygg-tmp-* next to dest nor inside old dir
+        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"conf.toml\" = \"~/.config/conf.toml\"\n\"dirB\" = \"~/.config/thedir\"\n" | save -f ($wt2 | path join "ygg.toml")
+        let r4 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+        assert equal $r4.applied [$thedir]
+        assert equal ($thedir | path type) "symlink"
+        assert equal (link-literal-target $thedir) ($mod_link | path join "dirB")
+        assert equal (open --raw ($thedir | path join "x.txt")) "b\n"
+        let tmp_near = (ls -a ($sb | path join ".config") | where { |it| ($it.name | path basename) =~ 'ygg-tmp' })
+        let tmp_inside = (ls -a ($wt2 | path join "dirA") | where { |it| ($it.name | path basename) =~ 'ygg-tmp' })
+        assert ($tmp_near | is-empty)
+        assert ($tmp_inside | is-empty)
+        assert (($wt2 | path join "dirA" "x.txt") | path exists)
+
+        # 4. link-target-matches unit cases
+        let lt = ($home | path join "lt")
+        mkdir ($lt | path join "real")
+        let src = ($lt | path join "real" "file")
+        "s\n" | save -f $src
+        let other = ($lt | path join "real" "other")
+        "o\n" | save -f $other
+        let abs_link = ($lt | path join "abs_link")
+        ^ln -s $src $abs_link
+        let rel_link = ($lt | path join "rel_link")
+        ^ln -s "real/file" $rel_link
+        let chain = ($lt | path join "chain")
+        ^ln -s $abs_link $chain
+        let plain = ($lt | path join "plain")
+        "p\n" | save -f $plain
+        assert (link-target-matches $abs_link $src)
+        assert (link-target-matches $rel_link $src)
+        assert (link-target-matches $chain $src)
+        assert (not (link-target-matches $abs_link $other))
+        assert (not (link-target-matches $plain $src))
+        assert (not (link-target-matches ($lt | path join "missing") $src))
+
+        # 5. Two dangling links to one missing path with different literal spelling (via dir symlink) do not match
+        let alias = ($lt | path join "alias")
+        ^ln -s ($lt | path join "real") $alias
+        let dead1 = ($lt | path join "dead1")
+        ^ln -s ($lt | path join "real" "missing") $dead1
+        assert (not (link-target-matches $dead1 ($alias | path join "missing")))
+        assert equal (normalize-case "/a/b/") "/a/b"
+    }
+}
+
+export def test_dir_copy_kept_on_apply_and_backed_up_on_prune_and_unlink [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "m")
+        mkdir ($m | path join "cfgdir")
+        "mod\n" | save -f ($m | path join "cfgdir" "a.txt")
+        "name = \"m\"\nos = [\"windows\"]\n[links]\n\"cfgdir\" = \"~/.config/cfgdir\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        let dest = ($sb | path join ".config" "cfgdir")
+
+        # Simulate an RFC-006 fallback result: a real directory copy recorded as dir_copy
+        mkdir $dest
+        "host-edit\n" | save -f ($dest | path join "a.txt")
+        mut st = (load-state $home)
+        $st.links = ($st.links | upsert $dest { module: "m", src: ($m | path join "cfgdir"), type: "dir_copy", cmd_shim: "" })
+        save-state $home $st
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            # Re-apply keeps the copy (OK with warning), no re-creation, no backup
+            let r = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+            assert ($r.applied | is-empty)
+            assert equal ($dest | path type) "dir"
+            assert equal (open --raw ($dest | path join "a.txt")) "host-edit\n"
+            assert equal ((load-state $home).links | get $dest | get type) "dir_copy"
+            assert (glob ($home | path join ".state" "backups" "**" "a.txt") | is-empty)
+
+            # unlink-module moves the copy to backups instead of leaving it untracked
+            assert equal (unlink-module $home "m") 1
+            assert (not ($dest | path exists))
+            let b = (glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt"))
+            assert equal ($b | length) 1
+            assert equal (open --raw ($b | first)) "host-edit\n"
+            assert (($m | path join "cfgdir" "a.txt") | path exists)
+
+            # prune (link removed from manifest) also goes through backup-existing
+            mkdir $dest
+            "host-edit-2\n" | save -f ($dest | path join "a.txt")
+            mut st2 = (load-state $home)
+            $st2.links = ($st2.links | upsert $dest { module: "m", src: ($m | path join "cfgdir"), type: "dir_copy", cmd_shim: "" })
+            save-state $home $st2
+            "name = \"m\"\nos = [\"windows\"]\n" | save -f ($m | path join "ygg.toml")
+            let r2 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+            assert equal $r2.pruned [$dest]
+            assert (not ($dest | path exists))
+            let b2 = (glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt") | each { |f| open --raw $f })
+            assert ("host-edit-2\n" in $b2)
+        }
+    }
+}
