@@ -88,7 +88,7 @@ export def onchange [
     }
 
     # 4. Execute block
-    do $block | ignore
+    do $block
 
     # 5. On success: update hash in state.json
     let st = (load-state $ygg_home)
@@ -123,6 +123,10 @@ export def merge-json [
         }
     }
 
+    if not (($fragment | describe) starts-with "record") {
+        error make { msg: $"Source fragment '($src_fragment)' is not a JSON object/record" }
+    }
+
     # 2. Resolve destination path with sandbox / token expansion
     let dest = (expand-target-path $dest_json)
     let dest_dir = ($dest | path dirname)
@@ -130,36 +134,60 @@ export def merge-json [
         mkdir $dest_dir
     }
 
-    # 3. Read existing JSON and handle symlinks
+    # 3. Read existing JSON before making any changes
     mut existing_record = {}
     let is_link = (is-link-or-junction $dest)
 
-    if $is_link {
-        let size = (try { ls -D $dest | get 0.size } catch { 0b })
-        if $size > 0b {
-            $existing_record = (try { open $dest } catch { {} })
+    if ($dest | path exists) {
+        let raw = (open --raw $dest)
+        let trimmed = ($raw | str trim)
+        if ($trimmed != "") {
+            let parsed = (try {
+                $raw | from json
+            } catch {
+                error make { msg: $"Destination file '($dest)' contains invalid JSON" }
+            })
+            if not (($parsed | describe) starts-with "record") {
+                error make { msg: $"Destination file '($dest)' JSON is not an object/record" }
+            }
+            $existing_record = $parsed
         }
-        remove-link-only $dest
-    } else if ($dest | path exists) {
-        let size = (try { ls -D $dest | get 0.size } catch { 0b })
-        if $size > 0b {
-            $existing_record = (try { open $dest } catch { {} })
-        }
+    } else if $is_link {
+        # Dangling symlink produces empty record {}
+        $existing_record = {}
+    } else {
+        # Missing destination produces empty record {}
+        $existing_record = {}
     }
 
     # 4. Merge deep: existing host data + declarative module fragment
     let merged = ($existing_record | merge deep $fragment)
 
-    # 5. Save physical file
-    $merged | to json --indent 2 | save -f $dest
-
-    # 6. Set permissions on Unix
-    if ($nu.os-info.family != "windows") {
-        try { ^chmod $mode $dest | complete | ignore } catch { }
+    # 5. Atomic write: write to tmp file in same directory, chmod, then mv -f
+    let tmp_file = $"($dest).tmp.(random chars --length 8)"
+    try {
+        $merged | to json --indent 2 | save -f $tmp_file
+        if ($nu.os-info.family != "windows") {
+            try { ^chmod $mode $tmp_file | complete | ignore } catch { }
+        }
+        if $is_link {
+            remove-link-only $dest
+        }
+        mv -f $tmp_file $dest
+        if ($nu.os-info.family != "windows") {
+            try { ^chmod $mode $dest | complete | ignore } catch { }
+        }
+    } catch { |err|
+        if ($tmp_file | path exists) {
+            rm -f $tmp_file
+        }
+        error make { msg: $err.msg }
     }
 }
 
 # Export secrets from $YGG_HOME/secrets.toml to a destination .env file with 0600 permissions.
+# NOTE: Uses single quotes (KEY='value') with '\' -> '\\' and '\'' -> '\''.
+# Limitation: python-dotenv interpolates ${VAR} even within single quotes; avoid ${...} in secrets or escape if needed.
 export def export-secrets [
     dest_dotenv: string,
     --keys: list<string> = []
@@ -194,10 +222,8 @@ export def export-secrets [
         let raw_val = ($sec_env | get $k | into string)
         let escaped_val = ($raw_val
             | str replace --all '\' '\\'
-            | str replace --all '"' '\"'
-            | str replace --all '$' '\$'
-            | str replace --all "\n" '\n')
-        $lines = ($lines | append $"($k)=\"($escaped_val)\"")
+            | str replace --all "'" "\\'")
+        $lines = ($lines | append $"($k)='($escaped_val)'")
     }
 
     let dest = (expand-target-path $dest_dotenv)

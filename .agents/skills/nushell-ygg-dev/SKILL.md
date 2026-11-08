@@ -82,7 +82,16 @@ if $res.exit_code != 0 {
   let escaped = ($val | str replace --all "'" "''")
   $"$env:($key) = '($escaped)'"
   ```
-* **`environment.d` / `.env`:** двойные кавычки с экранированием `\`, `"`, `$` и переносов строк.
+* **`environment.d`:** двойные кавычки с экранированием `\`, `"`, `$` и переносов строк:
+  ```nushell
+  let escaped = ($val | str replace --all '\' '\\' | str replace --all '"' '\"' | str replace --all '$' '\$' | str replace --all "\n" '\n')
+  $"($key)=\"($escaped)\""
+  ```
+* **`.env` (dotenv):** одинарные кавычки с экранированием `\` -> `\\` и `'` -> `\'`:
+  ```nushell
+  let escaped = ($val | str replace --all '\' '\\' | str replace --all "'" "\\'")
+  $"($key)='($escaped)'"
+  ```
 
 ## 6. Изоляция тестов (`tests/helpers.nu`)
 
