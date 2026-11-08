@@ -408,3 +408,124 @@ os = ["linux", "cachyos"]
         assert equal (($sb | path join ".config" "b.txt") | path type) "symlink"
     }
 }
+
+# Create a bare git repo in `home` whose single commit holds `files` (relative path -> content)
+def make-bare-module [home: string, name: string, files: record]: nothing -> string {
+    let bare = ($home | path join $"($name).git")
+    let work = ($home | path join $"work-($name)")
+    ^git init -q --bare -b main $bare
+    ^git clone -q $bare $work
+    ^git -C $work config user.email "t@t.local"
+    ^git -C $work config user.name "Tester"
+    for f in ($files | transpose path content) {
+        let p = ($work | path join $f.path)
+        mkdir ($p | path dirname)
+        $f.content | save -f $p
+    }
+    ^git -C $work add .
+    ^git -C $work commit -q -m "init"
+    ^git -C $work push -q -u origin main | complete | ignore
+    $bare
+}
+
+def snapshot-add [home: string, sb: string]: nothing -> record {
+    let host_file = ($home | path join "host.toml")
+    (snapshot-all $home $sb) | merge {
+        host: (if ($host_file | path exists) { open --raw $host_file } else { "" }),
+        modules: (snapshot-tree ($home | path join "modules"))
+    }
+}
+
+export def test_cli_add_dry_run_and_preflight_rollback [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let pkg_log = ($home | path join "pkg.log")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let clones = ($home | path join ".state" "tmp" "clone-*")
+
+        # Already registered module "keep" (no links)
+        let keep_src = ($home | path join "keep-mod")
+        mkdir $keep_src ($home | path join "modules") ($home | path join ".state" "backups") ($home | path join ".state" "env")
+        mkdir ($sb | path join ".config")
+        "name = \"keep\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($keep_src | path join "ygg.toml")
+        ^ln -s $keep_src ($home | path join "modules" "keep")
+        "[[modules]]\nname = \"keep\"\n" | save -f ($home | path join "host.toml")
+
+        # Local module with a valid directory link and a package
+        let good = ($home | path join "good-mod")
+        mkdir ($good | path join "app")
+        "x = 1\n" | save -f ($good | path join "app" "app.conf")
+        'name = "good"
+os = ["linux", "cachyos"]
+[packages]
+pacman = ["curl"]
+[links]
+app = "~/.config/app"
+' | save -f ($good | path join "ygg.toml")
+
+        # Local module whose link source is missing
+        let bad = ($home | path join "bad-mod")
+        mkdir $bad
+        'name = "bad"
+os = ["linux", "cachyos"]
+[packages]
+pacman = ["curl"]
+[links]
+"configs/nope" = "~/.config/nope"
+' | save -f ($bad | path join "ygg.toml")
+
+        # Remote-style modules (local bare repos)
+        let remote_ok = (make-bare-module $home "remote-ok" {
+            "ygg.toml": "name = \"remote-ok\"\nos = [\"linux\", \"cachyos\"]\n[links]\ncfg = \"~/.config/remote-cfg\"\n",
+            "cfg/a.conf": "a\n"
+        })
+        let remote_bad = (make-bare-module $home "remote-bad" {
+            "ygg.toml": "name = \"remote-bad\"\nos = [\"linux\", \"cachyos\"]\n[links]\n\"absent\" = \"~/.config/absent\"\n"
+        })
+
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $pkg_log } {
+            let before = (snapshot-add $home $sb)
+
+            # 1. Local dry-run: plan of the future module, nothing changes
+            let d1 = (^nu $ygg_bin add $good --dry-run --sandbox $sb | complete)
+            assert equal $d1.exit_code 0 $d1.stderr
+            let lines1 = ($d1.stdout | lines | each { |l| $l | str trim })
+            assert ($lines1 | any { |l| ($l | str starts-with "LINK") and ($l | str contains ($sb | path join ".config" "app")) and ($l | str contains "(good: app)") })
+            assert ($lines1 | any { |l| ($l | str starts-with "PKG") and ($l | str contains "curl") })
+            assert ($d1.stdout | str contains "across 2 module(s). No changes made.")
+            assert (not ($d1.stdout | str contains "Added module"))
+            assert equal (snapshot-add $home $sb) $before
+            assert (not ($pkg_log | path exists))
+
+            # 2. Remote dry-run: the temporary clone is removed afterwards
+            let d2 = (^nu $ygg_bin add $remote_ok --dry-run --sandbox $sb | complete)
+            assert equal $d2.exit_code 0 $d2.stderr
+            assert ($d2.stdout | lines | any { |l| ($l | str trim | str starts-with "LINK") and ($l | str contains "remote-cfg") })
+            assert equal (snapshot-add $home $sb) $before
+            assert (glob $clones | is-empty)
+
+            # 3. Real add with a missing source fails on pre-flight before registration
+            let r3 = (^nu $ygg_bin add $bad --sandbox $sb | complete)
+            assert ($r3.exit_code != 0)
+            assert ($r3.stderr | str contains "Pre-flight check failed")
+            assert ($r3.stderr | str contains "configs/nope")
+            assert equal (snapshot-add $home $sb) $before
+            assert (not ($pkg_log | path exists))
+
+            # 4. Same for a remote module: not registered, clone removed
+            let r4 = (^nu $ygg_bin add $remote_bad --sandbox $sb | complete)
+            assert ($r4.exit_code != 0)
+            assert ($r4.stderr | str contains "absent")
+            assert equal (snapshot-add $home $sb) $before
+            assert (glob $clones | is-empty)
+
+            # 5. Real add of the valid module registers and applies it
+            let r5 = (^nu $ygg_bin add $good --sandbox $sb | complete)
+            assert equal $r5.exit_code 0 $r5.stderr
+            assert ($r5.stdout | str contains "Added module good")
+            assert equal (($sb | path join ".config" "app") | path type) "symlink"
+            let names = (open ($home | path join "host.toml") | get modules | get name)
+            assert equal $names ["keep", "good"]
+        }
+    }
+}

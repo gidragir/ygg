@@ -28,7 +28,7 @@ def main [--version (-v)] {
     print ""
     print "Usage:"
     print "  ygg init [name] [--os <os_list>]        Initialize a new module with ygg.toml and .gitignore"
-    print "  ygg add <source> [--scope <scopes>]      Add local directory or git repo and apply"
+    print "  ygg add <source> [--scope <scopes>] [--dry-run] [--force]  Add local directory or git repo and apply"
     print "  ygg remove <name>                        Remove a module and unlink its files"
     print "  ygg apply [--dry-run] [--force] [--all]  Apply configurations, links, packages and setup"
     print "  ygg diff [--all]                         Show planned changes without modifying anything"
@@ -41,6 +41,7 @@ def main [--version (-v)] {
     print "  ygg onchange <key> <watch> <cmd>         Conditionally run command if watched files change"
     print "  ygg merge-json <fragment> <target>       Deep-merge JSON fragment into target file"
     print "  ygg export-secrets <dotenv>              Export selected secrets to environment dotenv"
+    print "  ygg safe-link <src> <dest>               Link dest to src, backing up a real file/dir at dest"
 }
 
 # Initialize a new module in the current directory
@@ -89,9 +90,13 @@ def "main init" [
 def "main add" [
     source: string,
     --scope (-s): string = "",
+    --dry-run (-n),
+    --force (-f),
     --skip-packages (-S),
+    --pkg: string = "",
     --sandbox: string = ""
 ] {
+    # --pkg (manager selection, RFC-013) is accepted for the CLI contract and wired in a later stage
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
 
@@ -115,10 +120,39 @@ def "main add" [
 
     let all_scopes = ($inline_scopes | append $flag_scopes | uniq)
 
-    let add_res = (add-module $ygg_home $clean_source --scopes $all_scopes)
+    # RFC-012: stage first (no change to modules/ or host.toml), check the plan with the module
+    # as a virtual entry, and register only after pre-flight passed (RFC-020).
+    let prep = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --force=$force)
+    let extra = [{ name: $prep.name, path: $prep.path, scopes: $all_scopes }]
+
+    if $dry_run {
+        try {
+            apply-plan --dry-run --force=$force --skip-packages=$skip_packages --sandbox=$effective_sandbox --extra-modules $extra
+        } catch { |e|
+            discard-staged-module $prep
+            error make { msg: $e.msg }
+        }
+        discard-staged-module $prep
+        return
+    }
+
+    try {
+        let plan = (resolve-effective-plan $ygg_home --extra-modules $extra)
+        let resolved = (resolve-link-targets $plan --sandbox=$effective_sandbox)
+        let ops = (compute-link-ops $ygg_home $resolved --force=$force --sandbox=$effective_sandbox)
+        let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --quiet --sandbox=$effective_sandbox)
+        if ($problems | is-not-empty) {
+            error make { msg: (format-preflight-errors $problems) }
+        }
+    } catch { |e|
+        discard-staged-module $prep
+        error make { msg: $e.msg }
+    }
+
+    let add_res = (register-staged-module $ygg_home $prep --force=$force)
     print $"Added module ($add_res.name)"
 
-    main apply --sandbox=$sandbox --skip-packages=$skip_packages
+    apply-plan --force=$force --skip-packages=$skip_packages --sandbox=$effective_sandbox
 }
 
 # Remove a module and unlink its managed files
@@ -144,6 +178,18 @@ def "main apply" [
     --skip-packages (-S),
     --sandbox: string = ""
 ] {
+    apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --sandbox=$sandbox
+}
+
+# Apply pipeline shared by `apply`, `diff` and `add` (--extra-modules: virtual modules, RFC-012)
+def apply-plan [
+    --dry-run,
+    --force,
+    --all,
+    --skip-packages,
+    --sandbox: string = "",
+    --extra-modules: list<record> = []
+] {
     let effective_sandbox = if ($sandbox != "") {
         $sandbox
     } else {
@@ -154,7 +200,7 @@ def "main apply" [
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
 
-    let plan = (resolve-effective-plan $ygg_home)
+    let plan = (resolve-effective-plan $ygg_home --extra-modules $extra_modules)
 
     let state = (load-state $ygg_home)
     let plan_mods = ($plan.modules? | default [])
@@ -314,4 +360,9 @@ def "main export-secrets" [
         []
     }
     export-secrets $dest_dotenv --keys=$key_list
+}
+
+# Idempotent link with backup of a real file/directory at dest (SDK helper, RFC-023)
+def "main safe-link" [src: string, dest: string] {
+    safe-link $src $dest
 }

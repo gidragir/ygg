@@ -314,3 +314,65 @@ export def test_export_secrets_warns_on_missing_requested_keys [] {
         assert ($written | str contains "PRESENT_KEY='val123'")
     }
 }
+
+export def test_safe_link_backs_up_real_dir_and_preserves_relative_src [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = $env.YGG_SANDBOX
+        let plugins = ($sb | path join ".hermes" "plugins")
+        let plugins2 = ($sb | path join ".hermes" "plugins2")
+        mkdir $plugins $plugins2
+        "p\n" | save -f ($plugins | path join "p.py")
+        let dest = ($sb | path join ".hermes" "profiles" "coder" "plugins")
+        mkdir $dest
+        "host data\n" | save -f ($dest | path join "local.txt")
+        let backups = ($home | path join ".state" "backups")
+
+        with-env { YGG_HOME: $home } {
+            # 1. Dry-run: nothing on disk changes
+            with-env { YGG_DRY_RUN: "true" } {
+                safe-link "../../plugins" "~/.hermes/profiles/coder/plugins"
+            }
+            assert equal ($dest | path type) "dir"
+            assert equal (open --raw ($dest | path join "local.txt")) "host data\n"
+            assert (ls $backups | is-empty)
+
+            # 2. Real directory: moved to backups, replaced by a link with the literal relative target
+            safe-link "../../plugins" "~/.hermes/profiles/coder/plugins"
+            assert equal ($dest | path type) "symlink"
+            assert equal (ls -lD $dest | get 0.target) "../../plugins"
+            assert (not ($plugins | path join "plugins" | path exists))
+            assert ($dest | path join "p.py" | path exists)
+            let saved = (glob ($backups | path join "**" "local.txt"))
+            assert equal ($saved | length) 1
+            assert equal (open --raw ($saved | first)) "host data\n"
+
+            # 3. Repeated call is a no-op (same inode)
+            let inode1 = (ls -lD $dest | get 0.inode)
+            safe-link "../../plugins" "~/.hermes/profiles/coder/plugins"
+            assert equal (ls -lD $dest | get 0.inode) $inode1
+            assert equal (glob ($backups | path join "**" "local.txt") | length) 1
+
+            # 4. A different target replaces the link (no nested link inside the old target)
+            safe-link "../../plugins2" "~/.hermes/profiles/coder/plugins"
+            assert equal (ls -lD $dest | get 0.target) "../../plugins2"
+            assert (not ($plugins2 | path join "plugins2" | path exists))
+            assert ($plugins | path join "p.py" | path exists)
+
+            # 5. Missing source is an error and creates nothing
+            let other = ($sb | path join ".hermes" "profiles" "gemini" "plugins")
+            let err = (try { safe-link "../../nope" "~/.hermes/profiles/gemini/plugins"; "ok" } catch { |e| $e.msg })
+            assert ($err | str contains "does not exist")
+            assert (($other | path type) == null)
+
+            # 6. Dry-run over an existing different link changes nothing
+            with-env { YGG_DRY_RUN: "true" } {
+                safe-link "../../plugins" "~/.hermes/profiles/coder/plugins"
+            }
+            assert equal (ls -lD $dest | get 0.target) "../../plugins2"
+        }
+
+        # 7. Static check: no recursive deletion in the SDK
+        assert (not (open --raw ($env.FILE_PWD | path join "../src/sdk.nu") | str contains "rm -rf"))
+    }
+}

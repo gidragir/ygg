@@ -2,17 +2,35 @@
 # Yggdrasil configuration manager — Module Git Manager & local directory linker
 
 use manifest.nu [load-host-config, save-host-config, load-module-manifest, validate-module-os]
-use link.nu [unlink-module, is-link-or-junction, remove-link-only]
+use link.nu [unlink-module, is-link-or-junction, remove-link-only, backup-with-notice]
 use state.nu [detect-host-os, load-state, ensure-ygg-dirs, to-win32-path]
 
-# Add a module from a local path or Git repository URL / shorthand (owner/repo)
-export def add-module [
-    ygg_home: string,
-    source: string,
-    --scopes: list<string> = []
-]: nothing -> record {
-    ensure-ygg-dirs $ygg_home
+# Raise when a real (non-link) Git module directory has uncommitted changes.
+# Shared guard of `add` (replacing the module) and `remove`.
+def assert-module-clean [mod_dir: string, name: string, action: string]: nothing -> nothing {
+    if not ($mod_dir | path exists) or (is-link-or-junction $mod_dir) {
+        return
+    }
+    if not ($mod_dir | path join ".git" | path exists) {
+        return
+    }
+    let st = (^git -C $mod_dir status --porcelain | complete)
+    if ($st.exit_code == 0) and ($st.stdout | str trim | is-not-empty) {
+        error make { msg: $"Cannot ($action) module '($name)': directory has uncommitted changes in '($mod_dir)'" }
+    }
+}
 
+# Remove the temporary clone of a staged module (no-op for local modules)
+export def discard-staged-module [prep: record]: nothing -> nothing {
+    let tmp = ($prep.tmp_clone? | default "")
+    if ($tmp != "") and ($tmp | path exists) {
+        rm -rf $tmp
+    }
+}
+
+# Stage a module without touching modules/ or host.toml (RFC-012).
+# Local directory: path = the expanded source; Git source: cloned into .state/tmp/clone-*.
+def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool]: nothing -> record {
     # A local module directory must exist on disk, contain ygg.toml, and not be a bare/git repository
     let is_local_dir = (
         ($source | path exists) and
@@ -20,40 +38,8 @@ export def add-module [
         not ($source | str ends-with ".git")
     )
 
-    if $is_local_dir {
-        let manifest = (load-module-manifest $source)
-        let host_os = (detect-host-os)
-        if not (validate-module-os $manifest $host_os) {
-            error make { msg: $"Module '($manifest.name)' does not support host OS '($host_os.os)' \(required: ($manifest.os | to json -r)\)" }
-        }
-
-        let mod_dest = ($ygg_home | path join "modules" $manifest.name)
-        if (is-link-or-junction $mod_dest) {
-            remove-link-only $mod_dest
-        } else if ($mod_dest | path exists) {
-            rm -rf $mod_dest
-        }
-
-        let exp_src = ($source | path expand)
-        if ($nu.os-info.family == "windows") {
-            let win_dest = (to-win32-path $mod_dest)
-            let win_src = (to-win32-path $exp_src)
-            ^cmd /c mklink /J $win_dest $win_src | complete | ignore
-        } else {
-            ^ln -sfn $exp_src $mod_dest
-        }
-
-        let host_cfg = (load-host-config $ygg_home)
-        let cur_mods = ($host_cfg.modules? | default [])
-        mut updated_mods = ($cur_mods | where { |m| $m.name != $manifest.name })
-        mut mod_record = { name: $manifest.name }
-        if ($scopes | is-not-empty) {
-            $mod_record = ($mod_record | upsert scopes $scopes)
-        }
-        $updated_mods = ($updated_mods | append $mod_record)
-        save-host-config $ygg_home ($host_cfg | upsert modules $updated_mods)
-
-        return { name: $manifest.name, path: $mod_dest, scopes: $scopes }
+    let staged = if $is_local_dir {
+        { path: ($source | path expand), tmp_clone: "" }
     } else {
         # Remote Git repository or local bare git repository
         let git_url = if not ($source | path exists) and not ($source | str contains "://") and not ($source | str starts-with "git@") and not ($source | str starts-with "ssh://") {
@@ -64,54 +50,100 @@ export def add-module [
 
         let tmp_parent = ($ygg_home | path join ".state" "tmp")
         mkdir $tmp_parent
-        let rand_id = (random chars --length 8)
-        let tmp_clone = ($tmp_parent | path join $"clone-($rand_id)")
+        let tmp_clone = ($tmp_parent | path join $"clone-(random chars --length 8)")
 
         let clone_res = (^git clone $git_url $tmp_clone | complete)
         if $clone_res.exit_code != 0 {
-            try { rm -rf $tmp_clone }
+            discard-staged-module { tmp_clone: $tmp_clone }
             error make { msg: $"Failed to clone '($source)': ($clone_res.stderr)" }
         }
+        { path: $tmp_clone, tmp_clone: $tmp_clone }
+    }
 
-        if not ($tmp_clone | path join "ygg.toml" | path exists) {
-            rm -rf $tmp_clone
+    try {
+        if not ($staged.path | path join "ygg.toml" | path exists) {
             error make { msg: $"Cloned repository '($source)' does not contain 'ygg.toml'" }
         }
-
-        let manifest = (try {
-            load-module-manifest $tmp_clone
-        } catch { |e|
-            rm -rf $tmp_clone
-            error make { msg: $e.msg }
-        })
-
+        let manifest = (load-module-manifest $staged.path)
         let host_os = (detect-host-os)
         if not (validate-module-os $manifest $host_os) {
-            rm -rf $tmp_clone
             error make { msg: $"Module '($manifest.name)' does not support host OS '($host_os.os)' \(required: ($manifest.os | to json -r)\)" }
         }
-
         let mod_dest = ($ygg_home | path join "modules" $manifest.name)
-        if (is-link-or-junction $mod_dest) {
-            remove-link-only $mod_dest
-        } else if ($mod_dest | path exists) {
-            rm -rf $mod_dest
+        let in_place = ($mod_dest | path exists) and (($mod_dest | path expand) == $staged.path)
+        if (not $force) and (not $in_place) {
+            assert-module-clean $mod_dest $manifest.name "replace"
         }
-
-        mv $tmp_clone $mod_dest
-
-        let host_cfg = (load-host-config $ygg_home)
-        let cur_mods = ($host_cfg.modules? | default [])
-        mut updated_mods = ($cur_mods | where { |m| $m.name != $manifest.name })
-        mut mod_record = { name: $manifest.name }
-        if ($scopes | is-not-empty) {
-            $mod_record = ($mod_record | upsert scopes $scopes)
-        }
-        $updated_mods = ($updated_mods | append $mod_record)
-        save-host-config $ygg_home ($host_cfg | upsert modules $updated_mods)
-
-        return { name: $manifest.name, path: $mod_dest, scopes: $scopes }
+        { name: $manifest.name, path: $staged.path, scopes: $scopes, tmp_clone: $staged.tmp_clone }
+    } catch { |e|
+        discard-staged-module $staged
+        error make { msg: $e.msg }
     }
+}
+
+# Finish `add` for a staged module: put it into modules/<name> and register it in host.toml.
+# A real module directory is moved to .state/backups/ (refused when dirty unless --force).
+export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record {
+    ensure-ygg-dirs $ygg_home
+    let mod_dest = ($ygg_home | path join "modules" $prep.name)
+    let is_local = (($prep.tmp_clone? | default "") == "")
+
+    try {
+        # Re-adding a module from its own modules/<name> path keeps the directory as is
+        let in_place = $is_local and (not (is-link-or-junction $mod_dest)) and ($mod_dest | path exists) and (($mod_dest | path expand) == $prep.path)
+        if not $in_place {
+            if (is-link-or-junction $mod_dest) {
+                remove-link-only $mod_dest
+            } else if (($mod_dest | path type) != null) {
+                if not $force {
+                    assert-module-clean $mod_dest $prep.name "replace"
+                }
+                backup-with-notice $ygg_home $mod_dest | ignore
+            }
+
+            if $is_local {
+                if ($nu.os-info.family == "windows") {
+                    ^cmd /c mklink /J (to-win32-path $mod_dest) (to-win32-path $prep.path) | complete | ignore
+                } else {
+                    ^ln -s $prep.path $mod_dest
+                }
+            } else {
+                mv $prep.tmp_clone $mod_dest
+            }
+        }
+    } catch { |e|
+        discard-staged-module $prep
+        error make { msg: $e.msg }
+    }
+
+    let host_cfg = (load-host-config $ygg_home)
+    let cur_mods = ($host_cfg.modules? | default [])
+    mut mod_record = { name: $prep.name }
+    if ($prep.scopes | is-not-empty) {
+        $mod_record = ($mod_record | upsert scopes $prep.scopes)
+    }
+    let updated_mods = ($cur_mods | where { |m| $m.name != $prep.name } | append $mod_record)
+    save-host-config $ygg_home ($host_cfg | upsert modules $updated_mods)
+
+    { name: $prep.name, path: $mod_dest, scopes: $prep.scopes, tmp_clone: "" }
+}
+
+# Add a module from a local path or Git repository URL / shorthand (owner/repo).
+# --dry-run only stages it ({ name, path, scopes, tmp_clone }); the caller must call
+# discard-staged-module afterwards. --force replaces a module directory with uncommitted changes.
+export def add-module [
+    ygg_home: string,
+    source: string,
+    --scopes: list<string> = [],
+    --dry-run,
+    --force
+]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string> {
+    ensure-ygg-dirs $ygg_home
+    let prep = (stage-module $ygg_home $source $scopes $force)
+    if $dry_run {
+        return $prep
+    }
+    register-staged-module $ygg_home $prep --force=$force
 }
 
 # Remove a module, safely unlinking files and guarding against uncommitted changes
@@ -119,14 +151,7 @@ export def remove-module [ygg_home: string, name: string]: nothing -> nothing {
     let mod_dir = ($ygg_home | path join "modules" $name)
 
     # If it is a real Git directory (not a symlink), guard against uncommitted changes
-    if ($mod_dir | path exists) and not (is-link-or-junction $mod_dir) {
-        if ($mod_dir | path join ".git" | path exists) {
-            let st = (^git -C $mod_dir status --porcelain | complete)
-            if ($st.exit_code == 0) and ($st.stdout | str trim | is-not-empty) {
-                error make { msg: $"Cannot remove module '($name)': directory has uncommitted changes in '($mod_dir)'" }
-            }
-        }
-    }
+    assert-module-clean $mod_dir $name "remove"
 
     # Safe unlinking of deployed links and copies
     unlink-module $ygg_home $name | ignore

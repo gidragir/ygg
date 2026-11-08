@@ -2,7 +2,7 @@
 # Yggdrasil configuration manager — Reactive SDK & setup.nu runner
 
 use state.nu [get-ygg-home, load-state, save-state, expand-target-path]
-use link.nu [is-link-or-junction, remove-link-only]
+use link.nu [is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
 
 const YGG_SRC_DIR = (path self | path dirname)
 
@@ -323,5 +323,69 @@ export def run-module-setup [
                 msg: $"setup.nu for module '($mod_plan.name? | default ($mod_dir | path basename))' failed with exit code ($res.exit_code): ($res.stderr)"
             }
         }
+    }
+}
+
+# Idempotent link for setup.nu scripts (RFC-023), same state table as apply (RFC-009):
+# matching link -> no-op; other/dangling link -> atomic swap; real file/dir -> backup-with-notice, then link.
+# A relative `src` is written literally and checked against dest's parent directory.
+# Not recorded in state.links and never PRUNEd: setup.nu owns these links.
+export def safe-link [src: string, dest: string]: nothing -> nothing {
+    let ygg_home = (get-ygg-home)
+    let is_dry = (($env.YGG_DRY_RUN? | default "false") == "true")
+    let is_windows = ($nu.os-info.family == "windows")
+    let target_dest = (expand-target-path $dest)
+    let dest_parent = ($target_dest | path dirname)
+    let is_abs = (is-path-absolute $src) or ($src | str starts-with "$")
+    let check_src = if $is_abs {
+        expand-target-path $src
+    } else {
+        $dest_parent | path join $src
+    }
+    # Literal link value: relative stays as is; ~ / tokens / absolute are written expanded
+    let link_src = if $is_abs { $check_src } else { $src }
+
+    if not ($check_src | path exists) {
+        error make { msg: $"safe-link: source '($src)' \(resolved to '($check_src)'\) does not exist" }
+    }
+    if $is_windows and (($check_src | path type) != "dir") {
+        error make { msg: $"safe-link: '($src)' is a file; on Windows only directories can be linked, use [save] for files" }
+    }
+    if (link-target-matches $target_dest $check_src) and ($target_dest | path exists) {
+        return
+    }
+    if $is_dry {
+        print $"[ygg] dry-run: safe-link '($target_dest)' -> '($link_src)'"
+        return
+    }
+
+    mkdir $dest_parent
+    if (is-link-or-junction $target_dest) {
+        if $is_windows {
+            remove-link-only $target_dest
+            make-safe-dir-link $check_src $target_dest
+        } else {
+            swap-symlink-atomic $link_src $target_dest
+        }
+    } else {
+        if (($target_dest | path type) != null) {
+            backup-with-notice $ygg_home $target_dest | ignore
+        }
+        if $is_windows {
+            make-safe-dir-link $check_src $target_dest
+        } else {
+            let res = (^ln -s $link_src $target_dest | complete)
+            if $res.exit_code != 0 {
+                error make { msg: $"safe-link: failed to link '($target_dest)' -> '($link_src)': ($res.stderr)" }
+            }
+        }
+    }
+}
+
+# Windows: a junction needs an absolute target (to-win32-path inside create-windows-dir-link)
+def make-safe-dir-link [src: string, dest: string]: nothing -> nothing {
+    let res = (create-windows-dir-link ($src | path expand -n) $dest)
+    if not $res.ok {
+        error make { msg: $"safe-link: failed to link '($dest)' -> '($src)': ($res.stderr)" }
     }
 }

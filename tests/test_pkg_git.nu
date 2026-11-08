@@ -393,3 +393,64 @@ scoop = ["neovim"]' | save -f ($m1 | path join "ygg.toml")
         }
     }
 }
+
+export def test_add_module_dirty_guard_and_dry_run_clone_cleanup [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bare = ($home | path join "guarded.git")
+        let work = ($home | path join "work_guarded")
+        ^git init --bare -b main $bare
+        ^git clone $bare $work
+        ^git -C $work config user.email "t@t.local"
+        ^git -C $work config user.name "Tester"
+        $"name = \"guarded\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($work | path join "ygg.toml")
+        "test content\n" | save -f ($work | path join "file.txt")
+        ^git -C $work add .
+        ^git -C $work commit -m "init"
+        ^git -C $work push -u origin main
+
+        let host_file = ($home | path join "host.toml")
+        let mod_dir = ($home | path join "modules" "guarded")
+        let tmp_root = ($home | path join ".state" "tmp")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            # 1. Dry-run stages a clone under .state/tmp, registers nothing
+            let prep = (add-module $home $bare --dry-run --scopes ["pc"])
+            assert equal $prep.name "guarded"
+            assert equal $prep.scopes ["pc"]
+            assert ($prep.tmp_clone | str starts-with ($tmp_root | path join "clone-"))
+            assert equal $prep.path $prep.tmp_clone
+            assert ($prep.tmp_clone | path join "file.txt" | path exists)
+            assert (not ($host_file | path exists))
+            assert (not ($mod_dir | path exists))
+            assert ((ls ($home | path join "modules")) | is-empty)
+            discard-staged-module $prep
+            assert (not ($prep.tmp_clone | path exists))
+
+            # 2. Real add registers the module
+            let added = (add-module $home $bare)
+            assert equal $added.path $mod_dir
+            assert equal $added.tmp_clone ""
+            assert equal (($mod_dir | path type)) "dir"
+            assert ((load-host-config $home).modules | any { |m| $m.name == "guarded" })
+
+            # 3. Re-adding over uncommitted changes is refused (also in dry-run), the dir is untouched
+            "dirty change\n" | save -f ($mod_dir | path join "file.txt")
+            let err_real = (try { add-module $home $bare; "ok" } catch { |e| $e.msg })
+            assert ($err_real | str contains "uncommitted changes")
+            let err_dry = (try { add-module $home $bare --dry-run; "ok" } catch { |e| $e.msg })
+            assert ($err_dry | str contains "uncommitted changes")
+            assert equal (open --raw ($mod_dir | path join "file.txt")) "dirty change\n"
+            assert (glob ($tmp_root | path join "clone-*") | is-empty)
+
+            # 4. --force replaces it; the dirty tree goes to .state/backups, not deleted
+            add-module $home $bare --force | ignore
+            assert equal (open --raw ($mod_dir | path join "file.txt")) "test content\n"
+            let saved = (glob ($home | path join ".state" "backups" "**" "guarded" "file.txt"))
+            assert equal ($saved | length) 1
+            assert equal (open --raw ($saved | first)) "dirty change\n"
+            assert (glob ($tmp_root | path join "clone-*") | is-empty)
+            assert equal ((load-host-config $home).modules | where name == "guarded" | length) 1
+        }
+    }
+}

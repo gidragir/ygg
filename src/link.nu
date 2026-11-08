@@ -315,7 +315,7 @@ export def resolve-link-targets [
 }
 
 # Move a real file or directory to $YGG_HOME/.state/backups/<timestamp>/ and report it (RFC-011)
-def backup-with-notice [ygg_home: string, target: string]: nothing -> string {
+export def backup-with-notice [ygg_home: string, target: string]: nothing -> string {
     let bkp = (backup-existing $ygg_home $target)
     if ($bkp != "") {
         print $"[ygg] Backed up existing '($target)' -> '($bkp)'"

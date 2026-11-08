@@ -297,11 +297,18 @@ def entries-with-rank [section: any, origin_rank: int]: nothing -> table {
 }
 
 # Resolve effective plan across active modules and scopes
-export def resolve-effective-plan [ygg_home: string, --modules-filter: list<string> = []]: nothing -> record {
+# --extra-modules: virtual { name, path, scopes } entries (RFC-012, `ygg add` preview / pre-flight);
+# an entry replaces the host.toml module of the same name and goes last, as a real `add` would.
+export def resolve-effective-plan [
+    ygg_home: string,
+    --modules-filter: list<string> = [],
+    --extra-modules: list<record> = []
+]: nothing -> record {
     let host_cfg = (load-host-config $ygg_home)
     let host_os = (detect-host-os)
 
-    let all_modules = ($host_cfg.modules? | default [])
+    let extra_names = ($extra_modules | each { |m| $m.name })
+    let all_modules = ($host_cfg.modules? | default [] | where { |m| $m.name not-in $extra_names } | append $extra_modules)
     let active_modules = if ($modules_filter | is-empty) {
         $all_modules
     } else {
