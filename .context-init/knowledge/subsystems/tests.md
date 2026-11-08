@@ -2,11 +2,11 @@
 directory: tests
 source:
   kind: git
-  blob_sha: edab70d7a553f53071f64bfca2ee08b93b0dbef4
-  commit_sha: cbe6f55f9c93a1c852c25c768b190ed5077ae844
+  blob_sha: a79b7b2fd78b3801364ca2994904a34f7b92533f
+  commit_sha: 3eb8cb030a30f14e76f33897acd879d4223275e4
 generated_by:
   component: context-init
-  role: init
+  role: update
   model: none
 freshness:
   total_entries: 11
