@@ -630,3 +630,38 @@ export def unlink-module [ygg_home: string, module_name: string]: nothing -> int
     save-state $ygg_home $state
     $count
 }
+
+# Pre-flight validation of the plan before any host mutation (Stage 0: missing link sources)
+export def preflight-check [
+    ygg_home: string,
+    plan: record,
+    resolved: record = {},
+    ops: table = [],
+    --force,
+    --sandbox: string = ""
+]: nothing -> list<record<module: string, key: string, reason: string, detail: string>> {
+    mut problems = []
+    for link in ($plan.links? | default []) {
+        let src = $link.src_path
+        let has_wildcard = ($src | str contains "*") or ($src | str contains "?")
+        let exists = if $has_wildcard {
+            false
+        } else {
+            try { ($src | path exists) } catch { false }
+        }
+        if not $exists {
+            $problems = ($problems | append {
+                module: $link.module,
+                key: $link.key,
+                reason: "missing_source",
+                detail: $"Source path '($src)' does not exist"
+            })
+        }
+    }
+    $problems
+}
+
+export def format-preflight-errors [problems: list<record>]: nothing -> string {
+    let lines = ($problems | each { |p| $"  - [($p.module)] '($p.key)' \(($p.reason)\): ($p.detail)" })
+    "Pre-flight check failed:\n" + ($lines | str join "\n")
+}

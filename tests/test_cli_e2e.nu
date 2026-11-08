@@ -220,3 +220,41 @@ export def test_apply_fails_after_completing_when_package_manager_fails [] {
 }
 
 
+
+export def test_preflight_blocks_missing_link_source_before_packages [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let pkg_log = ($home | path join "pkg.log")
+        let mod_src = ($home | path join "bad-mod")
+        mkdir $mod_src
+        mkdir ($sb | path join ".config" "ollama")
+        "host_model_state" | save -f ($sb | path join ".config" "ollama" "models.txt")
+
+        'name = "bad-mod"
+os = ["linux", "cachyos"]
+[packages]
+pacman = ["curl"]
+[links]
+"configs/ollama" = "~/.config/ollama"
+"missing/glob/*" = "~/.config/glob/*"
+' | save -f ($mod_src | path join "ygg.toml")
+
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "bad-mod")
+        "[[modules]]\nname = \"bad-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env {
+            YGG_HOME: $home,
+            YGG_SANDBOX: $sb,
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: $pkg_log
+        } { ^nu $ygg_bin apply --force --sandbox $sb | complete })
+
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "configs/ollama")
+        assert ($res.stderr | str contains "missing/glob/*")
+        assert (not ($pkg_log | path exists))
+        assert equal (open --raw ($sb | path join ".config" "ollama" "models.txt")) "host_model_state"
+    }
+}

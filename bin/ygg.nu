@@ -133,6 +133,11 @@ def "main apply" [
         error make { msg: "Plan contains 0 modules but active links exist. Refusing to prune all links without --force." }
     }
 
+    let problems = (preflight-check $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
+    if ($problems | is-not-empty) {
+        error make { msg: (format-preflight-errors $problems) }
+    }
+
     # 1. Install packages
     let pkg_res = (install-packages $plan --dry-run=$dry_run --skip-packages=$skip_packages --sandbox=$effective_sandbox)
 

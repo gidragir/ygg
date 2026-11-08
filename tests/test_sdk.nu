@@ -246,3 +246,39 @@ let scopes = ($env.YGG_SCOPES | from json)
         assert $failed
     }
 }
+
+export def test_sdk_functions_respect_ygg_dry_run [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let mod_dir = ($home | path join "modules" "m")
+        mkdir $mod_dir
+        let src = ($mod_dir | path join "cfg.yaml")
+        let out = ($home | path join "built.yaml")
+        let frag = ($mod_dir | path join "frag.json")
+        let dest_json = ($home | path join "target.json")
+        let dest_env = ($home | path join ".env")
+        "v1" | save -f $src
+        '{"a": 1}' | save -f $frag
+        "[env]\nAPI_KEY = \"sec\"\n" | save -f ($home | path join "secrets.toml")
+
+        with-env { YGG_HOME: $home, YGG_MODULE_DIR: $mod_dir, YGG_DRY_RUN: "true", YGG_FORCE: "false" } {
+            let r_dry = (onchange "build_dry" ["cfg.yaml"] { cp $src $out } --target $out)
+            assert equal $r_dry false
+            assert (not ($out | path exists))
+            assert equal ((load-state $home).hashes | get -o "build_dry" | default "") ""
+
+            merge-json $frag $dest_json
+            assert (not ($dest_json | path exists))
+
+            export-secrets $dest_env --keys ["API_KEY"]
+            assert (not ($dest_env | path exists))
+        }
+
+        # Последующий реальный запуск выполняет onchange
+        with-env { YGG_HOME: $home, YGG_MODULE_DIR: $mod_dir, YGG_DRY_RUN: "false", YGG_FORCE: "false" } {
+            let r_real = (onchange "build_dry" ["cfg.yaml"] { cp $src $out } --target $out)
+            assert equal $r_real true
+            assert ($out | path exists)
+        }
+    }
+}

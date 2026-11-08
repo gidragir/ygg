@@ -87,6 +87,12 @@ export def onchange [
         return false
     }
 
+    let is_dry = (($env.YGG_DRY_RUN? | default "false") == "true")
+    if $is_dry {
+        print $"[ygg] dry-run: onchange '($key)' would run"
+        return false
+    }
+
     # 4. Execute block
     do $block
 
@@ -130,9 +136,6 @@ export def merge-json [
     # 2. Resolve destination path with sandbox / token expansion
     let dest = (expand-target-path $dest_json)
     let dest_dir = ($dest | path dirname)
-    if not ($dest_dir | path exists) {
-        mkdir $dest_dir
-    }
 
     # 3. Read existing JSON before making any changes
     mut existing_record = {}
@@ -158,6 +161,16 @@ export def merge-json [
     } else {
         # Missing destination produces empty record {}
         $existing_record = {}
+    }
+
+    let is_dry = (($env.YGG_DRY_RUN? | default "false") == "true")
+    if $is_dry {
+        print $"[ygg] dry-run: merge-json would write '($dest)'"
+        return
+    }
+
+    if not ($dest_dir | path exists) {
+        mkdir $dest_dir
     }
 
     # 4. Merge deep: existing host data + declarative module fragment
@@ -228,6 +241,13 @@ export def export-secrets [
 
     let dest = (expand-target-path $dest_dotenv)
     let dest_dir = ($dest | path dirname)
+
+    let is_dry = (($env.YGG_DRY_RUN? | default "false") == "true")
+    if $is_dry {
+        print $"[ygg] dry-run: export-secrets would write '($dest)'"
+        return
+    }
+
     if not ($dest_dir | path exists) {
         mkdir $dest_dir
     }
