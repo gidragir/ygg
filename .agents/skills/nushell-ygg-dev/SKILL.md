@@ -142,3 +142,65 @@ if $res.exit_code != 0 {
   let clean_dest_raw = ($dest_raw | str replace --regex '[\\/]\*$' '')
   let dest_dir = (expand-target-path $clean_dest_raw --sandbox $effective_sandbox | str trim -r -c "/" | str trim -r -c "\\")
   ```
+
+
+## 11. Защита Win32 File API от wildcard-масок (`*`, `?`) и порядок вычисления условий
+
+В Nushell на Windows вызов `($path | path exists)` или `($path | path type)` на пути, содержащем подстановочные знаки (например, `cfg/*.yaml`), вызывает системную ошибку Win32 API `ERROR_INVALID_NAME` (`nu::shell::io::invalid_filename: Invalid filename`).
+Кроме того, в выражениях вида `(($p | path exists)) and not ($p | str contains "*")` левая часть вычисляется **до** проверки на wildcard!
+
+* **Всегда проверяй наличие wildcard-символов ДО вызова `path exists` или `path type`:**
+  ```nushell
+  # ❌ НЕПРАВИЛЬНО: падает на Windows с nu::shell::io::invalid_filename
+  if (($resolved | path exists) or (($resolved | path type) != null)) and not ($resolved | str contains "*") { ... }
+
+  # ✅ ПРАВИЛЬНО: проверка строки перед обращением к Win32 API
+  let has_wildcard = ($resolved | str contains "*") or ($resolved | str contains "?")
+  let is_exact = if not $has_wildcard {
+      try { ($resolved | path exists) or (($resolved | path type) != null) } catch { false }
+  } else {
+      false
+  }
+  ```
+
+## 12. Кроссплатформенная проверка доступности CLI-утилит (`which` guard)
+
+При вызове внешних менеджеров пакетов (`scoop`, `winget`, `paru`, `mise`) или утилит хоста отсутствие команды в PATH не должно фатально ломать весь сценарий `apply`.
+* **Всегда проверяй наличие бинарника через `which` перед выполнением:**
+  ```nushell
+  # ✅ ПРАВИЛЬНО: безопасный вызов с предварительной проверкой
+  if (which $mgr | is-empty) {
+      print -e $"[ygg] Warning: Package manager '($mgr)' not found on PATH. Skipping ($pkgs | length) package(s)."
+      continue
+  }
+  ```
+
+## 13. Ограничения внешних CLI: атомарные вызовы (WinGet и uv)
+
+Некоторые утилиты командной строки синтаксически не поддерживают установку списка пакетов в одном аргументе (`winget install --exact pkg1 pkg2` возвращает ошибку синтаксиса).
+* **Для однопозиционных утилит (WinGet, uv tool) выполняй команды последовательно по одному пакету:**
+  ```nushell
+  # ✅ ПРАВИЛЬНО: поштучная установка с изоляцией сбоев
+  for pkg in $pkgs {
+      let cmd = $"winget install --exact --accept-source-agreements --accept-package-agreements ($pkg)"
+      let res = (^nu -c $cmd | complete)
+      if $res.exit_code != 0 {
+          $failed = ($failed | append { mgr: "winget", stderr: $res.stderr })
+      }
+  }
+  ```
+
+## 14. Каскадный Fallback для Windows Junctions (`UNC & ReparsePoints`)
+
+Команда `^cmd /c mklink /J` завершается фатальной ошибкой Win32 на сетевых UNC-путях (`\\server\share\...`) или файловых системах без поддержки Reparse Points. В Nushell вызов внешней команды с ненулевым кодом выхода без `| complete` аварийно прерывает выполнение.
+* **Всегда перехватывай результат `mklink /J` через `| complete` и делай каскадный fallback:**
+  ```nushell
+  # ✅ ПРАВИЛЬНО: Junction -> Directory Symlink -> Recursive Copy
+  let res_j = (^cmd /c mklink /J $win_dest $win_src | complete)
+  if $res_j.exit_code != 0 {
+      let res_d = (^cmd /c mklink /D $win_dest $win_src | complete)
+      if $res_d.exit_code != 0 {
+          cp -r $src_path $dest
+      }
+  }
+  ```
