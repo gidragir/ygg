@@ -531,7 +531,11 @@ export def compute-link-ops [
             })
         }
     }
-    let prune_prefixes = ($ops | each { |o| (normalize-case $o.dest) + $sep })
+    # Only PRUNE rows that actually remove the path from disk free its subtree; a "forget" row (e.g. the
+    # app replaced a managed link with a real directory) leaves it, so children use the normal table
+    let prune_prefixes = ($ops
+        | where { |o| $o.detail in ["unlink", "backup_dir_copy", "rm_unchanged_copy", "backup_edited_copy"] }
+        | each { |o| (normalize-case $o.dest) + $sep })
 
     # 2. Link targets
     for t in $targets {
@@ -722,8 +726,13 @@ export def apply-links [
                     { ok: true, type: "symlink", stderr: "" }
                 } else {
                     mkdir ($dest | path dirname)
-                    let r = (^ln -s $src_path $dest | complete)
-                    { ok: ($r.exit_code == 0), type: "symlink", stderr: ($r.stderr | str trim) }
+                    if (($dest | path type) != null) {
+                        # Defensive: never let `ln -s` drop a link INSIDE an existing directory
+                        { ok: false, type: "", stderr: $"destination '($dest)' exists; refusing to link into it" }
+                    } else {
+                        let r = (^ln -s $src_path $dest | complete)
+                        { ok: ($r.exit_code == 0), type: "symlink", stderr: ($r.stderr | str trim) }
+                    }
                 }
             } catch { |e| { ok: false, type: "", stderr: $e.msg } })
             if not $res.ok {

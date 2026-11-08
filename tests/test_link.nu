@@ -1080,3 +1080,63 @@ export def test_is_dir_consistent_for_symlinked_dir_sources [] {
         assert equal $glob_child.is_dir $explicit.is_dir
     }
 }
+
+export def test_forget_prune_children_use_normal_link_table [] {
+    # Managed dir link "X" was replaced by the app with a real directory; manifest switches to "X/*"
+    let setup = { |home: string|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "d")
+        mkdir ($m | path join "X" "sub")
+        "mod-f\n" | save -f ($m | path join "X" "f.txt")
+        "mod-a\n" | save -f ($m | path join "X" "sub" "a.txt")
+        "name = \"d\"\nos = [\"linux\"]\n[links]\n\"X\" = { target = \"~/.config/X\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"d\"\n" | save -f ($home | path join "host.toml")
+        apply-links $home (resolve-effective-plan $home) --sandbox $sb | ignore
+        let x = ($sb | path join ".config" "X")
+        ^rm $x
+        mkdir ($x | path join "sub")
+        "host-f\n" | save -f ($x | path join "f.txt")
+        "host-a\n" | save -f ($x | path join "sub" "a.txt")
+        "name = \"d\"\nos = [\"linux\"]\n[links]\n\"X/*\" = \"~/.config/X/*\"\n" | save -f ($m | path join "ygg.toml")
+        $x
+    }
+
+    # 1. Children over real host entries -> BACKUP_REPLACE (not LINK); shadowed dir blocks without --force
+    with-temp-ygg { |home|
+        let x = (do $setup $home)
+        let sb = ($home | path join "sb")
+        "host-only\n" | save -f ($x | path join "sub" "extra.txt")
+        let plan = (resolve-effective-plan $home)
+        let r = (resolve-link-targets $plan --sandbox $sb)
+        let ops = (compute-link-ops $home $r --sandbox $sb)
+        assert equal ($ops | where op == "PRUNE" | get detail) ["forget"]
+        assert equal ($ops | where op == "BACKUP_REPLACE" | get dest | sort) ([($x | path join "f.txt"), ($x | path join "sub")] | sort)
+        assert (($ops | where op == "LINK") | is-empty)
+        assert equal ((preflight-check $home $plan $r $ops --sandbox $sb) | get reason) ["shadowed_files"]
+        let err = (try { apply-links $home $plan --sandbox $sb; "" } catch { |e| $e.msg })
+        assert ($err | str contains "shadowed_files")
+        assert equal (($x | path join "sub") | path type) "dir"
+
+        # --force: both replaced via backups, no stray link inside the host directory
+        let res = (apply-links $home $plan --force --sandbox $sb)
+        assert ($res.failed | is-empty)
+        assert equal ($x | path type) "dir"
+        assert equal (($x | path join "sub") | path type) "symlink"
+        assert equal (($x | path join "f.txt") | path type) "symlink"
+        assert (not ((($home | path join "modules" "d" "X" "sub" "sub")) | path exists))
+        assert equal (glob ($home | path join ".state" "backups" "**" "sub" "extra.txt") | length) 1
+        assert equal (glob ($home | path join ".state" "backups" "**" "X" "f.txt") | each { |f| open --raw $f }) ["host-f\n"]
+    }
+
+    # 2. Without host-only files: BACKUP_REPLACE passes preflight and apply succeeds (no "File exists")
+    with-temp-ygg { |home|
+        let x = (do $setup $home)
+        let sb = ($home | path join "sb")
+        let res = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
+        assert ($res.failed | is-empty)
+        assert equal (($x | path join "f.txt") | path type) "symlink"
+        assert equal (($x | path join "sub") | path type) "symlink"
+        assert equal (open --raw ($x | path join "sub" "a.txt")) "mod-a\n"
+        assert equal ((load-state $home).links | get ($x | path join "sub") | get type) "symlink"
+    }
+}
