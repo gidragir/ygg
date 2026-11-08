@@ -38,7 +38,12 @@ def resolve-module-path [name: string]: nothing -> string {
     if ($wt | path exists) {
         $wt
     } else {
-        $"/data/projects/($name)"
+        let fallback = $"/data/projects/($name)"
+        if ($fallback | path exists) {
+            $fallback
+        } else {
+            error make { msg: $"Module ($name) not found in ($wt) or ($fallback)" }
+        }
     }
 }
 
@@ -454,6 +459,13 @@ scopes = ["work"]
 }
 
 def main [target: string = "all"] {
+    let run_host_e2e = (($env.YGG_RUN_HOST_E2E? | default "0") == "1")
+    let wt_exists = ($WT_ROOT | path exists)
+    if (not $run_host_e2e) or (not $wt_exists) {
+        print $"[SKIP] test_phase2_modules: requires YGG_RUN_HOST_E2E=1 and ($WT_ROOT) to exist."
+        return
+    }
+
     let valid_targets = ["all", "omni", "dotfiles", "ai", "linux-e2e", "linux-asus-clean", "win"]
     if not ($target in $valid_targets) {
         error make { msg: $"Unknown test target: ($target). Valid targets: ($valid_targets | str join ', ')" }

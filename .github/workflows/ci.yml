@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, "feat/*", "fix/*", "stage*" ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Nushell
+        uses: nushell/setup-nu@v2
+
+      - name: Setup Just
+        uses: extractions/setup-just@v2
+
+      - name: Verify tools
+        run: |
+          nu --version
+          just --version
+
+      - name: Run test suite
+        run: just test
+
+      - name: Verify core purity
+        run: |
+          nu -c '
+          let forbidden = ["/data/projects", "/home/gidragir", "chezmoi", "sops", "omni-dotfiles", "ai-dotfiles", "win-dotfiles", "hermes"]
+          let files = (glob "src/**/*.nu" | append (glob "bin/**/*.nu"))
+          mut found_violations = []
+          for f in $files {
+            let content = (open --raw $f | str lowercase)
+            for word in $forbidden {
+              if ($content | str contains $word) {
+                $found_violations = ($found_violations | append $"($f) contains forbidden token '\''($word)'\''")
+              }
+            }
+          }
+          if not ($found_violations | is-empty) {
+            print -e ($found_violations | str join "\n")
+            exit 1
+          }
+          print "Core purity verified: src/ and bin/ are clean."
+          '
