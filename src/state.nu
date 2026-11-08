@@ -509,7 +509,7 @@ export def collect-active-hash-keys [plan: record]: nothing -> list<string> {
         let setup_file = (($m.dir? | default "") | path join "setup.nu")
         if ($setup_file != "") and ($setup_file | path exists) {
             let content = (try { open --raw $setup_file } catch { "" })
-            let matches = ($content | parse -r '(?m)(?:ygg\s+)?onchange\s+([A-Za-z0-9_-]+)' | get capture0? | default [])
+            let matches = ($content | parse -r `(?m)(?:ygg\s+)?onchange\s+["']?([A-Za-z0-9_-]+)["']?` | get capture0? | default [])
             for k in $matches {
                 $active = ($active | append $k)
             }
