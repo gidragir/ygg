@@ -33,9 +33,18 @@ def cleanup-sandbox [root: string] {
     }
 }
 
+def resolve-module-path [name: string]: nothing -> string {
+    let wt = ($WT_ROOT | path join $name)
+    if ($wt | path exists) {
+        $wt
+    } else {
+        $"/data/projects/($name)"
+    }
+}
+
 def link-wt-modules [ygg_home: string, names: list<string>] {
     for n in $names {
-        let src = ($WT_ROOT | path join $n)
+        let src = (resolve-module-path $n)
         let dst = ($ygg_home | path join "modules" $n)
         ^ln -sfn $src $dst
     }
@@ -49,7 +58,7 @@ def assert-no-broken-links [dir: string] {
 }
 
 export def test-zero-legacy-artifacts [repo: string] {
-    let wt = ($WT_ROOT | path join $repo)
+    let wt = (resolve-module-path $repo)
     assert (($wt | path join "ygg.toml") | path exists) $"Missing ygg.toml in ($repo)"
     assert (not (($wt | path join "infra" "stow") | path exists)) $"Legacy infra/stow found in ($repo)"
     let tmpls = (^fd -H --glob "*.tmpl" $wt --exclude .git | lines | where { |x| $x != "" })
@@ -479,7 +488,7 @@ def main [target: string = "all"] {
     }
     if $target == "all" {
         for repo in ["omni-dotfiles", "dotfiles", "ai-dotfiles", "win-dotfiles"] {
-            let wt = ($WT_ROOT | path join $repo)
+            let wt = (resolve-module-path $repo)
             let st = (^git -C $wt status --porcelain | str trim)
             if ($st != "") {
                 error make { msg: $"Worktree ($repo) is dirty after tests:\n($st)" }
