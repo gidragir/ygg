@@ -509,7 +509,12 @@ export def apply-links [
 }
 
 # Reverse capture from host to module repository for all tracked copies and [save] entries
-export def save-copied-files [ygg_home: string, plan: record, --sandbox: string = ""]: nothing -> list<string> {
+export def save-copied-files [
+    ygg_home: string,
+    plan: record,
+    --sandbox: string = "",
+    --force
+]: nothing -> list<string> {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     mut state = (load-state $ygg_home)
     mut saved = []
@@ -520,6 +525,11 @@ export def save-copied-files [ygg_home: string, plan: record, --sandbox: string 
         let entry = ($state.copies | get $dest)
         let src = $entry.src
         if ($dest | path exists) {
+            let last_hash = ($entry.last_synced_hash? | default "")
+            if ($last_hash == "") and (not $force) {
+                print -e $"[ygg] Warning: Skipping conflict on '($dest)' \(no baseline\). Use 'ygg save --force' to overwrite module with host version."
+                continue
+            }
             let host_content = (open --raw $dest)
             let host_hash = ($host_content | hash sha256)
             let src_hash = if ($src | path exists) { open --raw $src | hash sha256 } else { "" }

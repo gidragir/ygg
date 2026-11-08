@@ -222,6 +222,42 @@ os = ["windows"]
     }
 }
 
+export def test_save_skips_conflict_without_baseline [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m1 = ($home | path join "modules" "win")
+        mkdir ($m1 | path join "terminal") ($sb | path join "terminal")
+        let repo_file = ($m1 | path join "terminal/settings.json")
+        let host_file = ($sb | path join "terminal/settings.json")
+        let module_content = '{"theme":"dark"}'
+        let host_content = '{"theme":"light"}'
+        $module_content | save -f $repo_file
+        $host_content | save -f $host_file
+
+        'name = "win"
+os = ["windows"]
+[save]
+"terminal/settings.json" = "~/terminal/settings.json"' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"win\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
+            let plan = (resolve-effective-plan $home)
+            apply-links $home $plan --sandbox $sb
+            let st = (load-state $home)
+            let copy_record = ($st.copies | get $host_file)
+            assert equal $copy_record.last_synced_hash ""
+
+            let saved = (save-copied-files $home $plan --sandbox $sb)
+            assert equal $saved []
+            assert equal (open --raw $repo_file) $module_content
+
+            let forced = (save-copied-files $home $plan --sandbox $sb --force)
+            assert equal ($forced | length) 1
+            assert equal (open --raw $repo_file) $host_content
+        }
+    }
+}
+
 export def test_apply_links_dry_run [] {
     with-temp-ygg { |home|
         let sb = ($home | path join "sb")

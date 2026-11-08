@@ -165,14 +165,17 @@ def "main update" [] {
 }
 
 # Save reverse-copied files back to their source modules
-def "main save" [--sandbox: string = ""] {
+def "main save" [
+    --sandbox: string = "",
+    --force
+] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
 
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
     let plan = (resolve-effective-plan $ygg_home)
-    let saved = (save-copied-files $ygg_home $plan --sandbox=$effective_sandbox)
+    let saved = (save-copied-files $ygg_home $plan --sandbox=$effective_sandbox --force=$force)
     print $"Saved ($saved | length) file\(s\)."
     $saved
 }
