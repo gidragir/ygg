@@ -95,7 +95,8 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         env: ($raw.env? | default {}),
         aliases: ($raw.aliases? | default {}),
         path: $raw_path,
-        scope: ($raw.scope? | default {})
+        scope: ($raw.scope? | default {}),
+        doctor: ($raw.doctor? | default {})
     }
 
     if ($manifest.env.path? != null) {

@@ -35,7 +35,8 @@ def main [--version (-v)] {
     print "  ygg diff [--all] [--pkg <m1,m2>]         Show planned changes without modifying anything"
     print "  ygg update                               Update git modules via rebase and apply"
     print "  ygg save                                 Save reverse-copied GUI/app edits back to modules"
-    print "  ygg status                               Display module sync and git status table"
+    print "  ygg status [--json]                      Display module sync and git status table"
+    print "  ygg doctor [--json]                      Read-only host audit (exit code 1 on errors)"
     print "  ygg version                              Print version (also --version / -v)"
     print ""
     print "SDK Subcommands (for setup.nu scripts):"
@@ -260,6 +261,10 @@ def apply-plan [
             }
             run-module-setup $ygg_home $mod_entry --dry-run --force=$force --sandbox=$effective_sandbox
         }
+        let hooks = (run-link-hooks $ygg_home $resolved.targets $ops --dry-run --force=$force --sandbox=$effective_sandbox)
+        for h in $hooks {
+            print ("  " + ("HOOK" | fill --alignment left --width 15) + " " + $h.cmd + "  (" + $h.module + ": " + ($h.keys | str join ", ") + ")")
+        }
         let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length))
         let unchanged = ($ops | where op == "OK" | length)
         print $"Plan: ($changes) change\(s\), ($unchanged) unchanged across ($mod_count) module\(s\). No changes made."
@@ -279,6 +284,9 @@ def apply-plan [
     for mod_entry in $plan_mods {
         run-module-setup $ygg_home $mod_entry --force=$force --sandbox=$effective_sandbox
     }
+
+    # 5. on_change hooks of links (RFC-015): last step; a failing hook only warns
+    run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox | ignore
 
     print $"Applied ($mod_count) module\(s\)."
 
@@ -342,11 +350,37 @@ def "main save" [
     $saved
 }
 
-# Display module sync and git status table
-def "main status" [] {
+# Display module sync and git status table (--json: all columns as JSON, independent of terminal width)
+def "main status" [--json] {
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
-    modules-status $ygg_home
+    let rows = (modules-status $ygg_home)
+    if $json {
+        print ($rows | to json --raw)
+    } else {
+        $rows
+    }
+}
+
+# Read-only host audit (RFC-017): prints findings and a summary; exit code 1 when any error is found
+def "main doctor" [--json, --sandbox: string = ""] {
+    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+    assert-sandbox-home $effective_sandbox
+    let ygg_home = (get-ygg-home)
+    let report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+    let errors = ($report | where { |r| $r.severity == "error" } | length)
+    if $json {
+        print ($report | to json --raw)
+    } else {
+        if ($report | is-not-empty) {
+            print ($report | table --expand)
+        }
+        let warns = ($report | where { |r| $r.severity == "warn" } | length)
+        print $"Doctor: ($errors) error\(s\), ($warns) warning\(s\)."
+    }
+    if $errors > 0 {
+        exit 1
+    }
 }
 
 # Conditionally execute command if watched files change (SDK helper)

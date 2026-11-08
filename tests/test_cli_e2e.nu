@@ -593,3 +593,73 @@ mise = ["ripgrep"]
         }
     }
 }
+
+export def test_status_json_output_in_pipe [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "json-mod")
+        mkdir $mod_src
+        'name = "json-mod"
+os = ["linux", "cachyos"]
+' | save -f ($mod_src | path join "ygg.toml")
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "json-mod")
+        "[[modules]]\nname = \"json-mod\"\nscopes = [\"pc\"]\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", COLUMNS: "20" } {
+            let res = (^nu $ygg_bin status --json | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            let rows = ($res.stdout | from json)
+            assert equal ($rows | length) 1
+            let row = ($rows | first)
+            assert equal ($row | columns | sort) (["name", "scopes", "path", "target", "branch", "dirty", "links_ok", "sync_conflicts", "pending_save"] | sort)
+            assert equal $row.name "json-mod"
+            assert equal $row.scopes ["pc"]
+            assert equal $row.target ($mod_src | path expand)
+            assert equal $row.links_ok true
+            assert equal $row.sync_conflicts 0
+            assert equal $row.pending_save 0
+        }
+    }
+}
+
+export def test_apply_runs_on_change_hooks_and_dry_run_plans_them [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "hook-mod")
+        mkdir $mod_src
+        "k = 1\n" | save -f ($mod_src | path join "app.toml")
+        'name = "hook-mod"
+os = ["linux", "cachyos"]
+[links."app.toml"]
+target = "~/.config/app/app.toml"
+on_change = "app msg reload"
+' | save -f ($mod_src | path join "ygg.toml")
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "hook-mod")
+        "[[modules]]\nname = \"hook-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let log = ($home | path join "pkg.log")
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+            let before = (snapshot-all $home $sb)
+            let dry = (^nu $ygg_bin apply --dry-run --sandbox $sb | complete)
+            assert equal $dry.exit_code 0 $dry.stderr
+            assert ($dry.stdout | lines | any { |l| ($l | str trim | str starts-with "HOOK") and ($l | str contains "app msg reload") })
+            assert equal (snapshot-all $home $sb) $before
+            assert (not ($log | path exists))
+
+            let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            assert equal (open --raw $log | lines | where { |l| $l | str starts-with "hook: " }) ["hook: app msg reload"]
+            let hashes = (open ($home | path join ".state" "state.json") | get hashes)
+            assert (($hashes | get -o "on_change:hook-mod:app.toml" | default "") != "")
+
+            # Second apply: unchanged -> the hook does not run again
+            let ap2 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $ap2.exit_code 0 $ap2.stderr
+            assert equal (open --raw $log | lines | where { |l| $l | str starts-with "hook: " } | length) 1
+        }
+    }
+}

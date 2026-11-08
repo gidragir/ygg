@@ -1,5 +1,7 @@
 use std/assert
 use ../src/state.nu *
+use ../src/manifest.nu *
+use ../src/link.nu *
 use ../src/sdk.nu *
 use helpers.nu [with-temp-ygg]
 
@@ -374,5 +376,142 @@ export def test_safe_link_backs_up_real_dir_and_preserves_relative_src [] {
 
         # 7. Static check: no recursive deletion in the SDK
         assert (not (open --raw ($env.FILE_PWD | path join "../src/sdk.nu") | str contains "rm -rf"))
+    }
+}
+
+# Plan -> ops -> apply-links -> run-link-hooks, like `ygg apply` does (no package / setup steps)
+def apply-with-hooks [home: string, sb: string, --force, --dry-run]: nothing -> list {
+    let plan = (resolve-effective-plan $home)
+    let resolved = (resolve-link-targets $plan --sandbox $sb)
+    let ops = (compute-link-ops $home $resolved --force=$force --sandbox $sb)
+    if not $dry_run {
+        apply-links $home $plan --force=$force --sandbox $sb | ignore
+    }
+    run-link-hooks $home $resolved.targets $ops --dry-run=$dry_run --force=$force --sandbox $sb
+}
+
+def hook-log [log: string]: nothing -> list<string> {
+    if ($log | path exists) { open --raw $log | lines | where { |l| $l | str starts-with "hook: " } } else { [] }
+}
+
+export def test_run_link_hooks_lifecycle_dedup_and_failure_recovery [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = $env.YGG_SANDBOX
+        let log = ($home | path join "pkg.log")
+        let mod_src = ($home | path dirname | path join "hook-mod")
+        mkdir ($mod_src | path join "cfg" "dir")
+        for f in ["a.conf", "b.conf", "c.conf", "x.conf"] {
+            $"($f)\n" | save -f ($mod_src | path join "cfg" $f)
+        }
+        "d1\n" | save -f ($mod_src | path join "cfg" "dir" "inner.conf")
+        'name = "hm"
+os = ["linux"]
+[links."cfg/a.conf"]
+target = "~/.config/hm/a.conf"
+on_change = "reload-a"
+[links."cfg/b.conf"]
+target = "~/.config/hm/b.conf"
+on_change = "reload-shared"
+[links."cfg/c.conf"]
+target = "~/.config/hm/c.conf"
+on_change = "reload-shared"
+[links."cfg/x.conf"]
+target = "~/.config/hm/x.conf"
+on_change = "reload-excluded"
+[links."cfg/dir"]
+target = "~/.config/hm/dir"
+on_change = "reload-dir"
+' | save -f ($mod_src | path join "ygg.toml")
+        ^ln -s $mod_src ($home | path join "modules" "hm")
+        "[[modules]]\nname = \"hm\"\nexclude = [\"cfg/x.conf\"]\n" | save -f ($home | path join "host.toml")
+        let hkey = { |k| "on_change:hm:" + $k }
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+            # 1. First run: every hook fires once, the shared command once for two keys
+            let r1 = (apply-with-hooks $home $sb)
+            assert equal (hook-log $log | sort) ["hook: reload-a", "hook: reload-dir", "hook: reload-shared"]
+            assert ($r1 | all { |r| $r.status == "ok" })
+            let shared = ($r1 | where cmd == "reload-shared" | first)
+            assert equal ($shared.keys | sort) ["cfg/b.conf", "cfg/c.conf"]
+            let h1 = (load-state $home).hashes
+            for k in ["cfg/a.conf", "cfg/b.conf", "cfg/c.conf", "cfg/dir"] {
+                assert ((($h1 | get -o (do $hkey $k) | default "")) != "")
+            }
+            # Excluded link: no hook, no hash
+            assert equal ($h1 | get -o (do $hkey "cfg/x.conf")) null
+            assert (not ($sb | path join ".config" "hm" "x.conf" | path exists))
+
+            # 2. No change -> nothing runs
+            let r2 = (apply-with-hooks $home $sb)
+            assert equal $r2 []
+            assert equal (hook-log $log | length) 3
+
+            # 3. One of two keys of the shared command changes -> runs once, both hashes recorded
+            "b2\n" | save -f ($mod_src | path join "cfg" "b.conf")
+            let r3 = (apply-with-hooks $home $sb)
+            assert equal ($r3 | get cmd) ["reload-shared"]
+            assert equal (hook-log $log | last) "hook: reload-shared"
+            assert equal (hook-log $log | length) 4
+            let h3 = (load-state $home).hashes
+            assert ((($h3 | get (do $hkey "cfg/b.conf"))) != ($h1 | get (do $hkey "cfg/b.conf")))
+
+            # 4. A file deep inside a directory link changes -> its hook runs
+            "d2\n" | save -f ($mod_src | path join "cfg" "dir" "inner.conf")
+            assert equal (apply-with-hooks $home $sb | get cmd) ["reload-dir"]
+
+            # 5. A LINK op on the key fires the hook even without content changes
+            rm ($sb | path join ".config" "hm" "a.conf")
+            assert equal (apply-with-hooks $home $sb | get cmd) ["reload-a"]
+
+            # 6. Failing hook: no exception, status failed, hash kept, retried next run
+            "a2\n" | save -f ($mod_src | path join "cfg" "a.conf")
+            let h_before = ((load-state $home).hashes | get (do $hkey "cfg/a.conf"))
+            let r6 = (with-env { YGG_MOCK_HOOK_FAIL: "reload-a" } { apply-with-hooks $home $sb })
+            assert equal ($r6 | length) 1
+            assert equal ($r6 | first | get status) "failed"
+            assert (($r6 | first | get stderr) != "")
+            assert equal ((load-state $home).hashes | get (do $hkey "cfg/a.conf")) $h_before
+            let r7 = (apply-with-hooks $home $sb)
+            assert equal ($r7 | get cmd) ["reload-a"]
+            assert equal ($r7 | first | get status) "ok"
+            assert (((load-state $home).hashes | get (do $hkey "cfg/a.conf")) != $h_before)
+
+            # 7. Dry-run: HOOK planned, nothing executed, state.hashes untouched
+            "c2\n" | save -f ($mod_src | path join "cfg" "c.conf")
+            let log_len = (hook-log $log | length)
+            let state_before = (open --raw ($home | path join ".state" "state.json"))
+            let r8 = (apply-with-hooks $home $sb --dry-run)
+            assert equal ($r8 | get cmd) ["reload-shared"]
+            assert equal ($r8 | first | get status) "dry_run"
+            assert equal (hook-log $log | length) $log_len
+            assert equal (open --raw ($home | path join ".state" "state.json")) $state_before
+            assert equal (apply-with-hooks $home $sb | get cmd) ["reload-shared"]
+
+            # 8. --force runs every (non-excluded) hook once
+            let r9 = (apply-with-hooks $home $sb --force)
+            assert equal ($r9 | get cmd | sort) ["reload-a", "reload-dir", "reload-shared"]
+        }
+
+        # 9. Sandbox without the mock log: never executed, hash not recorded
+        "a3\n" | save -f ($mod_src | path join "cfg" "a.conf")
+        let h_a = ((load-state $home).hashes | get (do $hkey "cfg/a.conf"))
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: "" } {
+            let r10 = (apply-with-hooks $home $sb)
+            assert equal ($r10 | get status) ["skipped_sandbox"]
+            assert equal ((load-state $home).hashes | get (do $hkey "cfg/a.conf")) $h_a
+        }
+    }
+}
+
+export def test_hash_watch_set_matches_onchange_semantics [] {
+    with-temp-ygg { |home|
+        let mod_dir = ($home | path join "modules" "m")
+        mkdir ($mod_dir | path join "cfg")
+        "a: 1\n" | save -f ($mod_dir | path join "cfg" "one.yaml")
+        let h1 = (hash-watch-set ["cfg", "missing/*.yaml"] $mod_dir)
+        assert equal (hash-watch-set ["cfg/*.yaml"] $mod_dir) $h1
+        "a: 2\n" | save -f ($mod_dir | path join "cfg" "one.yaml")
+        assert ((hash-watch-set ["cfg"] $mod_dir) != $h1)
     }
 }

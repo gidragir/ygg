@@ -2,7 +2,7 @@
 # Yggdrasil configuration manager — Module Git Manager & local directory linker
 
 use manifest.nu [load-host-config, save-host-config, load-module-manifest, validate-module-os]
-use link.nu [unlink-module, is-link-or-junction, remove-link-only, backup-with-notice]
+use link.nu [unlink-module, is-link-or-junction, remove-link-only, backup-with-notice, link-target-matches]
 use state.nu [detect-host-os, load-state, ensure-ygg-dirs, to-win32-path]
 
 # Raise when a real (non-link) Git module directory has uncommitted changes.
@@ -17,6 +17,22 @@ def assert-module-clean [mod_dir: string, name: string, action: string]: nothing
     let st = (^git -C $mod_dir status --porcelain | complete)
     if ($st.exit_code == 0) and ($st.stdout | str trim | is-not-empty) {
         error make { msg: $"Cannot ($action) module '($name)': directory has uncommitted changes in '($mod_dir)'" }
+    }
+}
+
+# True when a path canonicalizes (`path expand --strict`); YGG_MOCK_NO_CANONICALIZE=1 simulates
+# a volume without canonicalization support, e.g. VirtIO-FS (RFC-025)
+export def is-canonicalizable [path: string]: nothing -> bool {
+    if (($env.YGG_MOCK_NO_CANONICALIZE? | default "") == "1") {
+        return false
+    }
+    try { $path | path expand --strict | ignore; true } catch { false }
+}
+
+# Warn when a reachable module source cannot be canonicalized (RFC-025)
+export def warn-if-not-canonicalizable [path: string]: nothing -> nothing {
+    if (not (is-canonicalizable $path)) and ($path | path exists) {
+        print -e $"[ygg] Warning: '($path)' is on a volume without path canonicalization support. Tools such as mise may ignore configs reached through it. Copy the module to a local NTFS disk and add it from there."
     }
 }
 
@@ -103,7 +119,11 @@ export def register-staged-module [ygg_home: string, prep: record, --force]: not
 
             if $is_local {
                 if ($nu.os-info.family == "windows") {
-                    ^cmd /c mklink /J (to-win32-path $mod_dest) (to-win32-path $prep.path) | complete | ignore
+                    # RFC-025: a failed junction must not register the module
+                    let res = (^cmd /c mklink /J (to-win32-path $mod_dest) (to-win32-path $prep.path) | complete)
+                    if $res.exit_code != 0 {
+                        error make { msg: $"Failed to link module '($prep.name)' to '($prep.path)': ($res.stdout | str trim) ($res.stderr | str trim)" }
+                    }
                 } else {
                     ^ln -s $prep.path $mod_dest
                 }
@@ -140,6 +160,9 @@ export def add-module [
 ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string> {
     ensure-ygg-dirs $ygg_home
     let prep = (stage-module $ygg_home $source $scopes $force)
+    if ($prep.tmp_clone == "") {
+        warn-if-not-canonicalizable $prep.path
+    }
     if $dry_run {
         return $prep
     }
@@ -245,10 +268,55 @@ export def update-modules [ygg_home: string]: nothing -> list<record> {
     $results
 }
 
-# Return module status summary table
+# Read-only 3-way status of every tracked copy (RFC-004):
+# conflict = both sides differ from each other and from the baseline (or no baseline yet);
+# pending_save = changed only on the host. Rows: { dest, module, status } for those two cases.
+export def copy-sync-status [state: record]: nothing -> table<dest: string, module: string, status: string> {
+    mut rows = []
+    for dest in ($state.copies | columns) {
+        let entry = ($state.copies | get $dest)
+        let src = ($entry.src? | default "")
+        let baseline = ($entry.last_synced_hash? | default "")
+        if ($src == "") or (($src | path type) != "file") or (($dest | path type) != "file") {
+            continue
+        }
+        let host_hash = (open --raw $dest | hash sha256)
+        let mod_hash = (open --raw $src | hash sha256)
+        if $host_hash == $mod_hash {
+            continue
+        }
+        let status = if ($baseline == "") or (($host_hash != $baseline) and ($mod_hash != $baseline)) {
+            "conflict"
+        } else if ($host_hash != $baseline) and ($mod_hash == $baseline) {
+            "pending_save"
+        } else {
+            ""
+        }
+        if $status != "" {
+            $rows = ($rows | append { dest: $dest, module: ($entry.module? | default ""), status: $status })
+        }
+    }
+    $rows
+}
+
+# True when a state.links entry is really in place (RFC-004): a link/junction must point at its
+# source and resolve (a dangling link matches literally); copies only need to exist.
+export def link-entry-ok [dest: string, entry: record]: nothing -> bool {
+    let t = ($entry.type? | default "symlink")
+    if ($t in ["copy", "dir_copy"]) {
+        $dest | path exists
+    } else {
+        (link-target-matches $dest ($entry.src? | default "")) and ($dest | path exists)
+    }
+}
+
+# Return module status summary table:
+# name, scopes, path, target, branch, dirty, links_ok, sync_conflicts, pending_save
 export def modules-status [ygg_home: string]: nothing -> table {
     let host_cfg = (load-host-config $ygg_home)
     let state = (load-state $ygg_home)
+    let sync = (copy-sync-status $state)
+    let has_git = (which git | is-not-empty)
 
     mut rows = []
 
@@ -260,8 +328,9 @@ export def modules-status [ygg_home: string]: nothing -> table {
         } else {
             ($ygg_home | path join "modules" $name)
         }
+        # Resolved location (worktree vs main checkout); the literal path when it does not resolve
+        let target = (try { $mod_path | path expand } catch { $mod_path })
 
-        let has_git = (which git | is-not-empty)
         let is_git = ($mod_path | path join ".git" | path exists) and $has_git
         let branch = if $is_git {
             let br = (^git -C $mod_path branch --show-current | complete).stdout | str trim
@@ -281,19 +350,19 @@ export def modules-status [ygg_home: string]: nothing -> table {
         }
 
         let mod_links = ($state.links | columns | where { |k| (($state.links | get $k | get -o module) == $name) })
-        let links_ok = if ($mod_links | is-empty) {
-            true
-        } else {
-            $mod_links | all { |dest| (is-link-or-junction $dest) or ($dest | path exists) }
-        }
+        let links_ok = ($mod_links | all { |dest| link-entry-ok $dest ($state.links | get $dest) })
+        let mod_sync = ($sync | where { |r| $r.module == $name })
 
         $rows = ($rows | append {
             name: $name,
             scopes: $scopes,
             path: $mod_path,
+            target: $target,
             branch: $branch,
             dirty: $dirty,
-            links_ok: $links_ok
+            links_ok: $links_ok,
+            sync_conflicts: ($mod_sync | where { |r| $r.status == "conflict" } | length),
+            pending_save: ($mod_sync | where { |r| $r.status == "pending_save" } | length)
         })
     }
 

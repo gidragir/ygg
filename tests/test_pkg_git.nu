@@ -683,3 +683,108 @@ export def test_package_set_hash_cache_and_refresh [] {
         }
     }
 }
+
+export def test_modules_status_columns_and_accurate_links_ok [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = $env.YGG_SANDBOX
+        let ext_dir = ($home | path dirname | path join "status_mod")
+        mkdir $ext_dir
+        'name = "status_mod"
+os = ["linux", "cachyos"]
+[links]
+"a.conf" = "~/.config/a.conf"
+"b.conf" = "~/.config/b.conf"
+[save]
+"s.json" = "~/.config/s.json"
+' | save -f ($ext_dir | path join "ygg.toml")
+        "a\n" | save -f ($ext_dir | path join "a.conf")
+        "b\n" | save -f ($ext_dir | path join "b.conf")
+        "{}\n" | save -f ($ext_dir | path join "s.json")
+        let cfg = ($sb | path join ".config")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            add-module $home $ext_dir | ignore
+            apply-links $home (resolve-effective-plan $home) --sandbox $sb | ignore
+
+            let row = (modules-status $home | first)
+            assert equal ($row | columns) ["name", "scopes", "path", "target", "branch", "dirty", "links_ok", "sync_conflicts", "pending_save"]
+            assert equal $row.path ($home | path join "modules" "status_mod")
+            assert equal $row.target ($ext_dir | path expand)
+            assert equal $row.links_ok true
+            assert equal $row.sync_conflicts 0
+            assert equal $row.pending_save 0
+
+            # Host-only edit -> pending save; edits on both sides -> conflict
+            '{"host": 1}' | save -f ($cfg | path join "s.json")
+            let r1 = (modules-status $home | first)
+            assert equal $r1.pending_save 1
+            assert equal $r1.sync_conflicts 0
+            '{"mod": 1}' | save -f ($ext_dir | path join "s.json")
+            let r2 = (modules-status $home | first)
+            assert equal $r2.pending_save 0
+            assert equal $r2.sync_conflicts 1
+
+            # Dangling symlink in place of a managed link
+            rm ($cfg | path join "a.conf")
+            ^ln -s ($home | path join "nowhere") ($cfg | path join "a.conf")
+            assert equal (modules-status $home | first | get links_ok) false
+            # Managed link pointing at the right source, but the source is gone
+            rm ($cfg | path join "a.conf")
+            ^ln -s ($ext_dir | path join "a.conf") ($cfg | path join "a.conf")
+            assert equal (modules-status $home | first | get links_ok) true
+            mv ($ext_dir | path join "a.conf") ($ext_dir | path join "a.conf.moved")
+            assert equal (modules-status $home | first | get links_ok) false
+            mv ($ext_dir | path join "a.conf.moved") ($ext_dir | path join "a.conf")
+            # Regular file in place of a managed link
+            rm ($cfg | path join "b.conf")
+            "host\n" | save -f ($cfg | path join "b.conf")
+            assert equal (modules-status $home | first | get links_ok) false
+            rm ($cfg | path join "b.conf")
+            ^ln -s ($ext_dir | path join "b.conf") ($cfg | path join "b.conf")
+            assert equal (modules-status $home | first | get links_ok) true
+
+            # A copy-type link entry only needs the file to exist
+            let copy_dest = ($cfg | path join "copied.conf")
+            mut st = (load-state $home)
+            $st.links = ($st.links | upsert $copy_dest { module: "status_mod", src: ($ext_dir | path join "a.conf"), type: "copy", cmd_shim: "" })
+            save-state $home $st
+            assert equal (modules-status $home | first | get links_ok) false
+            "a\n" | save -f $copy_dest
+            assert equal (modules-status $home | first | get links_ok) true
+        }
+    }
+}
+
+export def test_add_module_warns_on_non_canonicalizable_volume [] {
+    with-temp-ygg { |home|
+        let src_dir = ($env.FILE_PWD | path join "../src" | path expand)
+        let ext_dir = ($home | path dirname | path join "vol_mod")
+        mkdir $ext_dir
+        'name = "vol_mod"
+os = ["linux", "cachyos"]' | save -f ($ext_dir | path join "ygg.toml")
+        let script = ("use " + ($src_dir | path join "git.nu") + " *; add-module '" + $home + "' '" + $ext_dir + "' | ignore")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_NO_CANONICALIZE: "1" } {
+            let res = (^nu -c $script | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            assert ($res.stderr | str contains "is on a volume without path canonicalization support")
+            assert ($res.stderr | str contains $ext_dir)
+        }
+        let cfg = (load-host-config $home)
+        assert equal ($cfg.modules | where name == "vol_mod" | length) 1
+        assert (is-link-or-junction ($home | path join "modules" "vol_mod"))
+
+        # Without the mock a local /tmp path canonicalizes: no warning
+        let ext2 = ($home | path dirname | path join "vol_mod2")
+        mkdir $ext2
+        'name = "vol_mod2"
+os = ["linux", "cachyos"]' | save -f ($ext2 | path join "ygg.toml")
+        let script2 = ("use " + ($src_dir | path join "git.nu") + " *; add-module '" + $home + "' '" + $ext2 + "' | ignore")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_NO_CANONICALIZE: "" } {
+            let res2 = (^nu -c $script2 | complete)
+            assert equal $res2.exit_code 0 $res2.stderr
+            assert (not ($res2.stderr | str contains "canonicalization"))
+        }
+    }
+}

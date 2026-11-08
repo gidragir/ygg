@@ -8,3 +8,4 @@ export use sdk.nu *
 export use env.nu *
 export use pkg.nu *
 export use git.nu *
+export use doctor.nu *

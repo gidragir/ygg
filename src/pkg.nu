@@ -90,6 +90,42 @@ export def run-with-timeout [argv: list<string>, timeout_sec: int]: nothing -> r
     }
 }
 
+# Package managers supported on a host, in installation order
+export def allowed-package-managers [host_os: record]: nothing -> list<string> {
+    if ($host_os.os == "windows") {
+        ["winget", "scoop", "mise", "cargo", "pnpm", "uv"]
+    } else if ($host_os.os == "linux") {
+        if ($host_os.distro in ["cachyos", "arch"]) or ("arch" in $host_os.auto_scopes) {
+            ["pacman", "paru", "mise", "cargo", "pnpm", "uv"]
+        } else {
+            ["mise", "cargo", "pnpm", "uv", "pacman", "paru"]
+        }
+    } else {
+        ["mise", "cargo", "pnpm", "uv"]
+    }
+}
+
+# Managers with packages in the plan that are supported on this host but not found on PATH
+# (read-only; mock: YGG_MOCK_PKG_MISSING lists the missing ones)
+export def missing-package-managers [plan: record]: nothing -> list<string> {
+    let pkgs_record = ($plan.packages? | default {})
+    let allowed = (allowed-package-managers (detect-host-os))
+    $pkgs_record | columns | where { |mgr|
+        let raw = ($pkgs_record | get $mgr)
+        let has_pkgs = if (($raw | describe) starts-with "list") {
+            ($raw | where { |it| ($it != null) and ($it != "") } | is-not-empty)
+        } else {
+            ($raw != null) and ($raw != "")
+        }
+        let missing = if (is-mock-mode) {
+            $mgr in (csv-env "YGG_MOCK_PKG_MISSING")
+        } else {
+            which $mgr | is-empty
+        }
+        ($mgr in $allowed) and $has_pkgs and $missing
+    }
+}
+
 def is-mock-mode []: nothing -> bool {
     ($env.YGG_MOCK_PKG_LOG? | default "") != ""
 }
@@ -236,18 +272,7 @@ export def install-packages [
         return $empty_res
     }
 
-    let host_os = (detect-host-os)
-    let allowed_mgrs = if ($host_os.os == "windows") {
-        ["winget", "scoop", "mise", "cargo", "pnpm", "uv"]
-    } else if ($host_os.os == "linux") {
-        if ($host_os.distro in ["cachyos", "arch"]) or ("arch" in $host_os.auto_scopes) {
-            ["pacman", "paru", "mise", "cargo", "pnpm", "uv"]
-        } else {
-            ["mise", "cargo", "pnpm", "uv", "pacman", "paru"]
-        }
-    } else {
-        ["mise", "cargo", "pnpm", "uv"]
-    }
+    let allowed_mgrs = (allowed-package-managers (detect-host-os))
 
     let hashes = ((load-state $ygg_home).hashes? | default {})
     mut executed: list<string> = []

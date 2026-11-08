@@ -1,0 +1,406 @@
+# tests/test_doctor.nu
+# Tests for `ygg doctor` (src/doctor.nu, RFC-017): one scenario per check, read-only guarantee,
+# CLI exit codes and JSON output, core purity.
+
+use std/assert
+use ../src/state.nu *
+use ../src/manifest.nu *
+use ../src/link.nu *
+use ../src/doctor.nu *
+use helpers.nu [with-temp-ygg]
+
+# Module source directory outside YGG_HOME, linked into modules/<name>
+def make-module [home: string, name: string, toml: string]: nothing -> string {
+    let src = ($home | path dirname | path join ("src-" + $name))
+    mkdir $src
+    $toml | save -f ($src | path join "ygg.toml")
+    mkdir ($home | path join "modules")
+    ^ln -s $src ($home | path join "modules" $name)
+    $src
+}
+
+def write-host [home: string, mods: list<string>] {
+    $mods | each { |m| "[[modules]]\nname = \"" + $m + "\"\n" } | str join "\n" | save -f ($home | path join "host.toml")
+}
+
+def apply-all [home: string] {
+    ensure-ygg-dirs $home
+    let plan = (resolve-effective-plan $home)
+    apply-links $home $plan --sandbox $env.YGG_SANDBOX | ignore
+}
+
+def rows-of [report: table, check: string]: nothing -> table {
+    $report | where { |r| $r.check == $check }
+}
+
+# Recursive snapshot (type, mode, content hash, link target) of a whole directory tree
+def snapshot-tree [root: string]: nothing -> list<string> {
+    if not ($root | path exists) {
+        return []
+    }
+    mut out = []
+    for it in (ls -la $root | sort-by name) {
+        let rel = ($it.name | path relative-to $root)
+        if ($it.type == "symlink") {
+            $out = ($out | append $"L ($rel) -> ($it.target)")
+        } else if ($it.type == "dir") {
+            $out = ($out | append $"D ($rel) ($it.mode)")
+            $out = ($out | append (snapshot-tree $it.name | each { |l| $l | str replace --regex '^(\w) ' ('$1 ' + $rel + '/') }))
+        } else {
+            $out = ($out | append $"F ($rel) ($it.mode) (open --raw $it.name | hash sha256)")
+        }
+    }
+    $out
+}
+
+const LINKS_TOML = 'name = "m"
+os = ["linux"]
+[links]
+"a.conf" = "~/.config/a.conf"
+"b.conf" = "~/.config/b.conf"
+"c.conf" = "~/.config/c.conf"
+'
+
+def setup-links-module [home: string]: nothing -> string {
+    let src = (make-module $home "m" $LINKS_TOML)
+    for f in ["a.conf", "b.conf", "c.conf", "d.conf"] {
+        $"($f)\n" | save -f ($src | path join $f)
+    }
+    write-host $home ["m"]
+    apply-all $home
+    $src
+}
+
+export def test_doctor_link_and_link_pending [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let src = (setup-links-module $home)
+            let cfg = ($sb | path join ".config")
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "link" | length) 0
+
+            # Broken managed link (points to a missing path) and a real file in place of a link
+            rm ($cfg | path join "a.conf")
+            ^ln -s ($home | path join "nowhere") ($cfg | path join "a.conf")
+            rm ($cfg | path join "b.conf")
+            "host\n" | save -f ($cfg | path join "b.conf")
+            # A link added to the manifest but not applied yet
+            ($LINKS_TOML + "\"d.conf\" = \"~/.config/d.conf\"\n") | save -f ($src | path join "ygg.toml")
+
+            let rep = (run-doctor $home --sandbox $sb)
+            let link_rows = (rows-of $rep "link")
+            assert equal ($link_rows | length) 2
+            assert ($link_rows | all { |r| $r.severity == "error" })
+            assert equal ($link_rows | get target | sort) [($cfg | path join "a.conf"), ($cfg | path join "b.conf")]
+            assert ($link_rows | all { |r| ($r.fix | str contains "ygg apply") })
+
+            let pending = (rows-of $rep "link_pending")
+            assert equal ($pending | length) 1
+            assert equal ($pending | first | get severity) "warn"
+            assert equal ($pending | first | get target) ($cfg | path join "d.conf")
+            # The healthy link is not reported anywhere
+            assert (not ($rep | any { |r| $r.target == ($cfg | path join "c.conf") }))
+            # The dangling managed link is a `link` error, not an orphan
+            assert equal (rows-of $rep "orphan_link" | length) 0
+        }
+    }
+}
+
+export def test_doctor_orphan_link_and_state_orphan [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            setup-links-module $home | ignore
+            let cfg = ($sb | path join ".config")
+            mkdir ($sb | path join ".local" "bin")
+            ^ln -s ($home | path join "gone-1") ($cfg | path join "stale.conf")
+            ^ln -s ($home | path join "gone-2") ($sb | path join ".local" "bin" "old-tool")
+            ^ln -s ($home | path join "gone-3") ($sb | path join ".stale-rc")
+            # A valid unmanaged symlink is not an orphan
+            ^ln -s ($cfg | path join "a.conf") ($cfg | path join "alias.conf")
+            # Depth 1 only: a dangling link two levels below ~/.config is not scanned
+            mkdir ($cfg | path join "deep" "er")
+            ^ln -s ($home | path join "gone-4") ($cfg | path join "deep" "er" "x")
+
+            # State records of a module that is not in host.toml
+            mut st = (load-state $home)
+            let ghost_dest = ($cfg | path join "ghost.conf")
+            $st.links = ($st.links | upsert $ghost_dest { module: "ghost", src: "/x", type: "symlink", cmd_shim: "" })
+            let ghost_copy = ($cfg | path join "ghost.json")
+            $st.copies = ($st.copies | upsert $ghost_copy { module: "ghost", src: "/y", dest: $ghost_copy, last_synced_hash: "" })
+            save-state $home $st
+
+            let rep = (run-doctor $home --sandbox $sb)
+            let orphans = (rows-of $rep "orphan_link")
+            assert equal ($orphans | get target | sort) ([
+                ($cfg | path join "stale.conf"),
+                ($sb | path join ".local" "bin" "old-tool"),
+                ($sb | path join ".stale-rc")
+            ] | sort)
+            assert ($orphans | all { |r| $r.severity == "warn" })
+
+            let st_orphans = (rows-of $rep "state_orphan")
+            assert equal ($st_orphans | get target | sort) ([$ghost_dest, $ghost_copy] | sort)
+            assert ($st_orphans | all { |r| ($r.severity == "warn") and ($r.detail | str contains "ghost") })
+        }
+    }
+}
+
+export def test_doctor_sync_conflict_and_pending_save [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let src = (make-module $home "m" 'name = "m"
+os = ["linux"]
+[save]
+"s1.json" = "~/.config/s1.json"
+"s2.json" = "~/.config/s2.json"
+"s3.json" = "~/.config/s3.json"
+')
+            for f in ["s1.json", "s2.json", "s3.json"] {
+                "{}\n" | save -f ($src | path join $f)
+            }
+            write-host $home ["m"]
+            apply-all $home
+            let cfg = ($sb | path join ".config")
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "sync" | length) 0
+
+            '{"host": 1}' | save -f ($cfg | path join "s1.json")
+            '{"host": 2}' | save -f ($cfg | path join "s2.json")
+            '{"mod": 2}' | save -f ($src | path join "s2.json")
+
+            let sync = (rows-of (run-doctor $home --sandbox $sb) "sync")
+            assert equal ($sync | length) 2
+            assert ($sync | all { |r| $r.severity == "warn" })
+            let s1 = ($sync | where target == ($cfg | path join "s1.json") | first)
+            assert ($s1.detail | str contains "pending_save")
+            assert ($s1.fix | str contains "ygg save")
+            let s2 = ($sync | where target == ($cfg | path join "s2.json") | first)
+            assert ($s2.detail | str contains "conflict")
+        }
+    }
+}
+
+export def test_doctor_perm_on_private_files [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            make-module $home "m" 'name = "m"
+os = ["linux"]
+[doctor]
+private_files = ["~/.config/keys/key.txt"]
+' | ignore
+            write-host $home ["m"]
+            ensure-ygg-dirs $home
+            let secrets = ($home | path join "secrets.toml")
+            let env_file = ($home | path join ".state" "env" "env.nu")
+            let conf = ($sb | path join ".config" "environment.d" "99-ygg.conf")
+            let key = ($sb | path join ".config" "keys" "key.txt")
+            mkdir ($conf | path dirname) ($key | path dirname)
+            for f in [$secrets, $env_file, $conf, $key] {
+                "x = 1\n" | save -f $f
+                ^chmod 0644 $f
+            }
+
+            let perm = (rows-of (run-doctor $home --sandbox $sb) "perm")
+            assert equal ($perm | get target | sort) ([$secrets, $env_file, $conf, $key] | sort)
+            assert ($perm | all { |r| ($r.severity == "error") and ($r.fix | str contains "chmod 600") })
+
+            for f in [$secrets, $env_file, $conf, $key] {
+                ^chmod 0600 $f
+            }
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "perm" | length) 0
+            # Group-readable private file is an error as well
+            ^chmod 0640 $key
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "perm" | get target) [$key]
+        }
+    }
+}
+
+export def test_doctor_tool_missing_package_manager [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        make-module $home "m" 'name = "m"
+os = ["linux"]
+[packages]
+cargo = ["ripgrep"]
+' | ignore
+        write-host $home ["m"]
+        let log = ($home | path join "pkg.log")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_MISSING: "cargo" } {
+            let tool = (rows-of (run-doctor $home --sandbox $sb) "tool")
+            assert equal ($tool | length) 1
+            assert equal ($tool | first | get severity) "error"
+            assert equal ($tool | first | get target) "cargo"
+        }
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_MISSING: "" } {
+            # nu >= 0.116 and git are present on the test host; the manager is available
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "tool" | length) 0
+        }
+        assert (not ($log | path exists))
+    }
+}
+
+export def test_doctor_collision_and_shadow [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let a = (make-module $home "a" 'name = "a"
+os = ["linux"]
+[links]
+"same.conf" = "~/.config/same.conf"
+')
+            let b = (make-module $home "b" 'name = "b"
+os = ["linux"]
+[links]
+"same.conf" = "~/.config/same.conf"
+[links.app]
+target = "~/.config/app"
+mode = "dir"
+')
+            "a\n" | save -f ($a | path join "same.conf")
+            "b\n" | save -f ($b | path join "same.conf")
+            mkdir ($b | path join "app")
+            "common\n" | save -f ($b | path join "app" "common.txt")
+            # Host directory with runtime state that the module does not ship
+            let app = ($sb | path join ".config" "app")
+            mkdir ($app | path join "sub")
+            "host\n" | save -f ($app | path join "common.txt")
+            "state\n" | save -f ($app | path join "sub" "runtime.db")
+            write-host $home ["a", "b"]
+            apply-all $home
+            assert equal ($app | path type) "symlink"
+
+            let rep = (run-doctor $home --sandbox $sb)
+            let col = (rows-of $rep "collision")
+            assert equal ($col | length) 1
+            assert equal ($col | first | get severity) "warn"
+            assert equal ($col | first | get target) ($sb | path join ".config" "same.conf")
+            assert ($col | first | get detail | str contains "'a'")
+
+            let shadow = (rows-of $rep "shadow")
+            assert equal ($shadow | length) 1
+            let row = ($shadow | first)
+            assert equal $row.severity "warn"
+            assert equal $row.target $app
+            assert ($row.detail | str contains "sub/runtime.db")
+            assert (not ($row.detail | str contains "common.txt"))
+            let bkp_root = ($home | path join ".state" "backups")
+            assert ($row.fix | str contains $bkp_root)
+        }
+    }
+}
+
+export def test_doctor_secrets_template [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let src = (make-module $home "m" 'name = "m"
+os = ["linux"]
+')
+            "[env]\nAPI_KEY = \"\"\nOTHER_TOKEN = \"\"\n" | save -f ($src | path join "secrets.example.toml")
+            write-host $home ["m"]
+            let secrets = ($home | path join "secrets.toml")
+            "[env]\nAPI_KEY = \"value\"\n" | save -f $secrets
+            ^chmod 0600 $secrets
+
+            let sec = (rows-of (run-doctor $home --sandbox $sb) "secrets")
+            assert equal ($sec | length) 1
+            assert equal ($sec | first | get severity) "warn"
+            assert ($sec | first | get detail | str contains "OTHER_TOKEN")
+            assert (not ($sec | first | get detail | str contains "value"))
+
+            "[env]\nAPI_KEY = \"value\"\nOTHER_TOKEN = \"t\"\n" | save -f $secrets
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "secrets" | length) 0
+        }
+    }
+}
+
+export def test_doctor_canonical_warns_and_cli_exits_0 [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            setup-links-module $home | ignore
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "canonical" | length) 0
+        }
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_NO_CANONICALIZE: "1" } {
+            let rep = (run-doctor $home --sandbox $sb)
+            let can = (rows-of $rep "canonical")
+            assert ($can | all { |r| $r.severity == "warn" })
+            assert ($can | any { |r| $r.target == ($home | path join "modules" "m") })
+            assert ($can | any { |r| $r.target == ($sb | path join ".config" "a.conf") })
+            assert (not ($rep | any { |r| $r.severity == "error" }))
+
+            let res = (^nu $ygg_bin doctor --sandbox $sb | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            assert ($res.stdout | str contains "canonical")
+            assert ($res.stdout | str contains "0 error(s)")
+            let js = (^nu $ygg_bin doctor --json --sandbox $sb | complete)
+            assert equal $js.exit_code 0 $js.stderr
+            let parsed = ($js.stdout | from json)
+            assert (($parsed | length) > 0)
+            assert equal ($parsed | first | columns | sort) ["check", "detail", "fix", "severity", "target"]
+            assert ($parsed | any { |r| $r.check == "canonical" })
+        }
+    }
+}
+
+export def test_doctor_is_read_only_and_cli_exits_1_on_error [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let root = ($home | path dirname)
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            setup-links-module $home | ignore
+            let cfg = ($sb | path join ".config")
+            rm ($cfg | path join "a.conf")
+            ^ln -s ($home | path join "nowhere") ($cfg | path join "a.conf")
+            ^ln -s ($home | path join "gone") ($cfg | path join "stale.conf")
+            "[env]\nK = \"v\"\n" | save -f ($home | path join "secrets.toml")
+            ^chmod 0644 ($home | path join "secrets.toml")
+
+            let before = (snapshot-tree $root)
+            let state_before = (open --raw ($home | path join ".state" "state.json"))
+            let rep = (run-doctor $home --sandbox $sb)
+            assert ($rep | any { |r| $r.severity == "error" })
+            let res = (^nu $ygg_bin doctor --sandbox $sb | complete)
+            assert equal $res.exit_code 1
+            assert ($res.stdout | str contains "error(s)")
+            let js = (^nu $ygg_bin doctor --json --sandbox $sb | complete)
+            assert equal $js.exit_code 1
+            let parsed = ($js.stdout | from json)
+            assert ($parsed | any { |r| ($r.check == "link") and ($r.severity == "error") })
+            assert ($parsed | any { |r| ($r.check == "perm") and ($r.severity == "error") })
+            assert equal (snapshot-tree $root) $before
+            assert equal (open --raw ($home | path join ".state" "state.json")) $state_before
+        }
+    }
+}
+
+export def test_doctor_does_not_create_ygg_dirs [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let fresh = ($home | path join "fresh-home")
+        mkdir $fresh
+        let before = (snapshot-tree ($home | path dirname))
+        with-env { YGG_HOME: $fresh } {
+            assert equal (run-doctor $fresh --sandbox $sb | where severity == "error" | length) 0
+            let res = (^nu $ygg_bin doctor --json --sandbox $sb | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            assert equal ($res.stdout | from json | length) 0
+        }
+        assert equal (snapshot-tree ($home | path dirname)) $before
+        assert (not ($fresh | path join ".state" | path exists))
+        assert (not ($fresh | path join "modules" | path exists))
+    }
+}
+
+export def test_doctor_core_has_no_user_specific_names [] {
+    let doctor_src = ($env.FILE_PWD | path join "../src/doctor.nu" | path expand)
+    let text = (open --raw $doctor_src | str lowercase)
+    for word in ["chezmoi", "sops", "omni-dotfiles", "ai-dotfiles", "win-dotfiles", "hermes"] {
+        assert (not ($text | str contains $word)) $"src/doctor.nu must not mention '($word)'"
+    }
+}

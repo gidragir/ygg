@@ -2,6 +2,7 @@
 # Yggdrasil configuration manager — Reactive SDK & setup.nu runner
 
 use state.nu [get-ygg-home, load-state, save-state, expand-target-path]
+use pkg.nu [run-with-timeout]
 use link.nu [is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
 
 const YGG_SRC_DIR = (path self | path dirname)
@@ -11,26 +12,18 @@ def is-path-absolute [p: string]: nothing -> bool {
     ($p | str starts-with "/") or ($p | str starts-with "\\") or ($p | str starts-with "~") or ($p =~ '^[A-Za-z]:')
 }
 
-# Calculate hash of watch_globs and conditionally execute block.
-# Returns true if executed, false if skipped.
-export def onchange [
-    key: string,
-    watch_globs: list<string>,
-    block: closure,
-    --target: string = ""
-]: nothing -> bool {
-    let ygg_home = (get-ygg-home)
-    let mod_dir = ($env.YGG_MODULE_DIR? | default ".")
-
-    # 1. Collect all files matching watch_globs
+# Aggregate SHA-256 of all files matched by watch_globs (directories recursively).
+# Relative globs are resolved against base_dir; entries are "<path relative to base_dir>:<sha256>".
+export def hash-watch-set [watch_globs: list<string>, base_dir: string]: nothing -> string {
     mut files: list<string> = []
     for pattern in $watch_globs {
         let resolved_pattern = if (is-path-absolute $pattern) {
             $pattern
         } else {
-            ($mod_dir | path join $pattern)
+            ($base_dir | path join $pattern)
         }
 
+        # RFC-001: never call `path exists` / `path type` on a glob pattern (Win32 File API)
         let has_wildcard = ($resolved_pattern | str contains "*") or ($resolved_pattern | str contains "?")
         let is_exact = if not $has_wildcard {
             try { ($resolved_pattern | path exists) or (($resolved_pattern | path type) != null) } catch { false }
@@ -69,14 +62,28 @@ export def onchange [
     }
     let unique_files = ($files | uniq | sort)
 
-    # 2. Compute aggregate SHA-256 hash
     mut hash_entries = []
     for f in $unique_files {
-        let rel = (try { $f | path relative-to $mod_dir } catch { $f })
+        let rel = (try { $f | path relative-to $base_dir } catch { $f })
         let content_hash = (try { open --raw $f | hash sha256 } catch { "" })
         $hash_entries = ($hash_entries | append $"($rel):($content_hash)")
     }
-    let current_hash = ($hash_entries | str join "\n" | hash sha256)
+    $hash_entries | str join "\n" | hash sha256
+}
+
+# Calculate hash of watch_globs and conditionally execute block.
+# Returns true if executed, false if skipped.
+export def onchange [
+    key: string,
+    watch_globs: list<string>,
+    block: closure,
+    --target: string = ""
+]: nothing -> bool {
+    let ygg_home = (get-ygg-home)
+    let mod_dir = ($env.YGG_MODULE_DIR? | default ".")
+
+    # 1-2. Aggregate hash of the watched files
+    let current_hash = (hash-watch-set $watch_globs $mod_dir)
 
     # 3. Check current state and target
     let state = (load-state $ygg_home)
@@ -388,4 +395,95 @@ def make-safe-dir-link [src: string, dest: string]: nothing -> nothing {
     if not $res.ok {
         error make { msg: $"safe-link: failed to link '($dest)' -> '($src)': ($res.stderr)" }
     }
+}
+
+# RFC-015: run `on_change` hooks of resolved link targets as the last step of `apply`.
+# A hook fires when the hash of its sources changed, when its key got a LINK / RELINK /
+# BACKUP_REPLACE op, or with --force. An identical command runs once per call; the hashes of all
+# its keys (state.hashes."on_change:<module>:<key>") are recorded only on success.
+# --dry-run: nothing runs or is recorded (status "dry_run"). YGG_MOCK_PKG_LOG: "hook: <cmd>" is
+# logged instead of running (YGG_MOCK_HOOK_FAIL: comma-separated commands that fail in the mock).
+# Sandbox without the mock log: nothing runs (status "skipped_sandbox").
+export def run-link-hooks [
+    ygg_home: string,
+    targets: table,
+    ops: table,
+    --dry-run,
+    --force,
+    --sandbox: string = ""
+]: nothing -> list<record<module: string, keys: list<string>, cmd: string, status: string, stderr: string>> {
+    let hook_rows = ($targets | default [] | where { |t| ($t.on_change? | default "") != "" })
+    if ($hook_rows | is-empty) {
+        return []
+    }
+    let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    let mock_fail = ($env.YGG_MOCK_HOOK_FAIL? | default "" | split row "," | each { |c| $c | str trim } | where { |c| $c != "" })
+    let hashes = ((load-state $ygg_home).hashes? | default {})
+    let changed_ops = ["LINK", "RELINK", "BACKUP_REPLACE"]
+
+    # 1-3. One group per (module, key, command); keep the groups that have to fire
+    mut fired = []
+    for g in ($hook_rows | group-by --to-table module key on_change) {
+        let rows = $g.items
+        let first_row = ($rows | first)
+        let module = $first_row.module
+        let key = $first_row.key
+        let cmd = $first_row.on_change
+        let base_dir = ($ygg_home | path join "modules" $module | path expand)
+        let current = (hash-watch-set ($rows | get src | uniq) $base_dir)
+        let hkey = ("on_change:" + $module + ":" + $key)
+        let prev = ($hashes | get -o $hkey | default "")
+        let op_hit = ($ops | default [] | any { |o| ($o.module == $module) and ($o.key == $key) and ($o.op in $changed_ops) })
+        if $force or ($current != $prev) or $op_hit {
+            $fired = ($fired | append { module: $module, key: $key, cmd: $cmd, hkey: $hkey, hash: $current })
+        }
+    }
+
+    # 4-5. Deduplicate by command, run once, record the hashes of all keys on success
+    mut results = []
+    mut new_hashes = {}
+    for c in ($fired | group-by --to-table cmd) {
+        let items = $c.items
+        let cmd = $c.cmd
+        let modules = ($items | get module | uniq | str join ",")
+        let keys = ($items | get key)
+        let outcome = if $dry_run {
+            { status: "dry_run", stderr: "" }
+        } else if ($mock_log != "") {
+            $"hook: ($cmd)\n" | save --append $mock_log
+            if ($cmd in $mock_fail) {
+                { status: "failed", stderr: "mock hook failure" }
+            } else {
+                { status: "ok", stderr: "" }
+            }
+        } else if ($sb != "") {
+            { status: "skipped_sandbox", stderr: "" }
+        } else {
+            let res = (run-with-timeout ["nu", "-c", $cmd] 30)
+            if $res.exit_code == 0 {
+                { status: "ok", stderr: "" }
+            } else {
+                let err = ($res.stderr | str trim)
+                { status: "failed", stderr: (if ($err != "") { $err } else { $"exit code ($res.exit_code)" }) }
+            }
+        }
+        if ($outcome.status == "failed") {
+            for k in $keys {
+                print -e $"[ygg] Warning: on_change for '($k)' failed: ($outcome.stderr)"
+            }
+        }
+        if ($outcome.status == "ok") {
+            for it in $items {
+                $new_hashes = ($new_hashes | upsert $it.hkey $it.hash)
+            }
+        }
+        $results = ($results | append { module: $modules, keys: $keys, cmd: $cmd, status: $outcome.status, stderr: $outcome.stderr })
+    }
+
+    if ($new_hashes | columns | is-not-empty) {
+        let st = (load-state $ygg_home)
+        save-state $ygg_home ($st | upsert hashes (($st.hashes? | default {}) | merge $new_hashes))
+    }
+    $results
 }
