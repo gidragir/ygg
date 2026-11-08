@@ -19,7 +19,7 @@ def main [--filter: string = ""] {
     for file in $test_files {
         let file_name = ($file | path basename)
         if $file_name == "test_phase2_modules.nu" and (($env.YGG_RUN_HOST_E2E? | default "0") != "1") {
-            # Skip host-dependent E2E tests unless YGG_RUN_HOST_E2E=1
+            print $"  ⏭️  SKIP: ($file_name) \(requires YGG_RUN_HOST_E2E=1\)"
             continue
         }
         cd $tests_dir

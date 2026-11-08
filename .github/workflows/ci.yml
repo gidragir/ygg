@@ -21,6 +21,8 @@ jobs:
 
       - name: Setup Nushell
         uses: nushell/setup-nu@v2
+        with:
+          version: '0.116.1'
 
       - name: Setup Just
         uses: extractions/setup-just@v2
@@ -34,8 +36,8 @@ jobs:
         run: just test
 
       - name: Verify core purity
+        shell: nu {0}
         run: |
-          nu -c '
           let forbidden = ["/data/projects", "/home/gidragir", "chezmoi", "sops", "omni-dotfiles", "ai-dotfiles", "win-dotfiles", "hermes"]
           let files = (glob "src/**/*.nu" | append (glob "bin/**/*.nu"))
           mut found_violations = []
@@ -43,7 +45,7 @@ jobs:
             let content = (open --raw $f | str lowercase)
             for word in $forbidden {
               if ($content | str contains $word) {
-                $found_violations = ($found_violations | append $"($f) contains forbidden token '\''($word)'\''")
+                $found_violations = ($found_violations | append $"($f) contains forbidden token '($word)'")
               }
             }
           }
@@ -52,4 +54,3 @@ jobs:
             exit 1
           }
           print "Core purity verified: src/ and bin/ are clean."
-          '
