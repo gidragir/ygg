@@ -5,7 +5,7 @@
 # nothing is written, nothing is fixed automatically. Module-specific private files are declared
 # by modules themselves in `[doctor] private_files` of their manifest.
 
-use state.nu [load-state, expand-target-path, check-pending-journal]
+use state.nu [load-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path]
 use manifest.nu [load-host-config, resolve-effective-plan]
 use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-literal-target, normalize-case]
 use env.nu [missing-secret-keys]
@@ -103,21 +103,34 @@ def check-sync [state: record]: nothing -> list<record> {
     }
 }
 
-# perm: private files must not be accessible by group/others (Unix only)
-def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record> {
-    if ($nu.os-info.family == "windows") {
-        return []
-    }
-    let env_dir = ($ygg_home | path join ".state" "env")
-    let env_files = (try { ls -a $env_dir | where { |it| $it.type == "file" } | get name } catch { [] })
+export def is-windows-acl-insecure [output: string]: nothing -> bool {
+    let re = '(?i)(BUILTIN\\Users|Everyone|NT AUTHORITY\\Authenticated Users):[^\r\n]*?\((R|F|M|RX)\)'
+    $output =~ $re
+}
+
+# perm: private files must not be accessible by group/others (Unix) or Users/Everyone (Windows RFC-035)
+export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record> {
+    let host_os = (detect-host-os)
+    let is_windows = ($host_os.os == "windows")
     let private = ($plan.modules? | default [] | each { |m|
         to-list ($m.manifest?.doctor?.private_files? | default []) | each { |p| expand-target-path $p --sandbox $sb }
     } | flatten)
-    let files = ([($ygg_home | path join "secrets.toml")]
+    let files = if $is_windows {
+        [
+            ($ygg_home | path join "secrets.toml")
+            ($ygg_home | path join ".state" "env" "env.ps1")
+        ]
+        | append $private
+        | uniq
+    } else {
+        let env_dir = ($ygg_home | path join ".state" "env")
+        let env_files = (try { ls -a $env_dir | where { |it| $it.type == "file" } | get name } catch { [] })
+        [($ygg_home | path join "secrets.toml")]
         | append $env_files
         | append (expand-target-path "~/.config/environment.d/99-ygg.conf" --sandbox $sb)
         | append $private
-        | uniq)
+        | uniq
+    }
     mut rows = []
     for f in $files {
         if not ($f | path exists) {
@@ -125,6 +138,25 @@ def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<re
         }
         let real = ($f | path expand)
         if (($real | path type) != "file") {
+            continue
+        }
+        if $is_windows {
+            let mock_insecure = (($env.YGG_MOCK_WINDOWS_INSECURE_ACL? | default "") == "1")
+            let mock_output = ($env.YGG_MOCK_WINDOWS_ICACLS_OUTPUT? | default "")
+            let is_insecure = if $mock_insecure {
+                true
+            } else if ($mock_output != "") {
+                is-windows-acl-insecure $mock_output
+            } else if (which icacls.exe | is-not-empty) or (which icacls | is-not-empty) {
+                let cmd = if (which icacls.exe | is-not-empty) { "icacls.exe" } else { "icacls" }
+                let out = (try { ^$cmd (to-win32-path $real) | complete | get stdout } catch { "" })
+                is-windows-acl-insecure $out
+            } else {
+                false
+            }
+            if $is_insecure {
+                $rows = ($rows | append (finding "perm" "error" $f "insecure Windows ACL: readable by Users/Everyone" $"icacls '($f)' /inheritance:r /grant:r %USERNAME%:F"))
+            }
             continue
         }
         # nu 0.116 `ls -lD` mode is the 9-char "rwxrwxrwx" string (no file type char)

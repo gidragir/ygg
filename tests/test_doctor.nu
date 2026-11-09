@@ -430,3 +430,75 @@ export def test_journal_transaction_lifecycle_and_doctor_detection [] {
     }
 }
 
+export def test_doctor_windows_acl_audit_generates_perm_error [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "" | save -f ($home | path join "secrets.toml")
+        with-env { YGG_MOCK_WINDOWS_INSECURE_ACL: "1", YGG_HOST_OS_OVERRIDE: "windows" } {
+            let res = (check-perms $home { modules: [] } "")
+            assert ($res | any { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.detail | str contains "insecure Windows ACL") }) "Expected Windows ACL perm finding"
+        }
+    }
+}
+
+export def test_doctor_windows_acl_parser_detects_everyone [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "" | save -f ($home | path join "secrets.toml")
+        with-env {
+            YGG_HOST_OS_OVERRIDE: "windows",
+            YGG_MOCK_WINDOWS_ICACLS_OUTPUT: "secrets.toml Everyone:(R)\nBUILTIN\\Administrators:(F)"
+        } {
+            let res = (check-perms $home { modules: [] } "")
+            assert ($res | any { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.detail | str contains "insecure Windows ACL") }) "Expected Windows ACL error from Everyone:(R)"
+        }
+    }
+}
+
+export def test_doctor_windows_acl_parser_passes_secure_acl [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "" | save -f ($home | path join "secrets.toml")
+        with-env {
+            YGG_HOST_OS_OVERRIDE: "windows",
+            YGG_MOCK_WINDOWS_ICACLS_OUTPUT: "secrets.toml NT AUTHORITY\\SYSTEM:(F)\nMYPC\\User:(F)"
+        } {
+            let res = (check-perms $home { modules: [] } "")
+            assert ($res | is-empty) "Expected secure Windows ACL to produce no findings"
+        }
+    }
+}
+
+export def test_doctor_windows_acl_checks_env_ps1_and_private_files [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        ensure-ygg-dirs $home
+        let env_ps1 = ($home | path join ".state" "env" "env.ps1")
+        mkdir ($env_ps1 | path dirname)
+        "$env:YGG = '1'\n" | save -f $env_ps1
+        let priv = ($sb | path join ".config" "my_token.txt")
+        mkdir ($priv | path dirname)
+        "secret" | save -f $priv
+        let plan = {
+            modules: [
+                {
+                    manifest: {
+                        doctor: {
+                            private_files: ["~/.config/my_token.txt"]
+                        }
+                    }
+                }
+            ]
+        }
+        with-env { YGG_MOCK_WINDOWS_INSECURE_ACL: "1", YGG_HOST_OS_OVERRIDE: "windows" } {
+            let res = (check-perms $home $plan $sb)
+            let targets = ($res | get target)
+            assert ($targets | any { |t| $t == $env_ps1 }) "Expected env.ps1 in targets"
+            assert ($targets | any { |t| $t == $priv }) "Expected private file in targets"
+            assert ($res | all { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.fix | str contains "icacls") }) "All must have icacls fix"
+        }
+    }
+}
+
+
+

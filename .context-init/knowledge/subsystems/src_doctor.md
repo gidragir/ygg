@@ -2,8 +2,8 @@
 directory: src/doctor.nu
 source:
   kind: git
-  blob_sha: 1b4558a7cf98b0ee3694c01244292f95abc87425
-  commit_sha: b2b60cceff6830fd15d59eceaa74351c9a6c7049
+  blob_sha: dd2fd55c2d9f72f89dfc42df915d6ca175951cf2
+  commit_sha: 72adc835b38f2440deb4c6ae14257f2586b7daee
 generated_by:
   component: context-init
   role: update
@@ -37,9 +37,9 @@ def check-links [ops: table]: nothing -> list<record>
 def check-orphan-links [state: record, targets: table, sb: string]: nothing -> list<record>
 def check-state-orphans [state: record, host_modules: list<string>]: nothing -> list<record>
 def check-sync [state: record]: nothing -> list<record>
-def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record>
+export def is-windows-acl-insecure [output: string]: nothing -> bool
+export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record>
 def check-tools [plan: record]: nothing -> list<record>
-def check-collisions [resolved: record]: nothing -> list<record>
 ```
 
 ## 🧪 Запуск и тестирование
