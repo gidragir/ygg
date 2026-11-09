@@ -587,7 +587,8 @@ export def run-service-actions [
     ygg_home: string,
     plan: record,
     ops: any,
-    --dry-run
+    --dry-run,
+    --sandbox: string = ""
 ]: nothing -> list<record> {
     let services = ($plan.services? | default {})
     if not (($services | describe) starts-with "record") or ($services | columns | is-empty) {
@@ -607,7 +608,7 @@ export def run-service-actions [
 
     let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
     let mock_fail = ($env.YGG_MOCK_SERVICE_FAIL? | default "" | split row "," | each { |c| $c | str trim } | where { |c| $c != "" })
-    let sb = ($env.YGG_SANDBOX? | default "")
+    let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
 
     mut scheduled = []
 
