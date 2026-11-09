@@ -1,4 +1,5 @@
 use std/assert
+use ../src/state.nu [ensure-ygg-dirs]
 use helpers.nu [with-temp-ygg]
 
 export def test_full_cli_lifecycle [] {
@@ -884,6 +885,50 @@ export def test_cli_ygg_apply_locked_and_lockfile [] {
         }
     }
 }
+
+export def test_cli_doctor_fix [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            ensure-ygg-dirs $home
+            let sec = ($home | path join "secrets.toml")
+            "val = 1" | save -f $sec
+            ^chmod 644 $sec | complete | ignore
+
+            let cfg = ($sb | path join ".config")
+            mkdir $cfg
+            let dead_link = ($cfg | path join "broken.conf")
+            ^ln -s ($home | path join "not-existing-target") $dead_link
+
+            # Check doctor without --fix reports errors/warnings and does not mutate
+            let res_audit = (^nu $ygg_bin doctor --sandbox $sb | complete)
+            assert equal $res_audit.exit_code 1
+            assert ($res_audit.stdout | str contains "perm")
+            assert ($res_audit.stdout | str contains "orphan_link")
+
+            # Check doctor --fix -y fixes perm and orphan_link
+            let res_fix = (^nu $ygg_bin doctor --fix -y --sandbox $sb | complete)
+            assert equal $res_fix.exit_code 0 $res_fix.stderr
+            assert ($res_fix.stdout | str contains "Fixed findings:")
+            assert ($res_fix.stdout | str contains "perm")
+            assert ($res_fix.stdout | str contains "orphan_link")
+
+            # Verify on filesystem
+            let mode = (ls -lD $sec | get -o 0.mode | default "")
+            assert ($mode =~ 'rw-------') "Expected 0600 mode after fix"
+            assert (try { ($dead_link | path type) != "symlink" } catch { true }) "Expected orphan link removed"
+
+            # Check doctor --fix --json output structure
+            let res_json = (^nu $ygg_bin doctor --fix -y --json --sandbox $sb | complete)
+            assert equal $res_json.exit_code 0
+            let parsed = ($res_json.stdout | from json)
+            assert ($parsed | columns | any { |c| $c == "findings" })
+            assert ($parsed | columns | any { |c| $c == "fixed" })
+        }
+    }
+}
+
 
 
 

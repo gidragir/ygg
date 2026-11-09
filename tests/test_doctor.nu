@@ -500,5 +500,54 @@ export def test_doctor_windows_acl_checks_env_ps1_and_private_files [] {
     }
 }
 
+export def test_doctor_fix_resolves_perms_and_orphan_links [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        ensure-ygg-dirs $home
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let sec = ($home | path join "secrets.toml")
+            "secret = true" | save -f $sec
+            ^chmod 644 $sec | complete | ignore
+
+            let cfg = ($sb | path join ".config")
+            mkdir $cfg
+            let dead_link = ($cfg | path join "dead.conf")
+            ^ln -s ($home | path join "nonexistent") $dead_link
+
+            mut st = (load-state $home)
+            let ghost_dest = ($cfg | path join "ghost.conf")
+            $st.links = ($st.links | upsert $ghost_dest { module: "ghost", src: "/x", type: "symlink", cmd_shim: "" })
+            let ghost_copy = ($cfg | path join "ghost.json")
+            $st.copies = ($st.copies | upsert $ghost_copy { module: "ghost", src: "/y", dest: $ghost_copy, last_synced_hash: "" })
+            save-state $home $st
+
+            let findings = [
+                { check: "perm", severity: "error", target: $sec, detail: "mode rw-r--r--, expected rw-------", fix: $"chmod 600 '($sec)'" }
+                { check: "orphan_link", severity: "warn", target: $dead_link, detail: "dangling symlink", fix: "remove the link" }
+                { check: "state_orphan", severity: "warn", target: $ghost_dest, detail: "state.links ghost", fix: "ygg apply" }
+                { check: "state_orphan", severity: "warn", target: $ghost_copy, detail: "state.copies ghost", fix: "ygg apply" }
+                { check: "sync", severity: "warn", target: "/dummy/sync", detail: "conflict", fix: "ygg apply --force" }
+            ]
+
+            let fixed = (doctor-fix $home $findings)
+            assert equal ($fixed | length) 4 "Expected 4 fixed findings (perm, orphan_link, 2 state_orphans; sync skipped)"
+
+            # Verify perm fixed to 0600
+            let mode = (ls -lD $sec | get -o 0.mode | default "")
+            assert ($mode =~ 'rw-------') "Expected 0600 mode after fix"
+
+            # Verify orphan_link removed
+            assert (not ($dead_link | path exists)) "Expected dead symlink to be removed"
+            assert (try { ($dead_link | path type) != "symlink" } catch { true }) "Expected dead symlink does not exist as symlink"
+
+            # Verify state_orphan cleaned from state
+            let new_st = (load-state $home)
+            assert ($ghost_dest not-in ($new_st.links | columns)) "ghost link should be removed from state.links"
+            assert ($ghost_copy not-in ($new_st.copies | columns)) "ghost copy should be removed from state.copies"
+        }
+    }
+}
+
+
 
 

@@ -38,7 +38,7 @@ def main [--version (-v)] {
     print "  ygg save [--no-lock]                     Save reverse-copied GUI/app edits back to modules"
     print "  ygg clean [--backups] [--hashes] [--dry-run] [--no-lock]  Clean old backups and orphaned state hashes"
     print "  ygg status [--json]                      Display module sync and git status table"
-    print "  ygg doctor [--json]                      Read-only host audit (exit code 1 on errors)"
+    print "  ygg doctor [--json] [--fix] [-y]         Host audit & self-healing (exit code 1 on errors)"
     print "  ygg version                              Print version (also --version / -v)"
     print ""
     print "SDK Subcommands (for setup.nu scripts):"
@@ -507,16 +507,55 @@ def "main status" [--json] {
     }
 }
 
-# Read-only host audit (RFC-017): prints findings and a summary; exit code 1 when any error is found
-def "main doctor" [--json, --sandbox: string = ""] {
+# Host audit (RFC-017) & self-healing (RFC-038): prints findings and a summary; exit code 1 when any error remains
+def "main doctor" [
+    --json,
+    --fix,
+    --yes (-y),
+    --sandbox: string = ""
+] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
     let ygg_home = (get-ygg-home)
-    let report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+    mut report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+
+    mut fixed_findings = []
+    if $fix {
+        let fixable = ($report | where { |r| $r.check in ["perm", "orphan_link", "state_orphan"] })
+        if ($fixable | is-not-empty) {
+            let confirmed = if $yes {
+                true
+            } else {
+                if not $json {
+                    print $"Doctor --fix: found (($fixable | length)) fixable finding\(s\)."
+                }
+                let answer = (try { input "Apply automatic fixes? [y/N]: " } catch { "n" })
+                ($answer | str trim | str lowercase) in ["y", "yes"]
+            }
+            if $confirmed {
+                $fixed_findings = (doctor-fix $ygg_home $fixable)
+                # Re-run audit after fix to report updated remaining findings
+                $report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+            } else if not $json {
+                print "Doctor --fix aborted by user."
+            }
+        }
+    }
+
     let errors = ($report | where { |r| $r.severity == "error" } | length)
     if $json {
-        print ($report | to json --raw)
+        let out = if $fix {
+            { findings: $report, fixed: $fixed_findings }
+        } else {
+            $report
+        }
+        print ($out | to json --raw)
     } else {
+        if ($fixed_findings | is-not-empty) {
+            print "Fixed findings:"
+            print ($fixed_findings | select check target action status | table --expand)
+            print ""
+        }
         if ($report | is-not-empty) {
             print ($report | table --expand)
         }

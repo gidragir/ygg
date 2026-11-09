@@ -5,9 +5,9 @@
 # nothing is written, nothing is fixed automatically. Module-specific private files are declared
 # by modules themselves in `[doctor] private_files` of their manifest.
 
-use state.nu [load-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path]
+use state.nu [load-state, save-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path]
 use manifest.nu [load-host-config, resolve-effective-plan]
-use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-literal-target, normalize-case]
+use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-literal-target, normalize-case, remove-link-only]
 use env.nu [missing-secret-keys]
 use pkg.nu [missing-package-managers]
 use git.nu [copy-sync-status, is-canonicalizable]
@@ -316,3 +316,91 @@ export def run-doctor [
         (check-journal $ygg_home)
     ] | flatten
 }
+
+# Automatically resolve deterministic safe findings (RFC-038).
+# Safe checks handled:
+#   - perm: chmod 600 (Unix) or icacls reset inheritance & grant owner:F (Windows)
+#   - orphan_link: safely remove dangling symlink via remove-link-only
+#   - state_orphan: remove orphaned record from state.links or state.copies
+# Unsafe checks (sync, shadow, etc.): skipped.
+# Returns list of records describing fixed findings with status: "fixed" or "failed".
+export def doctor-fix [
+    ygg_home: string,
+    findings: list<record>
+]: nothing -> list<record> {
+    let host_os = (detect-host-os)
+    let is_windows = ($host_os.os == "windows")
+    mut state = (load-state $ygg_home)
+    mut state_changed = false
+    mut fixed_list = []
+
+    for f in $findings {
+        let check = ($f.check? | default "")
+        let target = ($f.target? | default "")
+
+        match $check {
+            "perm" => {
+                let ok = if $is_windows {
+                    let win_path = (to-win32-path $target)
+                    let user = ($env.USERNAME? | default ($env.USER? | default ""))
+                    let cmd = if (which icacls.exe | is-not-empty) { "icacls.exe" } else { "icacls" }
+                    let res = (try {
+                        if ($user != "") {
+                            ^$cmd $win_path /inheritance:r $"/grant:r" $"($user):F" | complete
+                        } else {
+                            ^$cmd $win_path /inheritance:r | complete
+                        }
+                    } catch { { exit_code: 1 } })
+                    $res.exit_code == 0
+                } else {
+                    let res = (try { ^chmod 600 $target | complete } catch { { exit_code: 1 } })
+                    $res.exit_code == 0
+                }
+                if $ok {
+                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action "permissions set to 0600"))
+                } else {
+                    $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to update permissions"))
+                }
+            }
+            "orphan_link" => {
+                let ok = (try {
+                    remove-link-only $target
+                    true
+                } catch {
+                    false
+                })
+                if $ok {
+                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action "removed orphan link"))
+                } else {
+                    $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to remove orphan link"))
+                }
+            }
+            "state_orphan" => {
+                let in_links = ($target in ($state.links | columns))
+                let in_copies = ($target in ($state.copies | columns))
+                if $in_links or $in_copies {
+                    if $in_links {
+                        $state.links = ($state.links | reject $target)
+                    }
+                    if $in_copies {
+                        $state.copies = ($state.copies | reject $target)
+                    }
+                    $state_changed = true
+                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action "pruned orphaned record from state"))
+                } else {
+                    $fixed_list = ($fixed_list | append ($f | insert status "skipped" | insert action "target not found in state"))
+                }
+            }
+            _ => {
+                # Dangerous or unfixable checks (sync, shadow, tool, etc.) are skipped
+            }
+        }
+    }
+
+    if $state_changed {
+        save-state $ygg_home $state
+    }
+
+    $fixed_list
+}
+
