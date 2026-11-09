@@ -37,7 +37,7 @@ export def ensure-ygg-dirs [ygg_home: string]: nothing -> nothing {
 # Load current state from .state/state.json
 export def load-state [ygg_home: string]: nothing -> record {
     let state_file = ($ygg_home | path join ".state" "state.json")
-    let default_state = { links: {}, copies: {}, hashes: {} }
+    let default_state = { links: {}, copies: {}, hashes: {}, packages: {} }
 
     if not ($state_file | path exists) {
         return $default_state
@@ -48,7 +48,8 @@ export def load-state [ygg_home: string]: nothing -> record {
         {
             links: ($loaded.links? | default {}),
             copies: ($loaded.copies? | default {}),
-            hashes: ($loaded.hashes? | default {})
+            hashes: ($loaded.hashes? | default {}),
+            packages: ($loaded.packages? | default {})
         }
     } catch {
         $default_state

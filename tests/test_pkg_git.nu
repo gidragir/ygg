@@ -896,5 +896,152 @@ export def test_ygg_lock_generation_and_pinned_modules [] {
     }
 }
 
+export def test_prune_unused_packages_isolated_providers [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        save-state $home { links: {}, copies: {}, hashes: {}, packages: { uv: ["ruff", "black"] } }
+        let plan = { packages: { uv: ["ruff"] } }
+        let cmds = (prune-unused-packages $home $plan --dry-run)
+        assert ($cmds | any { |c| $c =~ "uv tool uninstall black" }) "Expected black uninstallation"
+        # Verify dry-run does not mutate state.packages
+        let st = (load-state $home)
+        assert equal ($st.packages.uv | sort) (["black", "ruff"] | sort)
+    }
+}
+
+export def test_prune_unused_packages_real_mock_execution [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let log = ($home | path join "pkg.log")
+        save-state $home {
+            links: {},
+            copies: {},
+            hashes: {},
+            packages: {
+                uv: ["ruff", "black"],
+                mise: ["node@20", "python@3.11"],
+                pnpm: ["prettier", "eslint"],
+                cargo: ["bat", "eza"]
+            }
+        }
+        let plan = {
+            packages: {
+                uv: ["ruff"],
+                mise: ["node@20"],
+                pnpm: ["prettier"],
+                cargo: ["bat"]
+            }
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let cmds = (prune-unused-packages $home $plan)
+            assert ($cmds | any { |c| $c =~ "uv tool uninstall black" })
+            assert ($cmds | any { |c| $c =~ "mise uninstall python@3.11" })
+            assert ($cmds | any { |c| $c =~ "pnpm remove -g eslint" })
+            assert ($cmds | any { |c| $c =~ "cargo uninstall eza" })
+
+            let log_content = (open --raw $log)
+            assert ($log_content | str contains "uv tool uninstall black")
+            assert ($log_content | str contains "mise uninstall python@3.11")
+            assert ($log_content | str contains "pnpm remove -g eslint")
+            assert ($log_content | str contains "cargo uninstall eza")
+
+            let st = (load-state $home)
+            assert equal $st.packages.uv ["ruff"]
+            assert equal $st.packages.mise ["node@20"]
+            assert equal $st.packages.pnpm ["prettier"]
+            assert equal $st.packages.cargo ["bat"]
+        }
+    }
+}
+
+export def test_prune_unused_packages_system_guard [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        save-state $home {
+            links: {},
+            copies: {},
+            hashes: {},
+            packages: {
+                pacman: ["git", "curl"],
+                uv: ["black"]
+            }
+        }
+        let plan = { packages: {} }
+
+        # Without --force-system-prune: system packages must be skipped
+        let cmds_safe = (prune-unused-packages $home $plan --dry-run)
+        assert ($cmds_safe | any { |c| $c =~ "uv tool uninstall black" }) "Safe manager must be pruned"
+        assert (not ($cmds_safe | any { |c| $c =~ "pacman" })) "Pacman must not be pruned without force"
+
+        # With --force-system-prune: system packages are included
+        let cmds_forced = (prune-unused-packages $home $plan --dry-run --force-system-prune)
+        assert ($cmds_forced | any { |c| $c =~ "uv tool uninstall black" })
+        assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm git" })
+        assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm curl" })
+    }
+}
+
+export def test_install_packages_updates_state_packages [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let log = ($home | path join "pkg.log")
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["linux"]
+[packages]
+uv = ["ruff", "black"]
+mise = ["node@20"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "linux", YGG_MOCK_PKG_LOG: $log } {
+            install-packages $home (resolve-effective-plan $home)
+            let st = (load-state $home)
+            assert equal ($st.packages.uv | sort) (["black", "ruff"] | sort)
+            assert equal $st.packages.mise ["node@20"]
+        }
+    }
+}
+
+export def test_cli_apply_prune_packages [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let log = ($home | path join "pkg.log")
+        let mod_dir = ($home | path join "modules" "m")
+        mkdir $mod_dir
+        'name = "m"
+os = ["linux"]
+[packages]
+uv = ["ruff"]' | save -f ($mod_dir | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        ensure-ygg-dirs $home
+        save-state $home {
+            links: {},
+            copies: {},
+            hashes: {},
+            packages: { uv: ["ruff", "black"] }
+        }
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "linux" } {
+            # Dry-run
+            let dry = (^nu $ygg_bin apply --prune-packages --dry-run | complete)
+            assert ($dry.exit_code == 0)
+            assert ($dry.stdout | str contains "uv tool uninstall black")
+            assert (not ($log | path exists))
+
+            # Real run
+            let res = (^nu $ygg_bin apply --prune-packages | complete)
+            assert ($res.exit_code == 0)
+            let log_content = (open --raw $log)
+            assert ($log_content | str contains "uv tool uninstall black")
+            let st = (load-state $home)
+            assert equal $st.packages.uv ["ruff"]
+        }
+    }
+}
+
+
+
 
 

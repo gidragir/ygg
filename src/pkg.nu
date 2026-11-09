@@ -12,6 +12,12 @@ const UNCACHED_MGRS = ["pacman", "paru"]
 # Managers checked with `pacman -T` before installing (RFC-022)
 const NATIVE_MGRS = ["pacman", "paru"]
 
+# Safe managers whose packages can be cleanly uninstalled without impacting system stability (RFC-030)
+const SAFE_PRUNE_MGRS = ["uv", "mise", "pnpm", "cargo"]
+
+# System package managers requiring --force-system-prune to uninstall (RFC-030)
+const SYSTEM_PRUNE_MGRS = ["pacman", "paru", "apt", "dnf", "zypper", "brew", "winget", "scoop"]
+
 # RFC-005 / RFC-013: package installation commands as argv lists (one invocation per entry)
 def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>> {
     match $mgr {
@@ -301,6 +307,7 @@ export def install-packages [
     mut skipped: list<string> = []
     mut failed: list<record> = []
     mut new_hashes: record = {}
+    mut new_packages: record = {}
 
     for mgr in ($pkgs_record | columns) {
         if not ($mgr in $allowed_mgrs) {
@@ -339,12 +346,14 @@ export def install-packages [
         let hash_key = $"pkg:($mgr)"
         if $cacheable and (not $refresh_packages) and ($selected | is-empty) and (($hashes | get -o $hash_key) == $set_hash) {
             $skipped = ($skipped | append $mgr)
+            $new_packages = ($new_packages | upsert $mgr $pkgs)
             continue
         }
 
         # RFC-022: only packages that are not installed yet reach pacman / paru
         let todo = if ($mgr in $NATIVE_MGRS) { missing-native-pkgs $pkgs } else { $pkgs }
         if ($todo | is-empty) {
+            $new_packages = ($new_packages | upsert $mgr $pkgs)
             continue
         }
 
@@ -381,17 +390,130 @@ export def install-packages [
             }
         }
 
-        if $cacheable and (not $mgr_failed) {
-            $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
+        if (not $mgr_failed) {
+            if $cacheable {
+                $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
+            }
+            $new_packages = ($new_packages | upsert $mgr $pkgs)
         }
     }
 
-    # Hash is stored only for fully successful managers on a real (or mock-logged) run
-    if ($new_hashes | columns | is-not-empty) {
+    # Hash and state.packages are stored only for successful managers on a real (or mock-logged) run
+    if ($new_hashes | columns | is-not-empty) or ($new_packages | columns | is-not-empty) {
         let st = (load-state $ygg_home)
-        let merged = ($st.hashes? | default {} | merge $new_hashes)
-        save-state $ygg_home ($st | upsert hashes $merged)
+        let merged_hashes = ($st.hashes? | default {} | merge $new_hashes)
+        let merged_packages = ($st.packages? | default {} | merge $new_packages)
+        save-state $ygg_home ($st | upsert hashes $merged_hashes | upsert packages $merged_packages)
     }
 
     { executed: $executed, skipped: $skipped, failed: $failed }
+}
+
+# RFC-030: package uninstallation command as a shell string
+def pkg-uninstall-cmd [mgr: string, pkg: string]: nothing -> string {
+    match $mgr {
+        "uv" => $"uv tool uninstall ($pkg)",
+        "mise" => $"mise uninstall ($pkg)",
+        "pnpm" => $"pnpm remove -g ($pkg)",
+        "cargo" => $"cargo uninstall ($pkg)",
+        "pacman" => $"sudo pacman -R --noconfirm ($pkg)",
+        "paru" => $"paru -R --noconfirm ($pkg)",
+        "apt" => $"sudo apt-get remove -y ($pkg)",
+        "dnf" => $"sudo dnf remove -y ($pkg)",
+        "zypper" => $"sudo zypper remove -y ($pkg)",
+        "brew" => $"brew uninstall ($pkg)",
+        "winget" => $"winget uninstall --exact ($pkg)",
+        "scoop" => $"scoop uninstall ($pkg)",
+        _ => $"($mgr) uninstall ($pkg)"
+    }
+}
+
+# RFC-030: prune packages that are in state.packages but absent in current plan
+export def prune-unused-packages [
+    ygg_home: string,
+    current_plan: record,
+    --dry-run,
+    --force-system-prune
+]: nothing -> list<string> {
+    let state = (load-state $ygg_home)
+    let state_pkgs = ($state.packages? | default {})
+    let plan_pkgs_rec = ($current_plan.packages? | default {})
+    let mock = (is-mock-mode)
+
+    mut executed_cmds: list<string> = []
+    mut updated_packages: record = $state_pkgs
+    mut updated_hashes: record = ($state.hashes? | default {})
+
+    for mgr in ($state_pkgs | columns) {
+        let is_safe = ($mgr in $SAFE_PRUNE_MGRS)
+        if (not $is_safe) and (not $force_system_prune) {
+            continue
+        }
+
+        let prev_pkgs_raw = ($state_pkgs | get $mgr)
+        let prev_pkgs: list<string> = if (($prev_pkgs_raw | describe) starts-with "list") {
+            $prev_pkgs_raw | where { |p| ($p != null) and ($p != "") }
+        } else if ($prev_pkgs_raw != null) and ($prev_pkgs_raw != "") {
+            [$prev_pkgs_raw]
+        } else {
+            []
+        }
+
+        let plan_pkgs_raw = ($plan_pkgs_rec | get -o $mgr | default [])
+        let plan_pkgs: list<string> = if (($plan_pkgs_raw | describe) starts-with "list") {
+            $plan_pkgs_raw | where { |p| ($p != null) and ($p != "") }
+        } else if ($plan_pkgs_raw != null) and ($plan_pkgs_raw != "") {
+            [$plan_pkgs_raw]
+        } else {
+            []
+        }
+
+        let stale_pkgs = ($prev_pkgs | where { |p| not ($p in $plan_pkgs) })
+        if ($stale_pkgs | is-empty) {
+            continue
+        }
+
+        mut pruned_this_mgr: list<string> = []
+        for pkg in $stale_pkgs {
+            let cmd_str = (pkg-uninstall-cmd $mgr $pkg)
+            $executed_cmds = ($executed_cmds | append $cmd_str)
+
+            if $dry_run {
+                continue
+            }
+
+            if $mock {
+                $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
+                $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
+            } else {
+                let argv = ($cmd_str | split row " ")
+                let timeout = (default-pkg-timeout $mgr)
+                let r = (run-with-timeout (expand-argv $argv) $timeout)
+                if ($r.exit_code == 0) {
+                    $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
+                } else {
+                    print -e $"[ygg] Warning: Failed to prune '($pkg)' with '($mgr)': ($r.stderr | str trim)"
+                }
+            }
+        }
+
+        if (not $dry_run) and ($pruned_this_mgr | is-not-empty) {
+            let remaining = ($prev_pkgs | where { |p| not ($p in $pruned_this_mgr) })
+            let cur_pkgs = $updated_packages
+            let cur_hashes = $updated_hashes
+            if ($remaining | is-empty) {
+                $updated_packages = (try { $cur_pkgs | reject $mgr } catch { $cur_pkgs | upsert $mgr [] })
+                $updated_hashes = (try { $cur_hashes | reject $"pkg:($mgr)" } catch { $cur_hashes })
+            } else {
+                $updated_packages = ($cur_pkgs | upsert $mgr $remaining)
+                $updated_hashes = ($cur_hashes | upsert $"pkg:($mgr)" (pkg-set-hash $remaining))
+            }
+        }
+    }
+
+    if (not $dry_run) and ($executed_cmds | is-not-empty) {
+        save-state $ygg_home ($state | upsert packages $updated_packages | upsert hashes $updated_hashes)
+    }
+
+    $executed_cmds
 }

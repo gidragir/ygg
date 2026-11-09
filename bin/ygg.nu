@@ -32,7 +32,7 @@ def main [--version (-v)] {
     print "      [--no-lock]"
     print "  ygg remove <name> [--no-lock]            Remove a module and unlink its files"
     print "  ygg apply [--dry-run] [--force] [--all]  Apply configurations, links, packages and setup"
-    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages] [--no-lock] [--locked]"
+    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages] [--prune-packages] [--force-system-prune] [--no-lock] [--locked]"
     print "  ygg diff [--all] [--pkg <m1,m2>]         Show planned changes without modifying anything"
     print "  ygg update [--no-lock]                   Update git modules via rebase and apply"
     print "  ygg save [--no-lock]                     Save reverse-copied GUI/app edits back to modules"
@@ -213,7 +213,9 @@ def "main apply" [
     --refresh-packages,
     --sandbox: string = "",
     --no-lock,
-    --locked
+    --locked,
+    --prune-packages,
+    --force-system-prune
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
@@ -223,7 +225,7 @@ def "main apply" [
 
     let lock_file = (acquire-host-lock $ygg_home "apply" --no-lock=($no_lock or $dry_run))
     try {
-        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox --locked=$locked
+        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox --locked=$locked --prune-packages=$prune_packages --force-system-prune=$force_system_prune
         release-host-lock $lock_file
     } catch { |e|
         release-host-lock $lock_file
@@ -242,7 +244,9 @@ def apply-plan [
     --refresh-packages,
     --sandbox: string = "",
     --extra-modules: list<record> = [],
-    --locked
+    --locked,
+    --prune-packages,
+    --force-system-prune
 ] {
     assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") {
@@ -291,11 +295,18 @@ def apply-plan [
     if $dry_run {
         # RFC-011: plan only, nothing on the host changes
         report-collisions $resolved
+        mut pruned_cmds: list<string> = []
+        if $prune_packages {
+            $pruned_cmds = (prune-unused-packages $ygg_home $plan --dry-run --force-system-prune=$force_system_prune)
+        }
         let pkg_res = (install-packages $ygg_home $plan --dry-run --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
         for o in $ops {
             if $all or ($o.op != "OK") {
                 print-op-line $o
             }
+        }
+        for cmd in $pruned_cmds {
+            print ("  " + ("PRUNE" | fill --alignment left --width 15) + " " + $cmd)
         }
         for cmd in $pkg_res.executed {
             print ("  " + ("PKG" | fill --alignment left --width 15) + " " + $cmd)
@@ -316,7 +327,7 @@ def apply-plan [
             print ("  " + ("HOOK" | fill --alignment left --width 15) + " " + $h.cmd + "  (" + $h.module + ": " + ($h.keys | str join ", ") + ")")
         }
         run-service-actions $ygg_home $plan $ops --dry-run --sandbox=$effective_sandbox | ignore
-        let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length))
+        let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length) + ($pruned_cmds | length))
         let unchanged = ($ops | where op == "OK" | length)
         print $"Plan: ($changes) change\(s\), ($unchanged) unchanged across ($mod_count) module\(s\). No changes made."
         return
@@ -325,7 +336,12 @@ def apply-plan [
     # Begin WAL transaction (RFC-027)
     begin-journal-transaction $ygg_home $plan
 
-    # 1. Install packages
+    # 1. Prune unused packages if requested (RFC-030)
+    if $prune_packages {
+        prune-unused-packages $ygg_home $plan --force-system-prune=$force_system_prune
+    }
+
+    # 2. Install packages
     record-journal-step $ygg_home "packages" "IN_PROGRESS"
     let pkg_res = (install-packages $ygg_home $plan --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
     record-journal-step $ygg_home "packages" "COMMITTED"
