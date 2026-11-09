@@ -929,6 +929,45 @@ export def test_cli_doctor_fix [] {
     }
 }
 
+export def test_cli_completions_generation [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb } {
+            let nu_comp = (^nu $ygg_bin completions nu | complete)
+            assert equal $nu_comp.exit_code 0 $nu_comp.stderr
+            assert ($nu_comp.stdout | str contains "export extern ygg") "Expected extern ygg definition"
+            # Verify generated nushell script parses without error
+            let nu_parse = (^nu -c $nu_comp.stdout | complete)
+            assert equal $nu_parse.exit_code 0 $nu_parse.stderr
+
+            let zsh_comp = (^nu $ygg_bin completions zsh | complete)
+            assert equal $zsh_comp.exit_code 0 $zsh_comp.stderr
+            assert ($zsh_comp.stdout | str contains "#compdef ygg") "Expected zsh compdef"
+
+            let bash_comp = (^nu $ygg_bin completions bash | complete)
+            assert equal $bash_comp.exit_code 0 $bash_comp.stderr
+            assert ($bash_comp.stdout | str contains "complete -F") "Expected bash complete -F"
+
+            let fish_comp = (^nu $ygg_bin completions fish | complete)
+            assert equal $fish_comp.exit_code 0 $fish_comp.stderr
+            assert ($fish_comp.stdout | str contains "complete -c ygg") "Expected fish complete"
+
+            let ps1_comp = (^nu $ygg_bin completions ps1 | complete)
+            assert equal $ps1_comp.exit_code 0 $ps1_comp.stderr
+            assert ($ps1_comp.stdout | str contains "Register-ArgumentCompleter") "Expected ps1 Register-ArgumentCompleter"
+
+            let pwsh_comp = (^nu $ygg_bin completions powershell | complete)
+            assert equal $pwsh_comp.exit_code 0 $pwsh_comp.stderr
+            assert ($pwsh_comp.stdout | str contains "Register-ArgumentCompleter") "Expected powershell alias support"
+
+            let invalid_comp = (^nu $ygg_bin completions invalid | complete)
+            assert ($invalid_comp.exit_code != 0) "Expected error for invalid shell"
+        }
+    }
+}
+
+
 
 
 
