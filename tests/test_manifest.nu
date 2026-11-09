@@ -440,4 +440,50 @@ name = "app"
     }
 }
 
+export def test_eval_scope_expressions [] {
+    let scopes = ["linux", "pc", "cachyos"]
+    assert (eval-scope-expression "linux and pc" $scopes) "Expected true for 'linux and pc'"
+    assert (eval-scope-expression "linux and !work" $scopes) "Expected true for 'linux and !work'"
+    assert (not (eval-scope-expression "windows or work" $scopes)) "Expected false for 'windows or work'"
+    assert (eval-scope-expression "(cachyos or arch) and !windows" $scopes) "Expected true for complex condition"
+    assert (eval-scope-expression "linux" $scopes) "Expected true for simple scope"
+    assert (not (eval-scope-expression "work" $scopes)) "Expected false for missing simple scope"
+    assert (eval-scope-expression "not work" $scopes) "Expected true for 'not work'"
+    assert (eval-scope-expression "!work and (pc or laptop)" $scopes) "Expected true for '!work and (pc or laptop)'"
+    assert (not (eval-scope-expression "!(pc or cachyos)" $scopes)) "Expected false for '!(pc or cachyos)'"
+}
+
+export def test_scope_expressions_in_resolve_effective_plan [] {
+    with-temp-ygg { |home|
+        let m = ($home | path join "modules" "scoped")
+        mkdir $m
+        'name = "scoped"
+os = ["cachyos"]
+[packages]
+pacman = ["base-pkg"]
+[scope."linux and !work".links]
+monitor = "~/.config/monitor.kdl"
+[scope."windows or laptop".links]
+laptop = "~/.config/laptop.kdl"
+[scope."linux and (arch or cachyos)".packages]
+pacman = ["libva-nvidia-driver"]
+' | save -f ($m | path join "ygg.toml")
+
+        '[[modules]]
+name = "scoped"
+scopes = ["pc"]
+' | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let plan = (resolve-effective-plan $home)
+            let dests = ($plan.links | get dest_raw)
+            assert ("~/.config/monitor.kdl" in $dests)
+            assert (not ("~/.config/laptop.kdl" in $dests))
+            assert ("libva-nvidia-driver" in ($plan.packages | get pacman))
+            assert ("base-pkg" in ($plan.packages | get pacman))
+        }
+    }
+}
+
+
 

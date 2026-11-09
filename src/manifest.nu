@@ -351,6 +351,113 @@ export def sort-modules-dag [modules: list<record>]: nothing -> list<record> {
     $sorted
 }
 
+# Evaluate a boolean scope expression against active scopes (RFC-033)
+# Supports: scope identifiers, and / &&, or / ||, not / !, parentheses (...)
+export def eval-scope-expression [expr: string, active_scopes: list<string>]: nothing -> bool {
+    let raw = ($expr | str trim)
+    if ($raw == "") {
+        return false
+    }
+
+    let norm_scopes = ($active_scopes | each { |s| $s | str lowercase })
+    let tokens = ($raw
+        | str replace --all "(" " ( "
+        | str replace --all ")" " ) "
+        | str replace --all "!" " not "
+        | str replace --all "&&" " and "
+        | str replace --all "||" " or "
+        | split row -r '\s+'
+        | where { |t| $t != "" }
+    )
+
+    if ($tokens | is-empty) {
+        return false
+    }
+
+    mut output = []
+    mut op_stack = []
+
+    for tok in $tokens {
+        let t = ($tok | str lowercase)
+        if $t == "(" {
+            $op_stack = ($op_stack | append "(")
+        } else if $t == ")" {
+            while (($op_stack | length) > 0) and (($op_stack | last) != "(") {
+                let op = ($op_stack | last)
+                $op_stack = ($op_stack | drop 1)
+                $output = ($output | append $op)
+            }
+            if (($op_stack | length) > 0) and (($op_stack | last) == "(") {
+                $op_stack = ($op_stack | drop 1)
+            } else {
+                error make { msg: $"Mismatched parentheses in expression: ($expr)" }
+            }
+        } else if $t == "not" {
+            $op_stack = ($op_stack | append "not")
+        } else if $t == "and" {
+            while (($op_stack | length) > 0) and (($op_stack | last) != "(") and ((($op_stack | last) == "not") or (($op_stack | last) == "and")) {
+                let op = ($op_stack | last)
+                $op_stack = ($op_stack | drop 1)
+                $output = ($output | append $op)
+            }
+            $op_stack = ($op_stack | append "and")
+        } else if $t == "or" {
+            while (($op_stack | length) > 0) and (($op_stack | last) != "(") and ((($op_stack | last) == "not") or (($op_stack | last) == "and") or (($op_stack | last) == "or")) {
+                let op = ($op_stack | last)
+                $op_stack = ($op_stack | drop 1)
+                $output = ($output | append $op)
+            }
+            $op_stack = ($op_stack | append "or")
+        } else {
+            let clean_ident = ($t | str replace --all '"' '' | str replace --all "'" "")
+            $output = ($output | append { ident: $clean_ident })
+        }
+    }
+
+    while (($op_stack | length) > 0) {
+        let op = ($op_stack | last)
+        $op_stack = ($op_stack | drop 1)
+        if $op == "(" {
+            error make { msg: $"Mismatched parentheses in expression: ($expr)" }
+        }
+        $output = ($output | append $op)
+    }
+
+    mut eval_stack = []
+    for item in $output {
+        if (($item | describe) starts-with "record") {
+            let id = $item.ident
+            let val = ($id in $norm_scopes)
+            $eval_stack = ($eval_stack | append $val)
+        } else if $item == "not" {
+            if ($eval_stack | is-empty) {
+                error make { msg: $"Invalid expression syntax near not: ($expr)" }
+            }
+            let a = ($eval_stack | last)
+            $eval_stack = ($eval_stack | drop 1 | append (not $a))
+        } else if $item == "and" {
+            if (($eval_stack | length) < 2) {
+                error make { msg: $"Invalid expression syntax near and: ($expr)" }
+            }
+            let b = ($eval_stack | last)
+            let a = ($eval_stack | get (($eval_stack | length) - 2))
+            $eval_stack = ($eval_stack | drop 2 | append ($a and $b))
+        } else if $item == "or" {
+            if (($eval_stack | length) < 2) {
+                error make { msg: $"Invalid expression syntax near or: ($expr)" }
+            }
+            let b = ($eval_stack | last)
+            let a = ($eval_stack | get (($eval_stack | length) - 2))
+            $eval_stack = ($eval_stack | drop 2 | append ($a or $b))
+        }
+    }
+
+    if ($eval_stack | length) != 1 {
+        error make { msg: $"Invalid boolean expression: ($expr)" }
+    }
+    $eval_stack | first
+}
+
 # Resolve effective plan across active modules and scopes
 # --extra-modules: virtual { name, path, scopes } entries (RFC-012, `ygg add` preview / pre-flight);
 # an entry replaces the host.toml module of the same name and goes last, as a real `add` would.
@@ -452,38 +559,46 @@ export def resolve-effective-plan [
 
         # Merge in active scopes for this module (origin_rank 1..N in active scope order)
         mut scope_rank = 0
-        for s_name in $active_scopes {
-            $scope_rank = $scope_rank + 1
-            let scope_data = ($manifest.scope | get -o $s_name)
-            if ($scope_data != null) {
-                # packages in scope
-                if ($scope_data.packages? != null) {
-                    for mgr in ($scope_data.packages | columns) {
-                        let cur = ($mod_packages | get -o $mgr | default [])
-                        let added = ($scope_data.packages | get $mgr)
-                        $mod_packages = ($mod_packages | upsert $mgr ($cur | append $added | uniq))
+        let manifest_scopes = ($manifest.scope? | default {})
+        let scope_keys = if (($manifest_scopes | describe) starts-with "record") {
+            $manifest_scopes | columns
+        } else {
+            []
+        }
+        for scope_key in $scope_keys {
+            if (eval-scope-expression $scope_key $active_scopes) {
+                $scope_rank = $scope_rank + 1
+                let scope_data = ($manifest_scopes | get -o $scope_key)
+                if ($scope_data != null) {
+                    # packages in scope
+                    if ($scope_data.packages? != null) {
+                        for mgr in ($scope_data.packages | columns) {
+                            let cur = ($mod_packages | get -o $mgr | default [])
+                            let added = ($scope_data.packages | get $mgr)
+                            $mod_packages = ($mod_packages | upsert $mgr ($cur | append $added | uniq))
+                        }
                     }
-                }
-                # links in scope
-                if ($scope_data.links? != null) {
-                    $mod_links = (merge-link-entries $mod_links (entries-with-rank $scope_data.links $scope_rank))
-                }
-                # save in scope
-                if ($scope_data.save? != null) {
-                    $mod_save = (merge-link-entries $mod_save (entries-with-rank $scope_data.save $scope_rank))
-                }
-                # env in scope
-                if ($scope_data.env? != null) {
-                    $mod_env = ($mod_env | merge $scope_data.env)
-                }
-                # aliases in scope
-                if ($scope_data.aliases? != null) {
-                    $mod_aliases = ($mod_aliases | merge $scope_data.aliases)
-                }
-                # path in scope
-                if ($scope_data.path? != null) {
-                    let p = if (($scope_data.path | describe) starts-with "list") { $scope_data.path } else { [$scope_data.path] }
-                    $mod_path = ($mod_path | append $p | uniq)
+                    # links in scope
+                    if ($scope_data.links? != null) {
+                        $mod_links = (merge-link-entries $mod_links (entries-with-rank $scope_data.links $scope_rank))
+                    }
+                    # save in scope
+                    if ($scope_data.save? != null) {
+                        $mod_save = (merge-link-entries $mod_save (entries-with-rank $scope_data.save $scope_rank))
+                    }
+                    # env in scope
+                    if ($scope_data.env? != null) {
+                        $mod_env = ($mod_env | merge $scope_data.env)
+                    }
+                    # aliases in scope
+                    if ($scope_data.aliases? != null) {
+                        $mod_aliases = ($mod_aliases | merge $scope_data.aliases)
+                    }
+                    # path in scope
+                    if ($scope_data.path? != null) {
+                        let p = if (($scope_data.path | describe) starts-with "list") { $scope_data.path } else { [$scope_data.path] }
+                        $mod_path = ($mod_path | append $p | uniq)
+                    }
                 }
             }
         }
