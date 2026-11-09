@@ -329,3 +329,52 @@ os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
     }
 }
 
+export def test_env_compiles_fish_shell_files [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let plan = {
+            env: {
+                EDITOR: "nvim",
+                WEIRD_VAR: "it's a \\backslash\\ and 'quotes' test",
+            },
+            aliases: {
+                g: "git status",
+                ll: "echo 'hello \\ world'",
+            }
+        }
+        compile-environment $home $plan
+        let env_fish = ($home | path join ".state" "env" "env.fish")
+        let alias_fish = ($home | path join ".state" "env" "aliases.fish")
+
+        assert ($env_fish | path exists) "Expected env.fish to exist"
+        assert ($alias_fish | path exists) "Expected aliases.fish to exist"
+
+        let env_content = (open --raw $env_fish)
+        assert ($env_content | str contains "set -gx EDITOR 'nvim'") "Expected Fish env definition"
+        assert ($env_content | str contains "set -gx WEIRD_VAR 'it\\'s a \\\\backslash\\\\ and \\'quotes\\' test'") "Expected Fish env escaping"
+
+        let alias_content = (open --raw $alias_fish)
+        assert ($alias_content | str contains "alias g 'git status'") "Expected Fish alias definition"
+        assert ($alias_content | str contains "alias ll 'echo \\'hello \\\\ world\\''") "Expected Fish alias escaping"
+
+        # If fish is available, verify actual syntax and variable loading
+        let fish_bin = (which fish | get -o path.0)
+        if ($fish_bin != null) and ($fish_bin | path exists) {
+            let fish_env_res = (^fish -c $"source ($env_fish); printf '%s' \"$WEIRD_VAR\"" | complete)
+            assert equal $fish_env_res.exit_code 0
+            assert equal $fish_env_res.stdout "it's a \\backslash\\ and 'quotes' test"
+
+            let fish_alias_res = (^fish -c $"source ($alias_fish); ll" | complete)
+            assert equal $fish_alias_res.exit_code 0
+            assert equal ($fish_alias_res.stdout | str trim) "hello \\ world"
+        }
+
+        # Check permissions on Unix
+        if ($nu.os-info.family != "windows") {
+            assert equal (^stat -c "%a" $env_fish | str trim) "600"
+            assert equal (^stat -c "%a" $alias_fish | str trim) "600"
+        }
+    }
+}
+
+

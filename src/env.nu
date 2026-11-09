@@ -256,6 +256,17 @@ export def compile-environment [
     let env_ps1_content = if ($ps1_lines | is-empty) { "" } else { ($ps1_lines | str join "\n") + "\n" }
     $env_ps1_content | save -f $env_ps1_path
 
+    # 6b. Generate env.fish
+    let env_fish_path = ($env_dir | path join "env.fish")
+    mut fish_lines = []
+    for k in ($clean_env | columns) {
+        let v = ($clean_env | get $k)
+        let esc = ($v | str replace --all '\' '\\' | str replace --all "'" "\\'")
+        $fish_lines = ($fish_lines | append $"set -gx ($k) '($esc)'")
+    }
+    let env_fish_content = if ($fish_lines | is-empty) { "" } else { ($fish_lines | str join "\n") + "\n" }
+    $env_fish_content | save -f $env_fish_path
+
     # 7. Generate aliases.nu
     let aliases_nu_path = ($env_dir | path join "aliases.nu")
     mut nu_alias_lines = []
@@ -276,6 +287,17 @@ export def compile-environment [
     }
     let aliases_zsh_content = if ($zsh_alias_lines | is-empty) { "" } else { ($zsh_alias_lines | str join "\n") + "\n" }
     $aliases_zsh_content | save -f $aliases_zsh_path
+
+    # 8b. Generate aliases.fish
+    let aliases_fish_path = ($env_dir | path join "aliases.fish")
+    mut fish_alias_lines = []
+    for k in ($merged_aliases | columns) {
+        let v = ($merged_aliases | get $k | into string)
+        let esc = ($v | str replace --all '\' '\\' | str replace --all "'" "\\'")
+        $fish_alias_lines = ($fish_alias_lines | append $"alias ($k) '($esc)'")
+    }
+    let aliases_fish_content = if ($fish_alias_lines | is-empty) { "" } else { ($fish_alias_lines | str join "\n") + "\n" }
+    $aliases_fish_content | save -f $aliases_fish_path
 
     # 9. Generate aliases.ps1 (function wrapper with recursion guard)
     let aliases_ps1_path = ($env_dir | path join "aliases.ps1")
@@ -309,9 +331,11 @@ export def compile-environment [
             $env_nu_path,
             $env_zsh_path,
             $env_ps1_path,
+            $env_fish_path,
             $aliases_nu_path,
             $aliases_zsh_path,
             $aliases_ps1_path,
+            $aliases_fish_path,
             $local_nu_path
         ]
         for f in $env_files {
