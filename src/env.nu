@@ -82,6 +82,95 @@ export def missing-secret-keys [template: string, secrets: string]: nothing -> l
     | where { |k| (($have | get -o $k | default "") | into string) == "" }
 }
 
+# Resolve secret value using external resolvers if URI prefix is present (RFC-034)
+# Supported schemas:
+#   - `op://<vault>/<item>/<field>` -> 1Password CLI: `^op read ...`
+#   - `bw://<item>/<field>` -> Bitwarden CLI: `^bw get ...`
+#   - `pass:<path>` -> Pass: `^pass show ...`
+#   - `eval:<command>` -> In-memory execution: `nu -c ... | complete`
+export def resolve-secret-value [raw: string]: nothing -> string {
+    if ($raw | str starts-with "op://") {
+        let res = try {
+            ^op read $raw | complete
+        } catch { |err|
+            { exit_code: 1, stdout: "", stderr: ($err | into string) }
+        }
+        if $res.exit_code != 0 {
+            let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                $res.stderr | str trim
+            } else {
+                $"command exited with code ($res.exit_code)"
+            }
+            error make { msg: $"Failed to resolve 1Password secret '($raw)': ($err_msg)" }
+        }
+        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+    }
+
+    if ($raw | str starts-with "bw://") {
+        let path = ($raw | str substring 5..)
+        let parts = ($path | split row "/")
+        let res = try {
+            if ($parts | length) >= 2 {
+                let item = $parts.0
+                let field = $parts.1
+                ^bw get $field $item | complete
+            } else {
+                let item = $parts.0
+                ^bw get password $item | complete
+            }
+        } catch { |err|
+            { exit_code: 1, stdout: "", stderr: ($err | into string) }
+        }
+        if $res.exit_code != 0 {
+            let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                $res.stderr | str trim
+            } else {
+                $"command exited with code ($res.exit_code)"
+            }
+            error make { msg: $"Failed to resolve Bitwarden secret '($raw)': ($err_msg)" }
+        }
+        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+    }
+
+    if ($raw | str starts-with "pass:") {
+        let pass_path = ($raw | str substring 5..)
+        let res = try {
+            ^pass show $pass_path | complete
+        } catch { |err|
+            { exit_code: 1, stdout: "", stderr: ($err | into string) }
+        }
+        if $res.exit_code != 0 {
+            let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                $res.stderr | str trim
+            } else {
+                $"command exited with code ($res.exit_code)"
+            }
+            error make { msg: $"Failed to resolve Pass secret '($raw)': ($err_msg)" }
+        }
+        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+    }
+
+    if ($raw | str starts-with "eval:") {
+        let cmd = ($raw | str substring 5..)
+        let res = try {
+            ^nu -c $cmd | complete
+        } catch { |err|
+            { exit_code: 1, stdout: "", stderr: ($err | into string) }
+        }
+        if $res.exit_code != 0 {
+            let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                $res.stderr | str trim
+            } else {
+                $"command exited with code ($res.exit_code)"
+            }
+            error make { msg: $"Failed to resolve eval secret '($raw)': ($err_msg)" }
+        }
+        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+    }
+
+    $raw
+}
+
 # Compile environment variables, secrets, and aliases across active modules and hosts
 export def compile-environment [
     ygg_home: string,
@@ -130,7 +219,8 @@ export def compile-environment [
 
     # Normalize environment values to strings, skipping complex sub-records
     let clean_env = ($merged_env | transpose k v | where { |it| not (($it.v | describe) starts-with "record") and not (($it.v | describe) starts-with "table") } | reduce -f {} { |it, acc|
-        $acc | upsert $it.k (resolve-env-value ($it.v | into string) $sb)
+        let resolved_secret = (resolve-secret-value ($it.v | into string))
+        $acc | upsert $it.k (resolve-env-value $resolved_secret $sb)
     })
 
     # 3. Ensure target directory exists

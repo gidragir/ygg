@@ -2,11 +2,11 @@
 directory: src/env.nu
 source:
   kind: git
-  blob_sha: aa38571965d72b730f0de4d909daed490690bcfe
-  commit_sha: cbe6f55f9c93a1c852c25c768b190ed5077ae844
+  blob_sha: 8a65e88a5da2ff54d0792b2993a8e564bfa784ff
+  commit_sha: 0775557ef269ea7b6de4d26868502c068c22759b
 generated_by:
   component: context-init
-  role: init
+  role: update
   model: none
 freshness:
   total_entries: 1
@@ -34,6 +34,7 @@ export def format-windows-env-script [clean_env: record, path_entries: list<stri
 def resolve-env-value [v: string, sb: string]: nothing -> string
 def secret-keys [p: string]: nothing -> record
 export def missing-secret-keys [template: string, secrets: string]: nothing -> list<string>
+export def resolve-secret-value [raw: string]: nothing -> string
 export def compile-environment [ ygg_home: string, plan: record, --dry-run, --force, --sandbox: string = "" ]: nothing -> nothing
 ```
 

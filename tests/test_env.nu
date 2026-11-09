@@ -2,6 +2,7 @@ use std/assert
 use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/env.nu *
+use ../src/sdk.nu [export-secrets]
 use helpers.nu [with-temp-ygg]
 
 export def test_env_special_chars_escaping [] {
@@ -241,3 +242,90 @@ export def test_missing_secret_keys_audit [] {
         assert (not ("KEY_COMMENTED" in $missing))
     }
 }
+
+export def test_external_secret_resolvers_in_memory [] {
+    let resolved = (resolve-secret-value "eval:echo hello-secret")
+    assert ($resolved == "hello-secret") "Expected resolved in-memory secret"
+    let literal = (resolve-secret-value "my-regular-token")
+    assert ($literal == "my-regular-token") "Expected literal value unchanged"
+
+    # Test error handling when eval fails
+    let err_caught = (try {
+        resolve-secret-value "eval:nonexistent_cmd_xyz_123"
+        false
+    } catch { |e|
+        assert ($e.msg | str contains "Failed to resolve eval secret")
+        true
+    })
+    assert $err_caught "Expected error when eval: command fails"
+
+    # Test error handling for external CLI resolvers when CLI fails or item not found
+    let op_failed = (try { resolve-secret-value "op://nonexistent/vault/field"; false } catch { true })
+    assert $op_failed "Expected failure on op secret resolution failure"
+    let bw_failed = (try { resolve-secret-value "bw://nonexistent/password"; false } catch { true })
+    assert $bw_failed "Expected failure on bw secret resolution failure"
+    let pass_failed = (try { resolve-secret-value "pass:nonexistent-entry"; false } catch { true })
+    assert $pass_failed "Expected failure on pass secret resolution failure"
+
+    # Test integration with compile-environment
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb")
+        let m1 = ($home | path join "modules" "core")
+        mkdir $m1
+        'name = "core"
+os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
+        "[env]\nDYNAMIC_SECRET = \"eval:echo in-memory-token\"\nLITERAL_SECRET = \"literal-val\"" | save -f ($home | path join "secrets.toml")
+
+        let plan = (resolve-effective-plan $home)
+        compile-environment $home $plan --sandbox $sb
+
+        let env_nu = ($home | path join ".state/env/env.nu")
+        assert ($env_nu | path exists)
+        let nu_cmd = $"source ($env_nu); print --raw $env.DYNAMIC_SECRET"
+        let nu_val = (^nu -c $nu_cmd)
+        assert equal $nu_val "in-memory-token"
+
+        let nu_literal_cmd = $"source ($env_nu); print --raw $env.LITERAL_SECRET"
+        let nu_literal_val = (^nu -c $nu_literal_cmd)
+        assert equal $nu_literal_val "literal-val"
+    }
+
+    # Test compile-environment aborts and does NOT write env files when resolver fails
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb")
+        let m1 = ($home | path join "modules" "core")
+        mkdir $m1
+        'name = "core"
+os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
+        "[env]\nBROKEN_SECRET = \"eval:exit 42\"" | save -f ($home | path join "secrets.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let failed = (try {
+            compile-environment $home $plan --sandbox $sb
+            false
+        } catch {
+            true
+        })
+        assert $failed "compile-environment must fail on broken external resolver"
+        let env_nu = ($home | path join ".state/env/env.nu")
+        assert (not ($env_nu | path exists)) "env.nu must not be written if resolver fails"
+    }
+
+    # Test integration with export-secrets (src/sdk.nu)
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "[env]\nRESOLVED_API_KEY = \"eval:echo exported-token-123\"" | save -f ($home | path join "secrets.toml")
+        let dest = ($home | path join "test.env")
+        with-env { YGG_HOME: $home } {
+            export-secrets $dest --keys ["RESOLVED_API_KEY"]
+        }
+        assert ($dest | path exists)
+        let content = (open --raw $dest)
+        assert ($content | str contains "RESOLVED_API_KEY='exported-token-123'")
+    }
+}
+

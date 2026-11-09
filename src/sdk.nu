@@ -4,6 +4,7 @@
 use state.nu [get-ygg-home, load-state, save-state, expand-target-path]
 use pkg.nu [run-with-timeout]
 use link.nu [is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
+use env.nu [resolve-secret-value]
 
 const YGG_SRC_DIR = (path self | path dirname)
 
@@ -257,7 +258,8 @@ export def export-secrets [
     mut lines: list<string> = []
     for k in $target_keys {
         let raw_val = ($sec_env | get $k | into string)
-        let escaped_val = ($raw_val
+        let resolved_val = (resolve-secret-value $raw_val)
+        let escaped_val = ($resolved_val
             | str replace --all '\' '\\'
             | str replace --all "'" "\\'")
         $lines = ($lines | append $"($k)='($escaped_val)'")

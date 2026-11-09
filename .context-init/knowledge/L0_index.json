@@ -190,6 +190,7 @@
         "def resolve-env-value [v: string, sb: string]: nothing -> string",
         "def secret-keys [p: string]: nothing -> record",
         "export def missing-secret-keys [template: string, secrets: string]: nothing -> list<string>",
+        "export def resolve-secret-value [raw: string]: nothing -> string",
         "export def compile-environment [ ygg_home: string, plan: record, --dry-run, --force, --sandbox: string = \"\" ]: nothing -> nothing"
       ],
       "summary_source": "heuristic"
