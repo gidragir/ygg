@@ -515,3 +515,95 @@ export def test_hash_watch_set_matches_onchange_semantics [] {
         assert ((hash-watch-set ["cfg"] $mod_dir) != $h1)
     }
 }
+
+export def test_declarative_services_reload_on_change [] {
+    let plan = {
+        services: {
+            systemd: {
+                user: {
+                    reload_on_change: { "waybar.service": ["config.jsonc"] },
+                    restart_on_change: { "ollama.service": ["config.json"] },
+                    enable: ["syncthing.service"]
+                }
+            }
+        }
+    }
+    let ops = [
+        { op: "LINK", dest: "~/.config/waybar/config.jsonc", key: "config.jsonc" },
+        { op: "BACKUP_REPLACE", dest: "~/.config/ollama/config.json", key: "config.json" }
+    ]
+    let actions = (run-service-actions "/tmp" $plan $ops --dry-run)
+    assert (($actions | length) == 3) $"Expected 3 service actions, got ($actions | length)"
+
+    let waybar = ($actions | where service == "waybar.service" | first)
+    assert equal $waybar.service "waybar.service"
+    assert equal $waybar.action "reload"
+
+    let ollama = ($actions | where service == "ollama.service" | first)
+    assert equal $ollama.service "ollama.service"
+    assert equal $ollama.action "restart"
+
+    let syncthing = ($actions | where service == "syncthing.service" | first)
+    assert equal $syncthing.service "syncthing.service"
+    assert equal $syncthing.action "enable"
+
+    # If ops do not affect service triggers, service is not reloaded or restarted
+    let unmatching_ops = [
+        { op: "LINK", dest: "~/.config/kitty/kitty.conf", key: "kitty.conf" },
+        { op: "OK", dest: "~/.config/waybar/config.jsonc", key: "config.jsonc" }
+    ]
+    let no_reload_actions = (run-service-actions "/tmp" $plan $unmatching_ops --dry-run)
+    assert equal ($no_reload_actions | where service == "waybar.service" | length) 0
+    assert equal ($no_reload_actions | where service == "ollama.service" | length) 0
+    assert equal ($no_reload_actions | where service == "syncthing.service" | length) 1
+}
+
+export def test_declarative_services_mock_execution_and_failure [] {
+    with-temp-ygg { |home|
+        let mock_log = ($home | path join "mock.log")
+        let plan = {
+            services: {
+                systemd: {
+                    user: {
+                        reload_on_change: { "waybar.service": ["config.jsonc"] },
+                        restart_on_change: { "failing.service": ["fail.conf"] }
+                    }
+                },
+                windows: {
+                    restart_on_change: { "glazewm": ["config.yaml"] }
+                }
+            }
+        }
+        let ops = [
+            { op: "LINK", dest: "~/.config/waybar/config.jsonc", key: "config.jsonc" },
+            { op: "RELINK", dest: "~/.config/fail.conf", key: "fail.conf" },
+            { op: "COPY_UPDATE", dest: "C:/config.yaml", key: "config.yaml" }
+        ]
+
+        with-env {
+            YGG_MOCK_PKG_LOG: $mock_log,
+            YGG_MOCK_SERVICE_FAIL: "failing.service"
+        } {
+            let actions = (run-service-actions $home $plan $ops)
+            assert equal ($actions | length) 3
+
+            let waybar = ($actions | where service == "waybar.service" | first)
+            assert equal $waybar.status "ok"
+            assert equal $waybar.cmd "systemctl --user reload waybar.service"
+
+            let failing = ($actions | where service == "failing.service" | first)
+            assert equal $failing.status "failed"
+            assert ($failing.stderr | str contains "mock service failure")
+
+            let glazewm = ($actions | where service == "glazewm" | first)
+            assert equal $glazewm.status "ok"
+            assert ($glazewm.cmd | str contains "Restart-Service -Name glazewm")
+
+            let log_content = (open --raw $mock_log)
+            assert ($log_content | str contains "service: systemctl --user reload waybar.service")
+            assert ($log_content | str contains "service: systemctl --user restart failing.service")
+        }
+    }
+}
+
+

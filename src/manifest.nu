@@ -53,6 +53,37 @@ export def validate-module-os [manifest: record, host_os: record]: nothing -> bo
     $mod_os | any { |req| ($req | str lowercase) in $host_tokens }
 }
 
+# Merge service trees deeply (RFC-037)
+export def merge-services-deep [base: any, overlay: any]: any -> any {
+    if $base == null or ($base | is-empty) {
+        return (if $overlay == null { {} } else { $overlay })
+    }
+    if $overlay == null or ($overlay | is-empty) {
+        return $base
+    }
+    let base_is_record = (($base | describe) starts-with "record")
+    let over_is_record = (($overlay | describe) starts-with "record")
+    if $base_is_record and $over_is_record {
+        mut res = $base
+        for col in ($overlay | columns) {
+            let ov = ($overlay | get $col)
+            if ($col in ($res | columns)) {
+                let bv = ($res | get $col)
+                $res = ($res | upsert $col (merge-services-deep $bv $ov))
+            } else {
+                $res = ($res | upsert $col $ov)
+            }
+        }
+        $res
+    } else if (($base | describe) starts-with "list") or (($overlay | describe) starts-with "list") {
+        let bl = if (($base | describe) starts-with "list") { $base } else if ($base == null or $base == "") { [] } else { [$base] }
+        let ol = if (($overlay | describe) starts-with "list") { $overlay } else if ($overlay == null or $overlay == "") { [] } else { [$overlay] }
+        $bl | append $ol | uniq
+    } else {
+        $overlay
+    }
+}
+
 # Load module manifest ygg.toml and merge optional packages.toml, links.toml, env.toml, aliases.toml
 export def load-module-manifest [mod_dir: string]: nothing -> record {
     let ygg_path = ($mod_dir | path join "ygg.toml")
@@ -98,6 +129,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         packages: ($raw.packages? | default {}),
         links: ($raw.links? | default {}),
         save: ($raw.save? | default {}),
+        services: ($raw.services? | default {}),
         env: ($raw.env? | default {}),
         aliases: ($raw.aliases? | default {}),
         path: $raw_path,
@@ -170,10 +202,13 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
     let links_file = ($mod_dir | path join "links.toml")
     if ($links_file | path exists) {
         let ext = (open $links_file)
+        if ($ext.services? != null) {
+            $manifest.services = (merge-services-deep $manifest.services $ext.services)
+        }
         if ($ext.links? != null) {
             $manifest.links = ($manifest.links | merge $ext.links)
         }
-        for col in ($ext | columns | where { |c| $c != "links" and $c != "scope" }) {
+        for col in ($ext | columns | where { |c| $c != "links" and $c != "scope" and $c != "services" }) {
             $manifest.links = ($manifest.links | upsert $col ($ext | get $col))
         }
         if ($ext.scope? != null) {
@@ -182,7 +217,11 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
                 let s_links = if ($s_val.links? != null) { $s_val.links } else { $s_val }
                 let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_links = ($cur_scope.links? | default {})
-                let updated_scope = ($cur_scope | upsert links ($cur_scope_links | merge $s_links))
+                mut updated_scope = ($cur_scope | upsert links ($cur_scope_links | merge $s_links))
+                if ($s_val.services? != null) {
+                    let cur_scope_services = ($updated_scope.services? | default {})
+                    $updated_scope = ($updated_scope | upsert services (merge-services-deep $cur_scope_services $s_val.services))
+                }
                 $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
             }
         }
@@ -255,6 +294,29 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
                 let cur_scope = ($manifest.scope | get -o $s_name | default {})
                 let cur_scope_aliases = ($cur_scope.aliases? | default {})
                 let updated_scope = ($cur_scope | upsert aliases ($cur_scope_aliases | merge $s_aliases))
+                $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
+            }
+        }
+    }
+
+    # 5. services.toml
+    let services_file = ($mod_dir | path join "services.toml")
+    if ($services_file | path exists) {
+        let ext = (open $services_file)
+        if ($ext.services? != null) {
+            $manifest.services = (merge-services-deep $manifest.services $ext.services)
+        }
+        for col in ($ext | columns | where { |c| $c != "services" and $c != "scope" }) {
+            let cur = ($manifest.services | get -o $col | default {})
+            $manifest.services = ($manifest.services | upsert $col (merge-services-deep $cur ($ext | get $col)))
+        }
+        if ($ext.scope? != null) {
+            for s_name in ($ext.scope | columns) {
+                let s_val = ($ext.scope | get $s_name)
+                let s_svc = if ($s_val.services? != null) { $s_val.services } else { $s_val }
+                let cur_scope = ($manifest.scope | get -o $s_name | default {})
+                let cur_scope_services = ($cur_scope.services? | default {})
+                let updated_scope = ($cur_scope | upsert services (merge-services-deep $cur_scope_services $s_svc))
                 $manifest.scope = ($manifest.scope | upsert $s_name $updated_scope)
             }
         }
@@ -517,6 +579,7 @@ export def resolve-effective-plan [
     mut plan_links = []
     mut plan_save = []
     mut plan_packages = {}
+    mut plan_services = {}
     mut plan_env = {}
     mut plan_aliases = {}
     mut plan_path = []
@@ -544,6 +607,8 @@ export def resolve-effective-plan [
 
         # Collect module's packages
         mut mod_packages = $manifest.packages
+        # Collect module's services
+        mut mod_services = ($manifest.services? | default {})
         # Collect module's links / save as candidate tables (origin_rank 0 = base, RFC-010)
         mut mod_links = (entries-with-rank $manifest.links 0)
         mut mod_save = (entries-with-rank $manifest.save 0)
@@ -581,6 +646,10 @@ export def resolve-effective-plan [
                     # links in scope
                     if ($scope_data.links? != null) {
                         $mod_links = (merge-link-entries $mod_links (entries-with-rank $scope_data.links $scope_rank))
+                    }
+                    # services in scope
+                    if ($scope_data.services? != null) {
+                        $mod_services = (merge-services-deep $mod_services $scope_data.services)
                     }
                     # save in scope
                     if ($scope_data.save? != null) {
@@ -673,6 +742,9 @@ export def resolve-effective-plan [
             $plan_packages = ($plan_packages | upsert $mgr ($cur | append $added | uniq))
         }
 
+        # Merge services across modules
+        $plan_services = (merge-services-deep $plan_services $mod_services)
+
         # Merge env across modules (later module overrides earlier)
         $plan_env = ($plan_env | merge $mod_env)
 
@@ -699,6 +771,7 @@ export def resolve-effective-plan [
         links: $plan_links,
         save: $plan_save,
         packages: $plan_packages,
+        services: $plan_services,
         env: $plan_env,
         aliases: $plan_aliases,
         path: $plan_path

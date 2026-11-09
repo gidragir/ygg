@@ -2,8 +2,8 @@
 directory: src/manifest.nu
 source:
   kind: git
-  blob_sha: 13fd1657ce4f98f4cdc79a90f01d0907e59f7ead
-  commit_sha: a64483b5936e82efd97ffa8ea82a5d58d4acd4ac
+  blob_sha: 18b03561b4e01caf3a299193a27ba9e0048a922e
+  commit_sha: 56685b11fa470aab9e4cc098f1d5e7cf0690667b
 generated_by:
   component: context-init
   role: update
@@ -33,6 +33,7 @@ freshness:
 export def load-host-config [ygg_home: string]: nothing -> record
 export def save-host-config [ygg_home: string, cfg: record]: nothing -> nothing
 export def validate-module-os [manifest: record, host_os: record]: nothing -> bool
+export def merge-services-deep [base: any, overlay: any]: any -> any
 export def load-module-manifest [mod_dir: string]: nothing -> record
 ```
 

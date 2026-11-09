@@ -279,6 +279,7 @@
         "export def load-host-config [ygg_home: string]: nothing -> record",
         "export def save-host-config [ygg_home: string, cfg: record]: nothing -> nothing",
         "export def validate-module-os [manifest: record, host_os: record]: nothing -> bool",
+        "export def merge-services-deep [base: any, overlay: any]: any -> any",
         "export def load-module-manifest [mod_dir: string]: nothing -> record"
       ],
       "summary_source": "heuristic"

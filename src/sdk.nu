@@ -489,3 +489,216 @@ export def run-link-hooks [
     }
     $results
 }
+
+def to-str-list [value: any]: nothing -> list<string> {
+    if $value == null {
+        []
+    } else if (($value | describe) starts-with "list") {
+        $value
+    } else {
+        [$value]
+    }
+}
+
+def build-service-cmd [manager: string, action: string, service: string]: nothing -> list<string> {
+    if $manager == "systemd-user" {
+        ["systemctl", "--user", $action, $service]
+    } else if ($manager == "systemd-system") or ($manager == "systemd") {
+        ["systemctl", $action, $service]
+    } else if $manager == "windows" {
+        if $action == "enable" {
+            ["powershell", "-NoProfile", "-Command", $"Set-Service -Name ($service) -StartupType Automatic"]
+        } else {
+            ["powershell", "-NoProfile", "-Command", $"Restart-Service -Name ($service)"]
+        }
+    } else if ($manager starts-with "launchd") {
+        if $action == "enable" {
+            ["launchctl", "load", "-w", $service]
+        } else {
+            ["launchctl", "kickstart", "-k", $service]
+        }
+    } else {
+        [$manager, $action, $service]
+    }
+}
+
+def service-trigger-matches [changed_ops: any, triggers: any]: nothing -> bool {
+    let trig_list = (to-str-list $triggers)
+    let ops_list = ($changed_ops | default [])
+    if ($trig_list | is-empty) or ($ops_list | is-empty) {
+        return false
+    }
+
+    $ops_list | any { |op|
+        let key = ($op.key? | default "")
+        let dest = ($op.dest? | default "")
+        let src = ($op.src? | default "")
+
+        $trig_list | any { |t|
+            let trig = ($t | into string)
+            if ($key == $trig) or ($dest == $trig) or ($src == $trig) {
+                true
+            } else if ($key != "") and (($key | path basename) == $trig) {
+                true
+            } else if ($dest != "") and (($dest | path basename) == $trig) {
+                true
+            } else if ($src != "") and (($src | path basename) == $trig) {
+                true
+            } else if ($key != "") and (($key | str ends-with $"/\($trig\)") or ($key | str ends-with $"\\($trig)")) {
+                true
+            } else if ($dest != "") and (($dest | str ends-with $"/\($trig\)") or ($dest | str ends-with $"\\($trig)")) {
+                true
+            } else if ($key != "") and ($trig | str ends-with $key) {
+                true
+            } else {
+                false
+            }
+        }
+    }
+}
+
+def parse-services-tree [services: record]: nothing -> list<record> {
+    mut configs = []
+    for top_key in ($services | columns) {
+        let top_val = ($services | get $top_key)
+        if not (($top_val | describe) starts-with "record") {
+            continue
+        }
+        let sub_cols = ($top_val | columns)
+        let has_action_keys = ($sub_cols | any { |c| $c in ["enable", "reload_on_change", "restart_on_change"] })
+        if $has_action_keys {
+            let mgr = if $top_key == "systemd" { "systemd-user" } else { $top_key }
+            $configs = ($configs | append { manager: $mgr, data: $top_val })
+        } else {
+            for sub_key in $sub_cols {
+                let sub_val = ($top_val | get $sub_key)
+                if (($sub_val | describe) starts-with "record") {
+                    let mgr = $"($top_key)-($sub_key)"
+                    $configs = ($configs | append { manager: $mgr, data: $sub_val })
+                }
+            }
+        }
+    }
+    $configs
+}
+
+# RFC-037: Declarative management of system daemons and services
+export def run-service-actions [
+    ygg_home: string,
+    plan: record,
+    ops: any,
+    --dry-run
+]: nothing -> list<record> {
+    let services = ($plan.services? | default {})
+    if not (($services | describe) starts-with "record") or ($services | columns | is-empty) {
+        return []
+    }
+
+    let changed_ops = (
+        $ops
+        | default []
+        | where { |o| ($o.op? | default "") in ["LINK", "RELINK", "BACKUP_REPLACE", "COPY_CREATE", "COPY_UPDATE"] }
+    )
+
+    let configs = (parse-services-tree $services)
+    if ($configs | is-empty) {
+        return []
+    }
+
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    let mock_fail = ($env.YGG_MOCK_SERVICE_FAIL? | default "" | split row "," | each { |c| $c | str trim } | where { |c| $c != "" })
+    let sb = ($env.YGG_SANDBOX? | default "")
+
+    mut scheduled = []
+
+    for cfg in $configs {
+        let data = $cfg.data
+        let mgr = $cfg.manager
+
+        # 1. enable
+        let enable_list = (to-str-list ($data.enable? | default []))
+        for svc in $enable_list {
+            $scheduled = ($scheduled | append { service: $svc, action: "enable", manager: $mgr })
+        }
+
+        # 2. reload_on_change
+        let reload_map = ($data.reload_on_change? | default {})
+        if (($reload_map | describe) starts-with "record") {
+            for svc in ($reload_map | columns) {
+                let triggers = ($reload_map | get $svc)
+                if (service-trigger-matches $changed_ops $triggers) {
+                    $scheduled = ($scheduled | append { service: $svc, action: "reload", manager: $mgr })
+                }
+            }
+        }
+
+        # 3. restart_on_change
+        let restart_map = ($data.restart_on_change? | default {})
+        if (($restart_map | describe) starts-with "record") {
+            for svc in ($restart_map | columns) {
+                let triggers = ($restart_map | get $svc)
+                if (service-trigger-matches $changed_ops $triggers) {
+                    $scheduled = ($scheduled | append { service: $svc, action: "restart", manager: $mgr })
+                }
+            }
+        }
+    }
+
+    if ($scheduled | is-empty) {
+        return []
+    }
+
+    # Deduplicate scheduled actions by (service, action, manager)
+    let deduped = ($scheduled | uniq-by service action manager)
+
+    mut results = []
+    for item in $deduped {
+        let svc = $item.service
+        let action = $item.action
+        let mgr = $item.manager
+        let cmd_argv = (build-service-cmd $mgr $action $svc)
+        let cmd_str = ($cmd_argv | str join " ")
+
+        let outcome = if $dry_run {
+            print $"[ygg] \(dry-run\) SERVICE ($svc) \(($action) ($mgr)\)"
+            { status: "dry_run", stderr: "" }
+        } else if ($mock_log != "") {
+            $"service: ($cmd_str)\n" | save --append $mock_log
+            if ($svc in $mock_fail) or ($cmd_str in $mock_fail) {
+                { status: "failed", stderr: "mock service failure" }
+            } else {
+                { status: "ok", stderr: "" }
+            }
+        } else if ($sb != "") {
+            { status: "skipped_sandbox", stderr: "" }
+        } else {
+            try {
+                let res = (run-with-timeout $cmd_argv 30)
+                if $res.exit_code == 0 {
+                    { status: "ok", stderr: "" }
+                } else {
+                    let err = ($res.stderr | str trim)
+                    { status: "failed", stderr: (if ($err != "") { $err } else { $"exit code ($res.exit_code)" }) }
+                }
+            } catch { |e|
+                { status: "failed", stderr: $e.msg }
+            }
+        }
+
+        if ($outcome.status == "failed") {
+            print -e $"[ygg] Warning: service action failed for '($svc)': ($outcome.stderr)"
+        }
+
+        $results = ($results | append {
+            service: $svc,
+            action: $action,
+            manager: $mgr,
+            cmd: $cmd_str,
+            status: $outcome.status,
+            stderr: $outcome.stderr
+        })
+    }
+
+    $results
+}
+

@@ -485,5 +485,40 @@ scopes = ["pc"]
     }
 }
 
+export def test_manifest_declarative_services_merge [] {
+    with-temp-ygg { |home|
+        let m = ($home | path join "modules" "svcmod")
+        mkdir $m
+        'name = "svcmod"
+os = ["linux"]
+
+[services.systemd.user]
+enable = ["syncthing.service"]
+reload_on_change = { "waybar.service" = ["config.jsonc"] }
+
+[scope.linux.services.systemd.user]
+reload_on_change = { "waybar.service" = ["style.css"] }
+restart_on_change = { "ollama.service" = ["config.json"] }
+' | save -f ($m | path join "ygg.toml")
+
+        '[[modules]]
+name = "svcmod"
+' | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "linux" } {
+            let plan = (resolve-effective-plan $home)
+            assert ($plan.services? != null)
+            let sys_user = $plan.services.systemd.user
+            assert equal $sys_user.enable ["syncthing.service"]
+            let waybar_triggers = ($sys_user.reload_on_change | get "waybar.service")
+            assert ("config.jsonc" in $waybar_triggers)
+            assert ("style.css" in $waybar_triggers)
+            let ollama_triggers = ($sys_user.restart_on_change | get "ollama.service")
+            assert equal $ollama_triggers ["config.json"]
+        }
+    }
+}
+
+
 
 

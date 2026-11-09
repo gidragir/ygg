@@ -315,6 +315,7 @@ def apply-plan [
         for h in $hooks {
             print ("  " + ("HOOK" | fill --alignment left --width 15) + " " + $h.cmd + "  (" + $h.module + ": " + ($h.keys | str join ", ") + ")")
         }
+        run-service-actions $ygg_home $plan $ops --dry-run | ignore
         let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length))
         let unchanged = ($ops | where op == "OK" | length)
         print $"Plan: ($changes) change\(s\), ($unchanged) unchanged across ($mod_count) module\(s\). No changes made."
@@ -350,6 +351,9 @@ def apply-plan [
     record-journal-step $ygg_home "hooks" "IN_PROGRESS"
     run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox | ignore
     record-journal-step $ygg_home "hooks" "COMMITTED"
+
+    # Declarative services management (RFC-037)
+    run-service-actions $ygg_home $plan $ops | ignore
 
     print $"Applied ($mod_count) module\(s\)."
 
