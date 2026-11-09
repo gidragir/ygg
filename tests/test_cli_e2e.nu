@@ -832,5 +832,59 @@ export def test_cli_clean_subcommand [] {
     }
 }
 
+export def test_cli_ygg_apply_locked_and_lockfile [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        mkdir $sb
+        let mod_dir = ($home | path join "modules" "git-mod")
+        mkdir $mod_dir
+        ^git -C $mod_dir init | complete | ignore
+        ^git -C $mod_dir config user.name "Test" | complete | ignore
+        ^git -C $mod_dir config user.email "test@example.com" | complete | ignore
+        "name = 'git-mod'\nos = ['linux', 'cachyos']\n" | save -f ($mod_dir | path join "ygg.toml")
+        ^git -C $mod_dir add . | complete | ignore
+        ^git -C $mod_dir commit -m "init" | complete | ignore
+
+        "[[modules]]\nname = 'git-mod'\n" | save -f ($home | path join "host.toml")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "linux" } {
+            # 1. apply creates ygg.lock
+            let a1 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $a1.exit_code 0 $a1.stderr
+            let lock_path = ($home | path join "ygg.lock")
+            assert ($lock_path | path exists) "ygg.lock must exist after apply"
+            let lock_data = (open --raw $lock_path | from toml)
+            assert equal $lock_data.version 1
+            assert equal (($lock_data.modules | first).name) "git-mod"
+
+            # 2. apply --locked passes when lockfile matches
+            let a2 = (^nu $ygg_bin apply --locked --sandbox $sb | complete)
+            assert equal $a2.exit_code 0 $a2.stderr
+
+            # 3. New commit creates mismatch
+            "name = 'git-mod'\nos = ['linux', 'cachyos']\n# modified\n" | save -f ($mod_dir | path join "ygg.toml")
+            ^git -C $mod_dir commit -am "second" | complete | ignore
+
+            # apply --locked fails
+            let a3 = (^nu $ygg_bin apply --locked --sandbox $sb | complete)
+            assert equal $a3.exit_code 1
+            assert ($a3.stderr | str contains "commit mismatch")
+
+            # 4. Normal apply updates ygg.lock
+            let a4 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $a4.exit_code 0 $a4.stderr
+            let updated_lock = (open --raw $lock_path | from toml)
+            let new_commit = (^git -C $mod_dir rev-parse HEAD | complete).stdout | str trim
+            assert equal (($updated_lock.modules | first).commit) $new_commit
+
+            # 5. apply --locked passes again
+            let a5 = (^nu $ygg_bin apply --locked --sandbox $sb | complete)
+            assert equal $a5.exit_code 0 $a5.stderr
+        }
+    }
+}
+
+
 
 

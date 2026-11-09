@@ -221,7 +221,7 @@
         "export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record",
         "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>",
         "export def remove-module [ygg_home: string, name: string]: nothing -> nothing",
-        "export def update-modules [ygg_home: string]: nothing -> list<record>"
+        "export def update-module [ygg_home: string, name: string]: nothing -> record"
       ],
       "summary_source": "heuristic"
     },

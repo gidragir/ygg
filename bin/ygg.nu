@@ -32,7 +32,7 @@ def main [--version (-v)] {
     print "      [--no-lock]"
     print "  ygg remove <name> [--no-lock]            Remove a module and unlink its files"
     print "  ygg apply [--dry-run] [--force] [--all]  Apply configurations, links, packages and setup"
-    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages] [--no-lock]"
+    print "      [--pkg <m1,m2>] [--pkg-timeout <sec>] [--refresh-packages] [--skip-packages] [--no-lock] [--locked]"
     print "  ygg diff [--all] [--pkg <m1,m2>]         Show planned changes without modifying anything"
     print "  ygg update [--no-lock]                   Update git modules via rebase and apply"
     print "  ygg save [--no-lock]                     Save reverse-copied GUI/app edits back to modules"
@@ -212,7 +212,8 @@ def "main apply" [
     --pkg-timeout: int = -1,
     --refresh-packages,
     --sandbox: string = "",
-    --no-lock
+    --no-lock,
+    --locked
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
@@ -222,7 +223,7 @@ def "main apply" [
 
     let lock_file = (acquire-host-lock $ygg_home "apply" --no-lock=($no_lock or $dry_run))
     try {
-        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox
+        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox --locked=$locked
         release-host-lock $lock_file
     } catch { |e|
         release-host-lock $lock_file
@@ -240,7 +241,8 @@ def apply-plan [
     --pkg-timeout: int = -1,
     --refresh-packages,
     --sandbox: string = "",
-    --extra-modules: list<record> = []
+    --extra-modules: list<record> = [],
+    --locked
 ] {
     assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") {
@@ -254,6 +256,13 @@ def apply-plan [
     ensure-ygg-dirs $ygg_home
 
     let plan = (resolve-effective-plan $ygg_home --extra-modules $extra_modules)
+
+    if $locked {
+        let lock_errors = (verify-ygg-lock $ygg_home $plan)
+        if ($lock_errors | is-not-empty) {
+            error make { msg: ($lock_errors | str join "; ") }
+        }
+    }
 
     let state = (load-state $ygg_home)
     let plan_mods = ($plan.modules? | default [])
@@ -368,6 +377,9 @@ def apply-plan [
 
     let active_keys = (collect-active-hash-keys $plan)
     gc-state-hashes $ygg_home $active_keys | ignore
+
+    # Generate or update ygg.lock (RFC-032)
+    generate-ygg-lock $ygg_home $plan | ignore
 
     # Commit WAL transaction on clean completion (RFC-027)
     commit-journal-transaction $ygg_home

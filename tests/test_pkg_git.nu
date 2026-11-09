@@ -849,4 +849,52 @@ export def test_package_providers_macos_and_linux_distros [] {
     }
 }
 
+export def test_ygg_lock_generation_and_pinned_modules [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        # Имитируем git-модуль
+        let mod_dir = ($home | path join "modules" "pinned-mod")
+        mkdir $mod_dir
+        ^git -C $mod_dir init | complete | ignore
+        ^git -C $mod_dir config user.name "Test" | complete | ignore
+        ^git -C $mod_dir config user.email "test@example.com" | complete | ignore
+        "name = 'pinned-mod'\nos = ['linux']\n" | save -f ($mod_dir | path join "ygg.toml")
+        ^git -C $mod_dir add . | complete | ignore
+        ^git -C $mod_dir commit -m "initial" | complete | ignore
+
+        let plan = { modules: [{ name: "pinned-mod", dir: $mod_dir, pin: true }] }
+        let lock = (generate-ygg-lock $home $plan)
+        assert ($home | path join "ygg.lock" | path exists) "ygg.lock must be created"
+        assert (($lock.modules | first).name == "pinned-mod") "Expected module in lockfile"
+        assert (($lock.modules | first).commit | is-not-empty) "Expected commit hash"
+        assert equal $lock.version 1 "Lock version must be 1"
+
+        # Verify TOML content on disk
+        let lock_raw = (open --raw ($home | path join "ygg.lock"))
+        assert ($lock_raw | str contains "version = 1")
+        assert (($lock_raw | str contains "[[modules]]") or ($lock_raw | str contains "[[module]]"))
+
+        # verify-ygg-lock should succeed on matching commit
+        let verify_res = (verify-ygg-lock $home $plan)
+        assert ($verify_res | is-empty) "Expected verify-ygg-lock to pass"
+
+        # Mutate commit in module repository
+        "name = 'pinned-mod'\nos = ['linux']\n# updated\n" | save -f ($mod_dir | path join "ygg.toml")
+        ^git -C $mod_dir commit -am "second commit" | complete | ignore
+
+        # verify-ygg-lock should now fail with mismatch
+        let verify_fail = (verify-ygg-lock $home $plan)
+        assert ($verify_fail | is-not-empty) "Expected verify-ygg-lock to fail after commit change"
+        assert ($verify_fail | any { |err| $err | str contains "commit mismatch" }) "Expected mismatch error message"
+
+        # Check update-modules / update-module skips pinned module
+        "[[modules]]\nname = 'pinned-mod'\npin = true\n" | save -f ($home | path join "host.toml")
+        let up_res = (update-modules $home)
+        let pinned_entry = ($up_res | where name == "pinned-mod" | first)
+        assert equal $pinned_entry.status "skipped"
+        assert equal $pinned_entry.message "module pinned"
+    }
+}
+
+
 

@@ -572,7 +572,10 @@ export def resolve-effective-plan [
             scopes: $active_scopes,
             manifest: $manifest,
             depends_on: $item.depends_on,
-            has_setup: ($mod_dir | path join "setup.nu" | path exists)
+            has_setup: ($mod_dir | path join "setup.nu" | path exists),
+            pin: ($mod_entry.pin? | default false),
+            ref: ($mod_entry.ref? | default ""),
+            rev: ($mod_entry.rev? | default "")
         })
     }
 

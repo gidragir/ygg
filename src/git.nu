@@ -195,6 +195,74 @@ export def remove-module [ygg_home: string, name: string]: nothing -> nothing {
     }
 }
 
+# Update a single Git-managed module via rebase, respecting pin = true in host.toml
+export def update-module [ygg_home: string, name: string]: nothing -> record {
+    let mod_path = ($ygg_home | path join "modules" $name)
+    if not ($mod_path | path exists) {
+        return { name: $name, status: "skipped", message: "module directory not found" }
+    }
+
+    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+    let host_mods = ($host_cfg.modules? | default [])
+    let mod_cfg = ($host_mods | where name == $name | get -o 0)
+    if (($mod_cfg.pin? | default false) == true) {
+        return { name: $name, status: "skipped", message: "module pinned" }
+    }
+
+    let git_dir = ($mod_path | path join ".git")
+    if not ($git_dir | path exists) {
+        return { name: $name, status: "skipped", message: "not a git repository" }
+    }
+
+    let remotes = (^git -C $mod_path remote | complete).stdout | str trim
+    if ($remotes == "") {
+        return { name: $name, status: "skipped", message: "no remotes configured" }
+    }
+
+    let head_before = (^git -C $mod_path rev-parse HEAD | complete).stdout | str trim
+    let status_raw = (^git -C $mod_path status --porcelain | complete).stdout | str trim
+    let is_dirty = ($status_raw != "")
+
+    mut stashed = false
+    if $is_dirty {
+        let stash_res = (^git -C $mod_path stash push -u -m "ygg-update-stash" | complete)
+        if $stash_res.exit_code == 0 {
+            $stashed = true
+        }
+    }
+
+    let pull_res = (^git -C $mod_path pull --rebase | complete)
+    if $pull_res.exit_code != 0 {
+        # Pull / rebase conflict
+        ^git -C $mod_path rebase --abort | complete | ignore
+        ^git -C $mod_path reset --hard $head_before | complete | ignore
+        if $stashed {
+            ^git -C $mod_path stash pop | complete | ignore
+        }
+        return { name: $name, status: "conflict", message: $pull_res.stderr }
+    }
+
+    if $stashed {
+        let pop_res = (^git -C $mod_path stash pop | complete)
+        if ($pop_res.exit_code != 0) or ($pop_res.stdout | str contains "CONFLICT") {
+            # Stash pop conflicted with updated remote commits
+            # Reset working directory to head_before (no conflict markers in working tree)
+            ^git -C $mod_path reset --hard $head_before | complete | ignore
+            # Pop the stash cleanly onto original HEAD
+            ^git -C $mod_path stash pop | complete | ignore
+            return { name: $name, status: "conflict", message: "Stash pop conflicted with upstream changes" }
+        }
+    }
+
+    let head_after = (^git -C $mod_path rev-parse HEAD | complete).stdout | str trim
+    {
+        name: $name,
+        status: "ok",
+        updated: ($head_before != $head_after),
+        head: $head_after
+    }
+}
+
 # Update all Git-managed modules in $YGG_HOME/modules/ via rebase, aborting cleanly on conflict
 export def update-modules [ygg_home: string]: nothing -> list<record> {
     let mods_dir = ($ygg_home | path join "modules")
@@ -215,56 +283,8 @@ export def update-modules [ygg_home: string]: nothing -> list<record> {
             continue
         }
 
-        let remotes = (^git -C $mod_path remote | complete).stdout | str trim
-        if ($remotes == "") {
-            $results = ($results | append { name: $mod_name, status: "skipped", message: "no remotes configured" })
-            continue
-        }
-
-        let head_before = (^git -C $mod_path rev-parse HEAD | complete).stdout | str trim
-        let status_raw = (^git -C $mod_path status --porcelain | complete).stdout | str trim
-        let is_dirty = ($status_raw != "")
-
-        mut stashed = false
-        if $is_dirty {
-            let stash_res = (^git -C $mod_path stash push -u -m "ygg-update-stash" | complete)
-            if $stash_res.exit_code == 0 {
-                $stashed = true
-            }
-        }
-
-        let pull_res = (^git -C $mod_path pull --rebase | complete)
-        if $pull_res.exit_code != 0 {
-            # Pull / rebase conflict
-            ^git -C $mod_path rebase --abort | complete | ignore
-            ^git -C $mod_path reset --hard $head_before | complete | ignore
-            if $stashed {
-                ^git -C $mod_path stash pop | complete | ignore
-            }
-            $results = ($results | append { name: $mod_name, status: "conflict", message: $pull_res.stderr })
-            continue
-        }
-
-        if $stashed {
-            let pop_res = (^git -C $mod_path stash pop | complete)
-            if ($pop_res.exit_code != 0) or ($pop_res.stdout | str contains "CONFLICT") {
-                # Stash pop conflicted with updated remote commits
-                # Reset working directory to head_before (no conflict markers in working tree)
-                ^git -C $mod_path reset --hard $head_before | complete | ignore
-                # Pop the stash cleanly onto original HEAD
-                ^git -C $mod_path stash pop | complete | ignore
-                $results = ($results | append { name: $mod_name, status: "conflict", message: "Stash pop conflicted with upstream changes" })
-                continue
-            }
-        }
-
-        let head_after = (^git -C $mod_path rev-parse HEAD | complete).stdout | str trim
-        $results = ($results | append {
-            name: $mod_name,
-            status: "ok",
-            updated: ($head_before != $head_after),
-            head: $head_after
-        })
+        let res = (update-module $ygg_home $mod_name)
+        $results = ($results | append $res)
     }
 
     $results
@@ -370,3 +390,103 @@ export def modules-status [ygg_home: string]: nothing -> table {
 
     $rows
 }
+
+# Generate or update ygg.lock fixing exact commits of all Git modules in plan (RFC-032)
+export def generate-ygg-lock [ygg_home: string, plan: record]: nothing -> record {
+    let plan_mods = ($plan.modules? | default [])
+    mut locked_mods = []
+
+    for mod in $plan_mods {
+        let mod_name = $mod.name
+        let mod_dir = if ($mod.dir? != null) and ($mod.dir != "") {
+            $mod.dir
+        } else {
+            ($ygg_home | path join "modules" $mod_name)
+        }
+
+        let git_dir = ($mod_dir | path join ".git")
+        if not ($git_dir | path exists) {
+            continue
+        }
+
+        let commit_res = (^git -C $mod_dir rev-parse HEAD | complete)
+        if $commit_res.exit_code != 0 {
+            continue
+        }
+        let commit = ($commit_res.stdout | str trim)
+        if ($commit == "") {
+            continue
+        }
+
+        let remote_res = (^git -C $mod_dir config --get remote.origin.url | complete)
+        let source = if $remote_res.exit_code == 0 {
+            $remote_res.stdout | str trim
+        } else {
+            ""
+        }
+
+        let timestamp = (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+
+        $locked_mods = ($locked_mods | append {
+            name: $mod_name,
+            source: $source,
+            commit: $commit,
+            timestamp: $timestamp
+        })
+    }
+
+    let lock_data = {
+        version: 1,
+        modules: $locked_mods
+    }
+
+    let lock_file = ($ygg_home | path join "ygg.lock")
+    $"# ygg.lock — generated automatically, do not edit\n\n($lock_data | to toml)" | save -f $lock_file
+
+    $lock_data
+}
+
+# Verify that all Git modules in plan match commits recorded in ygg.lock (RFC-032)
+export def verify-ygg-lock [ygg_home: string, plan: record]: nothing -> list<string> {
+    let lock_file = ($ygg_home | path join "ygg.lock")
+    if not ($lock_file | path exists) {
+        return [$"Lockfile not found at '($lock_file)'. Run 'ygg apply' first to generate ygg.lock."]
+    }
+
+    let lock = (try { open --raw $lock_file | from toml } catch { |e| return [$"Failed to parse '($lock_file)': ($e.msg)"] })
+    let locked_mods = ($lock.modules? | default ($lock.module? | default []))
+
+    let plan_mods = ($plan.modules? | default [])
+    mut errors = []
+
+    for mod in $plan_mods {
+        let mod_name = $mod.name
+        let mod_dir = if ($mod.dir? != null) and ($mod.dir != "") {
+            $mod.dir
+        } else {
+            ($ygg_home | path join "modules" $mod_name)
+        }
+
+        let git_dir = ($mod_dir | path join ".git")
+        if not ($git_dir | path exists) {
+            continue
+        }
+
+        let commit_res = (^git -C $mod_dir rev-parse HEAD | complete)
+        if $commit_res.exit_code != 0 {
+            $errors = ($errors | append $"Failed to get HEAD commit for module '($mod_name)'")
+            continue
+        }
+        let current_commit = ($commit_res.stdout | str trim)
+        let locked = ($locked_mods | where name == $mod_name | get -o 0)
+
+        if ($locked == null) {
+            $errors = ($errors | append $"Module '($mod_name)' is not locked in '($lock_file)'")
+        } else if ($locked.commit? | default "") != $current_commit {
+            $errors = ($errors | append $"Module '($mod_name)' commit mismatch: expected ($locked.commit? | default ''), found ($current_commit)")
+        }
+    }
+
+    $errors
+}
+

@@ -2,8 +2,8 @@
 directory: tests
 source:
   kind: git
-  blob_sha: 67a9f5d3a45dd6bc818f2dbc1a1e50b677c5aae2
-  commit_sha: 4ceb64045e1f1d75c5489e32eb3ce1f6c0f2adf7
+  blob_sha: dc2374065f6cfb228089727ed5ba9e65e3ede9ad
+  commit_sha: 0b134bd0a74f2ac2d0f6d0f038ddf0c72ecb7175
 generated_by:
   component: context-init
   role: update
