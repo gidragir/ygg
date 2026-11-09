@@ -394,7 +394,9 @@ export def install-packages [
             if $cacheable {
                 $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
             }
-            $new_packages = ($new_packages | upsert $mgr $pkgs)
+            let prev_pkgs = ((load-state $ygg_home).packages? | default {} | get -o $mgr | default [])
+            let union_pkgs = ($prev_pkgs | append $pkgs | uniq)
+            $new_packages = ($new_packages | upsert $mgr $union_pkgs)
         }
     }
 
