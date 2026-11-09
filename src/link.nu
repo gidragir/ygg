@@ -938,6 +938,24 @@ export def preflight-check [
 ]: nothing -> list<record<module: string, key: string, reason: string, detail: string>> {
     mut problems = []
 
+    # 0. Module dependencies (RFC-031): all declared depends_on modules must be in active plan
+    let active_mods = ($plan | get -o modules | default [])
+    let active_names = ($active_mods | each { |m| $m.name })
+    for m in $active_mods {
+        let manifest = ($m | get -o manifest)
+        let deps = ($m | get -o depends_on | default (if $manifest != null { $manifest | get -o depends_on | default [] } else { [] }))
+        for dep in $deps {
+            if ($dep not-in $active_names) {
+                $problems = ($problems | append {
+                    module: $m.name,
+                    key: "depends_on",
+                    reason: "missing_dependency",
+                    detail: $"Module '($m.name)' depends on '($dep)', but '($dep)' is not in active modules"
+                })
+            }
+        }
+    }
+
     # 1. Every link candidate of the effective plan (losing candidates too: RFC-020 p.2 "all links")
     for link in ($plan.links? | default []) {
         let src = $link.src_path

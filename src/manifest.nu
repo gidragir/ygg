@@ -84,9 +84,15 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         $raw_path = [$raw_path]
     }
 
+    mut raw_depends = ($raw.depends_on? | default [])
+    if not (($raw_depends | describe) starts-with "list") {
+        $raw_depends = (if ($raw_depends == "") { [] } else { [$raw_depends] })
+    }
+
     mut manifest = {
         name: $mod_name,
         os: $norm_os,
+        depends_on: $raw_depends,
         description: ($raw.description? | default ""),
         config: ($raw.config? | default {}),
         packages: ($raw.packages? | default {}),
@@ -297,6 +303,54 @@ def entries-with-rank [section: any, origin_rank: int]: nothing -> table {
     $section | transpose key value | each { |e| { key: $e.key, value: $e.value, origin_rank: $origin_rank } }
 }
 
+# Topologically sort modules by their declared dependencies using Kahn's algorithm (RFC-031)
+export def sort-modules-dag [modules: list<record>]: nothing -> list<record> {
+    if ($modules | length) <= 1 {
+        return $modules
+    }
+
+    let all_names = ($modules | each { |m| $m.name })
+
+    mut pending = ($modules | each { |m|
+        let raw_deps = ($m | get -o depends_on | default [])
+        let norm_deps = if (($raw_deps | describe) starts-with "list") {
+            $raw_deps
+        } else if ($raw_deps == "") {
+            []
+        } else {
+            [$raw_deps]
+        }
+        let internal_deps = ($norm_deps | where { |d| $d in $all_names } | uniq)
+        {
+            name: $m.name,
+            item: $m,
+            deps: $internal_deps
+        }
+    })
+
+    mut sorted = []
+
+    while ($pending | is-not-empty) {
+        let ready = ($pending | where { |node| ($node.deps | is-empty) })
+        if ($ready | is-empty) {
+            let cycle_mods = ($pending | get name | str join ", ")
+            error make { msg: $"Cyclic module dependency detected among: ($cycle_mods)" }
+        }
+
+        for r in $ready {
+            $sorted = ($sorted | append $r.item)
+        }
+
+        let resolved_names = ($ready | get name)
+        $pending = ($pending | where { |node| $node.name not-in $resolved_names })
+        $pending = ($pending | each { |node|
+            $node | upsert deps ($node.deps | where { |d| $d not-in $resolved_names })
+        })
+    }
+
+    $sorted
+}
+
 # Resolve effective plan across active modules and scopes
 # --extra-modules: virtual { name, path, scopes } entries (RFC-012, `ygg add` preview / pre-flight);
 # an entry replaces the host.toml module of the same name and goes last, as a real `add` would.
@@ -316,18 +370,7 @@ export def resolve-effective-plan [
         $all_modules | where { |m| $m.name in $modules_filter }
     }
 
-    mut plan_modules = []
-    mut plan_links = []
-    mut plan_save = []
-    mut plan_packages = {}
-    mut plan_env = {}
-    mut plan_aliases = {}
-    mut plan_path = []
-    mut key_order = 0
-    mut mod_rank = -1
-
-    for mod_entry in $active_modules {
-        $mod_rank = $mod_rank + 1
+    let prepared_modules = ($active_modules | each { |mod_entry|
         let mod_name = $mod_entry.name
         let mod_dir = if ($mod_entry.path? != null) and ($mod_entry.path != "") {
             if not ($mod_entry.path | path exists) {
@@ -343,6 +386,42 @@ export def resolve-effective-plan [
         }
 
         let manifest = (load-module-manifest $mod_dir)
+        let entry_deps = if ($mod_entry.depends_on? | default null) == null {
+            []
+        } else if (($mod_entry.depends_on | describe) starts-with "list") {
+            $mod_entry.depends_on
+        } else {
+            [$mod_entry.depends_on]
+        }
+        let manifest_deps = ($manifest.depends_on? | default [])
+        let all_deps = ($manifest_deps | append $entry_deps | uniq)
+        {
+            name: $mod_name,
+            depends_on: $all_deps,
+            mod_entry: $mod_entry,
+            mod_dir: $mod_dir,
+            manifest: $manifest
+        }
+    })
+
+    let sorted_modules = (sort-modules-dag $prepared_modules)
+
+    mut plan_modules = []
+    mut plan_links = []
+    mut plan_save = []
+    mut plan_packages = {}
+    mut plan_env = {}
+    mut plan_aliases = {}
+    mut plan_path = []
+    mut key_order = 0
+    mut mod_rank = -1
+
+    for item in $sorted_modules {
+        $mod_rank = $mod_rank + 1
+        let mod_entry = $item.mod_entry
+        let mod_name = $item.name
+        let mod_dir = $item.mod_dir
+        let manifest = $item.manifest
 
         # OS Guard check
         if not (validate-module-os $manifest $host_os) {
@@ -492,6 +571,7 @@ export def resolve-effective-plan [
             config: $effective_config,
             scopes: $active_scopes,
             manifest: $manifest,
+            depends_on: $item.depends_on,
             has_setup: ($mod_dir | path join "setup.nu" | path exists)
         })
     }

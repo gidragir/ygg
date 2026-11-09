@@ -1,6 +1,7 @@
 # tests/test_manifest.nu
 use std/assert
 use ../src/manifest.nu *
+use ../src/link.nu [preflight-check]
 use helpers.nu [with-temp-ygg]
 
 export def test_scope_isolation_and_last_module_wins [] {
@@ -361,4 +362,82 @@ name = "m1"
         assert $failed
     }
 }
+
+export def test_manifest_module_dependencies_dag_and_cycle_detection [] {
+    let mods = [
+        { name: "hyprland", depends_on: ["waybar", "core"] },
+        { name: "waybar", depends_on: ["core"] },
+        { name: "core", depends_on: [] }
+    ]
+    let sorted = (sort-modules-dag $mods)
+    let names = ($sorted | get name)
+    assert ($names == ["core", "waybar", "hyprland"]) "Expected topological order [core, waybar, hyprland]"
+    
+    # Циклическая зависимость должна выбрасывать структурированную ошибку
+    let cyclic = [
+        { name: "A", depends_on: ["B"] },
+        { name: "B", depends_on: ["A"] }
+    ]
+    let err = (try { sort-modules-dag $cyclic; "" } catch { |e| $e.msg })
+    assert ($err =~ "Cyclic module dependency") "Expected cyclic dependency error"
+}
+
+export def test_manifest_resolve_plan_sorts_modules_topologically [] {
+    with-temp-ygg { |home|
+        let m_core = ($home | path join "modules" "core")
+        let m_waybar = ($home | path join "modules" "waybar")
+        let m_hypr = ($home | path join "modules" "hyprland")
+        mkdir $m_core $m_waybar $m_hypr
+
+        'name = "core"
+os = ["linux"]
+' | save -f ($m_core | path join "ygg.toml")
+
+        'name = "waybar"
+os = ["linux"]
+depends_on = ["core"]
+' | save -f ($m_waybar | path join "ygg.toml")
+
+        'name = "hyprland"
+os = ["linux"]
+depends_on = ["waybar", "core"]
+' | save -f ($m_hypr | path join "ygg.toml")
+
+        # In host.toml, declare them in REVERSE order
+        '[[modules]]
+name = "hyprland"
+[[modules]]
+name = "waybar"
+[[modules]]
+name = "core"
+' | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let order = ($plan.modules | get name)
+        assert equal $order ["core", "waybar", "hyprland"]
+    }
+}
+
+export def test_preflight_detects_missing_module_dependency [] {
+    with-temp-ygg { |home|
+        let m_app = ($home | path join "modules" "app")
+        mkdir $m_app
+
+        'name = "app"
+os = ["linux"]
+depends_on = ["missing-mod"]
+' | save -f ($m_app | path join "ygg.toml")
+
+        '[[modules]]
+name = "app"
+' | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let problems = (preflight-check $home $plan)
+        assert equal ($problems | get reason) ["missing_dependency"]
+        assert equal ($problems | get module) ["app"]
+        assert ($problems | first | get detail | str contains "missing-mod")
+    }
+}
+
 
