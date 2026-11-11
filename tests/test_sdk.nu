@@ -229,7 +229,8 @@ let scopes = ($env.YGG_SCOPES | from json)
             dir: $mod_dir,
             config: { theme: "catppuccin" },
             scopes: ["linux", "pc"],
-            has_setup: true
+            has_setup: true,
+            setup: { dry_run_safe: true }
         }
 
         run-module-setup $home $mod_plan --dry-run

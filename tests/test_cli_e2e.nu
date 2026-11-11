@@ -967,6 +967,47 @@ export def test_cli_completions_generation [] {
     }
 }
 
+def tree-snapshot [root: string]: nothing -> list<string> {
+    glob ($root | path join "**" "*") | sort | each { |p| $"($p)|(ls -D $p | get 0.modified)" }
+}
+
+export def test_readonly_commands_do_not_touch_fresh_home [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        "modules = []\n" | save -f ($home | path join "host.toml")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let before = (tree-snapshot $home)
+            for cmd in [["diff"], ["status"], ["doctor"], ["apply", "--dry-run"]] {
+                ^nu $ygg_bin ...$cmd | complete | ignore
+                assert equal (tree-snapshot $home) $before $"($cmd | str join ' ') mutated YGG_HOME"
+            }
+            assert (not ($home | path join ".state" | path exists))
+        }
+    }
+}
+
+export def test_dry_run_skips_setup_unless_dry_run_safe [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        let m = ($home | path join "modules" "m"); mkdir $m
+        let marker = ($home | path join "marker")
+        "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+        $"touch '($marker)'\n" | save -f ($m | path join "setup.nu")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let res = (^nu $ygg_bin diff | complete)
+            assert (not ($marker | path exists))
+            assert ($res.stdout | str contains "SETUP m (skipped)")
+            "\n[setup]\ndry_run_safe = true\n" | save --append ($m | path join "ygg.toml")
+            ^nu $ygg_bin diff | complete | ignore
+            assert ($marker | path exists)
+        }
+    }
+}
+
+
 
 
 

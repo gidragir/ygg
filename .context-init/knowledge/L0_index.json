@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-09",
+  "updated_at": "2026-11-11",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml",
@@ -35,8 +35,7 @@
         "def \"main init\" [ name?: string, --os: string = \"linux\" ]",
         "def \"main add\" [ source: string, --scope (-s): string = \"\", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = \"\", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = \"\", --no-lock ]",
         "def assert-pkg-flags [pkg: string, skip_packages: bool]",
-        "def \"main remove\" [ name: string, --no-lock ]",
-        "def print-op-line [o: record]"
+        "def \"main remove\" [ name: string, --no-lock ]"
       ],
       "summary_source": "heuristic"
     },

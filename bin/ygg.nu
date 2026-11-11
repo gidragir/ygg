@@ -109,7 +109,9 @@ def "main add" [
     assert-sandbox-home $effective_sandbox
 
     let ygg_home = (get-ygg-home)
-    ensure-ygg-dirs $ygg_home
+    if not $dry_run {
+        ensure-ygg-dirs $ygg_home
+    }
 
     let lock_file = (acquire-host-lock $ygg_home "add" --no-lock=($no_lock or $dry_run))
     try {
@@ -222,7 +224,9 @@ def "main apply" [
     assert-sandbox-home $effective_sandbox
 
     let ygg_home = (get-ygg-home)
-    ensure-ygg-dirs $ygg_home
+    if not $dry_run {
+        ensure-ygg-dirs $ygg_home
+    }
 
     let lock_file = (acquire-host-lock $ygg_home "apply" --no-lock=($no_lock or $dry_run))
     try {
@@ -258,7 +262,9 @@ def apply-plan [
     assert-sandbox-home $effective_sandbox
 
     let ygg_home = (get-ygg-home)
-    ensure-ygg-dirs $ygg_home
+    if not $dry_run {
+        ensure-ygg-dirs $ygg_home
+    }
 
     let plan = (resolve-effective-plan $ygg_home --extra-modules $extra_modules)
 
@@ -318,7 +324,10 @@ def apply-plan [
         compile-environment $ygg_home $plan --dry-run --force=$force --sandbox=$effective_sandbox | ignore
         for mod_entry in $plan_mods {
             let mod_dir = ($mod_entry.dir? | default ($ygg_home | path join "modules" ($mod_entry.name? | default "")))
-            if ($mod_dir | path join "setup.nu" | path exists) {
+            let is_safe = ($mod_entry.manifest?.setup?.dry_run_safe?
+                | default ($mod_entry.setup?.dry_run_safe?
+                | default ($mod_entry.dry_run_safe? | default false)))
+            if ($mod_dir | path join "setup.nu" | path exists) and $is_safe {
                 print ("  " + ("SETUP" | fill --alignment left --width 15) + " " + ($mod_entry.name? | default "") + "  (YGG_DRY_RUN=true)")
             }
             run-module-setup $ygg_home $mod_entry --dry-run --force=$force --sandbox=$effective_sandbox
@@ -474,7 +483,9 @@ def "main clean" [
     --no-lock
 ] {
     let ygg_home = (get-ygg-home)
-    ensure-ygg-dirs $ygg_home
+    if not $dry_run {
+        ensure-ygg-dirs $ygg_home
+    }
 
     let do_backups = $backups or (not $hashes)
     let do_hashes = $hashes or (not $backups)
@@ -515,7 +526,6 @@ def "main clean" [
 # Display module sync and git status table (--json: all columns as JSON, independent of terminal width)
 def "main status" [--json] {
     let ygg_home = (get-ygg-home)
-    ensure-ygg-dirs $ygg_home
     let rows = (modules-status $ygg_home)
     if $json {
         print ($rows | to json --raw)

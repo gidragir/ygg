@@ -134,7 +134,8 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         aliases: ($raw.aliases? | default {}),
         path: $raw_path,
         scope: ($raw.scope? | default {}),
-        doctor: ($raw.doctor? | default {})
+        doctor: ($raw.doctor? | default {}),
+        setup: { dry_run_safe: ($raw.setup?.dry_run_safe? | default false) }
     }
 
     if ($manifest.env.path? != null) {
@@ -591,7 +592,7 @@ export def resolve-effective-plan [
         let mod_entry = $item.mod_entry
         let mod_name = $item.name
         let mod_dir = $item.mod_dir
-        let manifest = $item.manifest
+        mut manifest = $item.manifest
 
         # OS Guard check
         if not (validate-module-os $manifest $host_os) {
@@ -667,6 +668,10 @@ export def resolve-effective-plan [
                     if ($scope_data.path? != null) {
                         let p = if (($scope_data.path | describe) starts-with "list") { $scope_data.path } else { [$scope_data.path] }
                         $mod_path = ($mod_path | append $p | uniq)
+                    }
+                    # setup in scope
+                    if ($scope_data.setup?.dry_run_safe? != null) {
+                        $manifest = ($manifest | upsert setup { dry_run_safe: $scope_data.setup.dry_run_safe })
                     }
                 }
             }

@@ -301,8 +301,26 @@ export def run-module-setup [
         return
     }
 
-    let ygg_src_dir = $YGG_SRC_DIR
     let is_dry = if $dry_run { "true" } else { ($env.YGG_DRY_RUN? | default "false") }
+    let is_safe = ($mod_plan.manifest?.setup?.dry_run_safe?
+        | default ($mod_plan.setup?.dry_run_safe?
+        | default ($mod_plan.dry_run_safe?
+        | default (try {
+            let ygg_toml = ($mod_dir | path join "ygg.toml")
+            if ($ygg_toml | path exists) {
+                (open $ygg_toml).setup?.dry_run_safe? | default false
+            } else {
+                false
+            }
+        } catch { false }))))
+
+    if ($is_dry == "true") and (not $is_safe) {
+        let mod_name = ($mod_plan.name? | default ($mod_dir | path basename))
+        print $"[ygg] \(dry-run\) SETUP ($mod_name) \(skipped\)"
+        return
+    }
+
+    let ygg_src_dir = $YGG_SRC_DIR
     let is_forced = if $force { "true" } else { ($env.YGG_FORCE? | default "false") }
     let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
 

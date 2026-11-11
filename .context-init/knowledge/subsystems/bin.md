@@ -2,8 +2,8 @@
 directory: bin/ygg.nu
 source:
   kind: git
-  blob_sha: 0e04860295c8d3c4db78c6be18776076f694837c
-  commit_sha: 79b6924281c6f903e9858854a75a397d062217d0
+  blob_sha: b391f66ea31c2893581293c0df03578e4b03a290
+  commit_sha: 0aca436558fb4c31003aa79ad7586966277a79d9
 generated_by:
   component: context-init
   role: update
@@ -36,7 +36,6 @@ def "main init" [ name?: string, --os: string = "linux" ]
 def "main add" [ source: string, --scope (-s): string = "", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "", --no-lock ]
 def assert-pkg-flags [pkg: string, skip_packages: bool]
 def "main remove" [ name: string, --no-lock ]
-def print-op-line [o: record]
 ```
 
 ## 🧪 Запуск и тестирование
