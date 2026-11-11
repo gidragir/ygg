@@ -2,8 +2,8 @@
 directory: src/env.nu
 source:
   kind: git
-  blob_sha: 00ad4885a0aff87fb90231a36945bfce1aa971ea
-  commit_sha: a6965b2d3ab2d4c100462b64280c84382d4ed740
+  blob_sha: 1c6b86c3f5a72f5a1c328a70072f2214227f8418
+  commit_sha: 97b3c640b64d17e6df2c67ff21522c87b98fb18e
 generated_by:
   component: context-init
   role: update
@@ -37,7 +37,8 @@ export def missing-secret-keys [template: string, secrets: string]: nothing -> l
 export def classify-secret-value [raw: string]: nothing -> record<kind: string, ref: string>
 export def load-secrets-env [ygg_home: string]: nothing -> record
 export def validate-secret-providers [ygg_home: string]: nothing -> list<string>
-export def resolve-secret-value [raw: string]: nothing -> string
+export def secret-provider-argv [kind: string, ref: string]: nothing -> list<string>
+def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> string
 ```
 
 ## 🧪 Запуск и тестирование

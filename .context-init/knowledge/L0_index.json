@@ -202,7 +202,8 @@
         "export def classify-secret-value [raw: string]: nothing -> record<kind: string, ref: string>",
         "export def load-secrets-env [ygg_home: string]: nothing -> record",
         "export def validate-secret-providers [ygg_home: string]: nothing -> list<string>",
-        "export def resolve-secret-value [raw: string]: nothing -> string"
+        "export def secret-provider-argv [kind: string, ref: string]: nothing -> list<string>",
+        "def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> string"
       ],
       "summary_source": "heuristic"
     },

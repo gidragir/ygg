@@ -300,7 +300,7 @@ os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
         mkdir $m1
         'name = "core"
 os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
-        "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
+        "[[modules]]\nname = \"core\"\n\n[ygg.secrets]\nmaterialize = true\n" | save -f ($home | path join "host.toml")
         "[env]\nBROKEN_SECRET = \"eval:exit 42\"" | save -f ($home | path join "secrets.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -413,5 +413,77 @@ export def test_validate_secret_providers_reports_missing_cli [] {
         }
     }
 }
+
+def write-mock-op [dir: string] {
+    mkdir $dir
+    "#!/bin/sh\necho S3CRET\n" | save -f ($dir | path join "op")
+    ^chmod +x ($dir | path join "op")
+}
+
+def setup-secret-home [home: string, materialize: bool] {
+    ensure-ygg-dirs $home
+    let m = ($home | path join "modules" "m"); mkdir $m
+    "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+    $"[[modules]]\nname = \"m\"\n\n[ygg.secrets]\nmaterialize = ($materialize)\n" | save -f ($home | path join "host.toml")
+    "K = \"op://v/i/f\"\nQ = \"op://v/it'em/$(id)\"\nP = \"plain\"\n" | save -f ($home | path join "secrets.toml")
+}
+
+export def test_secret_provider_argv [] {
+    assert equal (secret-provider-argv "op" "op://v/i/f") ["op", "read", "op://v/i/f"]
+    assert equal (secret-provider-argv "bw" "bw://item/field") ["bw", "get", "field", "item"]
+    assert equal (secret-provider-argv "bw" "bw://item") ["bw", "get", "password", "item"]
+    assert equal (secret-provider-argv "pass" "foo/bar") ["pass", "show", "foo/bar"]
+    assert equal (secret-provider-argv "eval" "echo 1") ["nu", "-c", "echo 1"]
+}
+
+export def test_restrict_file_access [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        let p = ($home | path join "secret.txt")
+        "secret" | save -f $p
+        assert (restrict-file-access $p)
+        assert equal (ls -l $p | get 0.mode) "rw-------"
+    }
+}
+
+export def test_external_secret_is_lazy_by_default [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        let bin = ($home | path join "mock-bin"); write-mock-op $bin
+        setup-secret-home $home false
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", PATH: ($env.PATH | prepend $bin) } {
+            compile-environment $home (resolve-effective-plan $home) --sandbox $sb
+            let leaked = (glob ($home | path join "**" "*") | where { |p| ($p | path type) == "file" and not ($p | str contains "mock-bin") }
+                | where { |p| open --raw $p | str contains "S3CRET" })
+            assert equal $leaked []
+            let zsh = (open --raw ($home | path join ".state" "env" "env.zsh"))
+            assert ($zsh | str contains "export K=\"$(op read 'op://v/i/f')\"")
+            assert ($zsh | str contains "export P='plain'")
+            # Review Focus 1: кавычка и $( ) в ссылке не ломают файл и не исполняются
+            let chk = (^zsh -n ($home | path join ".state" "env" "env.zsh") | complete)
+            if (which zsh | is-not-empty) { assert equal $chk.exit_code 0 }
+            assert (not ($zsh | str contains "$(id)\"")) "ref must stay inside single quotes"
+            let env_nu = ($home | path join ".state" "env" "env.nu")
+            assert equal (^nu -c $"source '($env_nu)'; $env.K" | complete | get stdout | str trim) "S3CRET"
+        }
+    }
+}
+
+export def test_external_secret_materialized_on_opt_in [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        let bin = ($home | path join "mock-bin"); write-mock-op $bin
+        setup-secret-home $home true
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", PATH: ($env.PATH | prepend $bin) } {
+            compile-environment $home (resolve-effective-plan $home) --sandbox $sb
+        }
+        let f = ($home | path join ".state" "env" "env.zsh")
+        assert (open --raw $f | str contains "export K='S3CRET'")
+        assert equal (ls -l $f | get 0.mode) "rw-------"
+    }
+}
+
 
 

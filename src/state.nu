@@ -256,6 +256,29 @@ export def to-win32-path [p: string]: nothing -> string {
     $p | path expand -n | str replace -a "/" "\\"
 }
 
+# Restrict file permissions to current user only (0600 on Unix, inheritance reset & owner:F on Windows) (RFC-049)
+export def restrict-file-access [path: string]: nothing -> bool {
+    let host_os = (detect-host-os)
+    let is_windows = ($host_os.os == "windows")
+    if $is_windows {
+        let win_path = (to-win32-path $path)
+        let user = ($env.USERNAME? | default ($env.USER? | default ""))
+        let cmd = if (which icacls.exe | is-not-empty) { "icacls.exe" } else { "icacls" }
+        let res = (try {
+            if ($user != "") {
+                ^$cmd $win_path /inheritance:r $"/grant:r" $"($user):F" | complete
+            } else {
+                ^$cmd $win_path /inheritance:r | complete
+            }
+        } catch { { exit_code: 1 } })
+        $res.exit_code == 0
+    } else {
+        let res = (try { ^chmod 0600 $path | complete } catch { { exit_code: 1 } })
+        $res.exit_code == 0
+    }
+}
+
+
 # Check if a process with given PID is still running
 export def check-process-alive [pid: int]: nothing -> bool {
     if $pid <= 0 {

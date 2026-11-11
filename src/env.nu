@@ -1,7 +1,8 @@
 # src/env.nu
 # Yggdrasil configuration manager — Environment, Aliases & Secrets Compiler
 
-use state.nu [detect-host-os, expand-target-path]
+use state.nu [detect-host-os, expand-target-path, restrict-file-access]
+use manifest.nu [load-host-config]
 
 # Format consolidated PowerShell script to update Windows User Environment (HKCU\Environment)
 export def format-windows-env-script [clean_env: record, path_entries: list<string>, user_home: string]: nothing -> string {
@@ -142,6 +143,75 @@ export def validate-secret-providers [ygg_home: string]: nothing -> list<string>
     $missing
 }
 
+# Build provider command line arguments for lazy shell execution (RFC-042)
+export def secret-provider-argv [kind: string, ref: string]: nothing -> list<string> {
+    match $kind {
+        "op" => {
+            ["op", "read", $ref]
+        }
+        "bw" => {
+            let stripped = if ($ref | str starts-with "bw://") { ($ref | str substring 5..) } else { $ref }
+            let parts = ($stripped | split row "/")
+            if ($parts | length) >= 2 {
+                ["bw", "get", ($parts | get 1), ($parts | get 0)]
+            } else {
+                ["bw", "get", "password", ($parts | get 0)]
+            }
+        }
+        "pass" => {
+            let stripped = if ($ref | str starts-with "pass:") { ($ref | str substring 5..) } else { $ref }
+            ["pass", "show", $stripped]
+        }
+        "eval" => {
+            let stripped = if ($ref | str starts-with "eval:") { ($ref | str substring 5..) } else { $ref }
+            ["nu", "-c", $stripped]
+        }
+        _ => {
+            []
+        }
+    }
+}
+
+# Format command line for lazy shell evaluation across supported shells (RFC-042)
+def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> string {
+    if ($argv | is-empty) {
+        return ""
+    }
+    let cmd = ($argv | first)
+    if ($argv | length) == 1 {
+        return (if $shell == "nu" { $"^($cmd)" } else { $cmd })
+    }
+    let subcmds = ($argv | skip 1 | drop 1)
+    let sub_str = if ($subcmds | is-empty) { "" } else { " " + ($subcmds | str join " ") }
+    let target = ($argv | last)
+
+    match $shell {
+        "zsh" => {
+            let esc_target = ($target | str replace --all "'" "'\\''")
+            $"($cmd)($sub_str) '($esc_target)'"
+        }
+        "fish" => {
+            let esc_target = ($target | str replace --all '\' '\\' | str replace --all "'" "\\'")
+            $"($cmd)($sub_str) '($esc_target)'"
+        }
+        "ps1" => {
+            let esc_target = ($target | str replace --all "'" "''")
+            $"($cmd)($sub_str) '($esc_target)'"
+        }
+        "nu" => {
+            let esc_target = if not ($target | str contains "'") {
+                $"'($target)'"
+            } else {
+                $"\"($target | str replace --all '\\' '\\\\' | str replace --all '\"' '\\\"')\""
+            }
+            $"^($cmd)($sub_str) ($esc_target) | str trim"
+        }
+        _ => {
+            $"($cmd)($sub_str) '($target)'"
+        }
+    }
+}
+
 # Resolve secret value using external resolvers if URI prefix is present (RFC-034, RFC-041)
 # Supported schemas:
 #   - `op://<vault>/<item>/<field>` -> 1Password CLI: `^op read ...`
@@ -151,10 +221,11 @@ export def validate-secret-providers [ygg_home: string]: nothing -> list<string>
 #   - `literal:<val>` -> Strips literal: prefix, returns remaining string untouched
 export def resolve-secret-value [raw: string]: nothing -> string {
     let classified = (classify-secret-value $raw)
+    let argv = (secret-provider-argv $classified.kind $classified.ref)
     match $classified.kind {
         "op" => {
             let res = try {
-                ^op read $classified.ref | complete
+                ^($argv.0) ...($argv | skip 1) | complete
             } catch { |err|
                 { exit_code: 1, stdout: "", stderr: ($err | into string) }
             }
@@ -169,17 +240,8 @@ export def resolve-secret-value [raw: string]: nothing -> string {
             ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
         }
         "bw" => {
-            let path = ($classified.ref | str substring 5..)
-            let parts = ($path | split row "/")
             let res = try {
-                if ($parts | length) >= 2 {
-                    let item = $parts.0
-                    let field = $parts.1
-                    ^bw get $field $item | complete
-                } else {
-                    let item = $parts.0
-                    ^bw get password $item | complete
-                }
+                ^($argv.0) ...($argv | skip 1) | complete
             } catch { |err|
                 { exit_code: 1, stdout: "", stderr: ($err | into string) }
             }
@@ -194,9 +256,8 @@ export def resolve-secret-value [raw: string]: nothing -> string {
             ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
         }
         "pass" => {
-            let pass_path = $classified.ref
             let res = try {
-                ^pass show $pass_path | complete
+                ^($argv.0) ...($argv | skip 1) | complete
             } catch { |err|
                 { exit_code: 1, stdout: "", stderr: ($err | into string) }
             }
@@ -208,12 +269,11 @@ export def resolve-secret-value [raw: string]: nothing -> string {
                 }
                 error make { msg: $"Failed to resolve Pass secret '($classified.ref)': ($err_msg)" }
             }
-            ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+            ($res.stdout | lines | first | default "")
         }
         "eval" => {
-            let cmd = $classified.ref
             let res = try {
-                ^nu -c $cmd | complete
+                ^($argv.0) ...($argv | skip 1) | complete
             } catch { |err|
                 { exit_code: 1, stdout: "", stderr: ($err | into string) }
             }
@@ -263,28 +323,55 @@ export def compile-environment [
     # 1. Load secrets from $ygg_home/secrets.toml (RFC-041)
     let sec_env = (load-secrets-env $ygg_home)
 
-    # 2. Merge plan environment with secrets (secrets take precedence)
+    # Read materialize flag (RFC-042)
+    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+    let materialize = ($host_cfg | get -o ygg.secrets.materialize | default false)
+
+    # 2. Build environment items { key, kind, value_or_argv }
     let plan_env = ($plan.env? | default {})
     let merged_aliases = ($plan.aliases? | default {})
 
-    # Plan env values are strictly literal; secret values are resolved (RFC-041)
-    mut acc_env = {}
-
+    mut env_map = {}
     for row in ($plan_env | transpose k v) {
         if not (($row.v | describe) starts-with "record") and not (($row.v | describe) starts-with "table") {
             let lit_val = ($row.v | into string)
-            $acc_env = ($acc_env | upsert $row.k (resolve-env-value $lit_val $sb))
+            $env_map = ($env_map | upsert $row.k {
+                key: $row.k,
+                kind: "literal",
+                value_or_argv: (resolve-env-value $lit_val $sb)
+            })
         }
     }
 
     for row in ($sec_env | transpose k v) {
         if not (($row.v | describe) starts-with "record") and not (($row.v | describe) starts-with "table") {
             let raw_str = ($row.v | into string)
-            let resolved_secret = (resolve-secret-value $raw_str)
-            $acc_env = ($acc_env | upsert $row.k (resolve-env-value $resolved_secret $sb))
+            let classified = (classify-secret-value $raw_str)
+            if $materialize {
+                let resolved = (resolve-secret-value $raw_str)
+                $env_map = ($env_map | upsert $row.k {
+                    key: $row.k,
+                    kind: "literal",
+                    value_or_argv: (resolve-env-value $resolved $sb)
+                })
+            } else if $classified.kind == "literal" {
+                $env_map = ($env_map | upsert $row.k {
+                    key: $row.k,
+                    kind: "literal",
+                    value_or_argv: (resolve-env-value $classified.ref $sb)
+                })
+            } else {
+                let argv = (secret-provider-argv $classified.kind $classified.ref)
+                $env_map = ($env_map | upsert $row.k {
+                    key: $row.k,
+                    kind: $classified.kind,
+                    value_or_argv: $argv
+                })
+            }
         }
     }
-    let clean_env = $acc_env
+
+    let items = ($env_map | values)
 
     # 3. Ensure target directory exists
     let env_dir = ($ygg_home | path join ".state" "env")
@@ -294,16 +381,27 @@ export def compile-environment [
 
     # 4. Generate env.nu
     let env_nu_path = ($env_dir | path join "env.nu")
-    let env_nu_content = $"load-env \(($clean_env | to nuon))\n"
+    mut nu_lines = []
+    let nu_literals = ($items | where kind == "literal" | reduce -f {} { |it, acc| $acc | upsert $it.key $it.value_or_argv })
+    $nu_lines = ($nu_lines | append $"load-env \(($nu_literals | to nuon))")
+    for it in ($items | where kind != "literal") {
+        let cmd = (format-lazy-provider-cmd "nu" $it.value_or_argv)
+        $nu_lines = ($nu_lines | append $"$env.($it.key) = \(($cmd))")
+    }
+    let env_nu_content = ($nu_lines | str join "\n") + "\n"
     $env_nu_content | save -f $env_nu_path
 
     # 5. Generate env.zsh
     let env_zsh_path = ($env_dir | path join "env.zsh")
     mut zsh_lines = []
-    for k in ($clean_env | columns) {
-        let v = ($clean_env | get $k)
-        let esc = ($v | str replace --all "'" "'\\''")
-        $zsh_lines = ($zsh_lines | append $"export ($k)='($esc)'")
+    for it in $items {
+        if $it.kind == "literal" {
+            let esc = ($it.value_or_argv | str replace --all "'" "'\\''")
+            $zsh_lines = ($zsh_lines | append $"export ($it.key)='($esc)'")
+        } else {
+            let cmd = (format-lazy-provider-cmd "zsh" $it.value_or_argv)
+            $zsh_lines = ($zsh_lines | append $"export ($it.key)=\"$\(($cmd))\"")
+        }
     }
     let env_zsh_content = if ($zsh_lines | is-empty) { "" } else { ($zsh_lines | str join "\n") + "\n" }
     $env_zsh_content | save -f $env_zsh_path
@@ -311,10 +409,14 @@ export def compile-environment [
     # 6. Generate env.ps1
     let env_ps1_path = ($env_dir | path join "env.ps1")
     mut ps1_lines = []
-    for k in ($clean_env | columns) {
-        let v = ($clean_env | get $k)
-        let esc = ($v | str replace --all "'" "''")
-        $ps1_lines = ($ps1_lines | append $"$env:($k) = '($esc)'")
+    for it in $items {
+        if $it.kind == "literal" {
+            let esc = ($it.value_or_argv | str replace --all "'" "''")
+            $ps1_lines = ($ps1_lines | append $"$env:($it.key) = '($esc)'")
+        } else {
+            let cmd = (format-lazy-provider-cmd "ps1" $it.value_or_argv)
+            $ps1_lines = ($ps1_lines | append $"$env:($it.key) = \(& ($cmd))")
+        }
     }
     let env_ps1_content = if ($ps1_lines | is-empty) { "" } else { ($ps1_lines | str join "\n") + "\n" }
     $env_ps1_content | save -f $env_ps1_path
@@ -322,10 +424,14 @@ export def compile-environment [
     # 6b. Generate env.fish
     let env_fish_path = ($env_dir | path join "env.fish")
     mut fish_lines = []
-    for k in ($clean_env | columns) {
-        let v = ($clean_env | get $k)
-        let esc = ($v | str replace --all '\' '\\' | str replace --all "'" "\\'")
-        $fish_lines = ($fish_lines | append $"set -gx ($k) '($esc)'")
+    for it in $items {
+        if $it.kind == "literal" {
+            let esc = ($it.value_or_argv | str replace --all '\' '\\' | str replace --all "'" "\\'")
+            $fish_lines = ($fish_lines | append $"set -gx ($it.key) '($esc)'")
+        } else {
+            let cmd = (format-lazy-provider-cmd "fish" $it.value_or_argv)
+            $fish_lines = ($fish_lines | append $"set -gx ($it.key) \(($cmd))")
+        }
     }
     let env_fish_content = if ($fish_lines | is-empty) { "" } else { ($fish_lines | str join "\n") + "\n" }
     $env_fish_content | save -f $env_fish_path
@@ -388,25 +494,30 @@ export def compile-environment [
         "" | save -f $local_nu_path
     }
 
-    # 11. Restrict permissions to 0600 on Unix
-    if ($nu.os-info.family != "windows") {
-        let env_files = [
-            $env_nu_path,
-            $env_zsh_path,
-            $env_ps1_path,
-            $env_fish_path,
-            $aliases_nu_path,
-            $aliases_zsh_path,
-            $aliases_ps1_path,
-            $aliases_fish_path,
-            $local_nu_path
-        ]
-        for f in $env_files {
-            try { ^chmod 0600 $f | complete | ignore } catch { }
-        }
+    # 11. Restrict permissions (0600 on Unix, inheritance reset & owner:F on Windows) (RFC-049)
+    let env_files = [
+        $env_nu_path,
+        $env_zsh_path,
+        $env_ps1_path,
+        $env_fish_path,
+        $aliases_nu_path,
+        $aliases_zsh_path,
+        $aliases_ps1_path,
+        $aliases_fish_path,
+        $local_nu_path
+    ]
+    for f in $env_files {
+        restrict-file-access $f | ignore
     }
 
-    # 12. Linux systemd environment.d/99-ygg.conf
+    # 12. Linux systemd environment.d/99-ygg.conf (static receivers filter kind != "literal", RFC-042)
+    let skipped_external = ($items | where kind != "literal")
+    for it in $skipped_external {
+        print -e $"[ygg] Warning: external secret '($it.key)' skipped for static environment receivers"
+    }
+
+    let static_env = ($items | where kind == "literal" | reduce -f {} { |it, acc| $acc | upsert $it.key $it.value_or_argv })
+
     let host_os = (detect-host-os)
     if ($host_os.os == "linux") or ($nu.os-info.family != "windows") or ($sb != "") {
         let conf_path = (expand-target-path "~/.config/environment.d/99-ygg.conf" --sandbox $sb)
@@ -415,8 +526,8 @@ export def compile-environment [
             mkdir $conf_dir
         }
         mut conf_lines = []
-        for k in ($clean_env | columns) {
-            let raw_val = ($clean_env | get $k)
+        for k in ($static_env | columns) {
+            let raw_val = ($static_env | get $k)
             let esc_val = ($raw_val
                 | str replace --all '\' '\\'
                 | str replace --all '"' '\"'
@@ -426,17 +537,15 @@ export def compile-environment [
         }
         let conf_content = if ($conf_lines | is-empty) { "" } else { ($conf_lines | str join "\n") + "\n" }
         $conf_content | save -f $conf_path
-        if ($nu.os-info.family != "windows") {
-            try { ^chmod 0600 $conf_path | complete | ignore } catch { }
-        }
+        restrict-file-access $conf_path | ignore
     }
 
     # 13. System session updates (strictly skipped under sandbox)
     if ($sb == "") {
         if ($host_os.os == "linux") {
-            with-env $clean_env {
+            with-env $static_env {
                 try {
-                    let env_keys = ($clean_env | columns)
+                    let env_keys = ($static_env | columns)
                     if not ($env_keys | is-empty) {
                         ^systemctl --user import-environment ...$env_keys | complete | ignore
                     }
@@ -445,7 +554,7 @@ export def compile-environment [
         } else if ($host_os.os == "windows") and ($nu.os-info.family == "windows") {
             let path_entries = ($plan.path? | default [])
             let user_home = ($env.USERPROFILE? | default ($env.HOME? | default ("~" | path expand)))
-            let script = (format-windows-env-script $clean_env $path_entries $user_home)
+            let script = (format-windows-env-script $static_env $path_entries $user_home)
             let res = (^powershell -NoProfile -Command $script | complete)
             if $res.exit_code != 0 {
                 error make { msg: $"Failed to update Windows environment: ($res.stderr)" }

@@ -5,10 +5,10 @@
 # nothing is written, nothing is fixed automatically. Module-specific private files are declared
 # by modules themselves in `[doctor] private_files` of their manifest.
 
-use state.nu [load-state, save-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path]
+use state.nu [load-state, save-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path, restrict-file-access]
 use manifest.nu [load-host-config, resolve-effective-plan]
 use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-literal-target, normalize-case, remove-link-only]
-use env.nu [missing-secret-keys]
+use env.nu [missing-secret-keys, classify-secret-value, load-secrets-env]
 use pkg.nu [missing-package-managers]
 use git.nu [copy-sync-status, is-canonicalizable]
 
@@ -223,6 +223,7 @@ def check-shadow [ygg_home: string, targets: table]: nothing -> list<record> {
 }
 
 # secrets: keys of a module secrets.example.toml absent in secrets.toml (names only, RFC-024)
+# secrets_materialized: warn when materialize = true and external secrets exist (RFC-042)
 def check-secrets [ygg_home: string, plan: record]: nothing -> list<record> {
     let secrets = ($ygg_home | path join "secrets.toml")
     mut rows = []
@@ -236,6 +237,21 @@ def check-secrets [ygg_home: string, plan: record]: nothing -> list<record> {
             $rows = ($rows | append (finding "secrets" "warn" $secrets $"module '($m.name)' is missing secrets: ($missing | str join ', ')" $"add the keys from '($tmpl)' to secrets.toml"))
         }
     }
+
+    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+    let materialize = ($host_cfg | get -o ygg.secrets.materialize | default false)
+    if $materialize {
+        let sec_env = (try { load-secrets-env $ygg_home } catch { {} })
+        let has_external = ($sec_env
+            | values
+            | where { |v| not (($v | describe) starts-with "record") and not (($v | describe) starts-with "table") }
+            | any { |v| (classify-secret-value ($v | into string)).kind != "literal" }
+        )
+        if $has_external {
+            $rows = ($rows | append (finding "secrets_materialized" "warn" $secrets "external secrets are materialized to plaintext files on disk" "set [ygg.secrets] materialize = false in host.toml"))
+        }
+    }
+
     $rows
 }
 
@@ -340,22 +356,7 @@ export def doctor-fix [
 
         match $check {
             "perm" => {
-                let ok = if $is_windows {
-                    let win_path = (to-win32-path $target)
-                    let user = ($env.USERNAME? | default ($env.USER? | default ""))
-                    let cmd = if (which icacls.exe | is-not-empty) { "icacls.exe" } else { "icacls" }
-                    let res = (try {
-                        if ($user != "") {
-                            ^$cmd $win_path /inheritance:r $"/grant:r" $"($user):F" | complete
-                        } else {
-                            ^$cmd $win_path /inheritance:r | complete
-                        }
-                    } catch { { exit_code: 1 } })
-                    $res.exit_code == 0
-                } else {
-                    let res = (try { ^chmod 600 $target | complete } catch { { exit_code: 1 } })
-                    $res.exit_code == 0
-                }
+                let ok = (restrict-file-access $target)
                 if $ok {
                     $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action "permissions set to 0600"))
                 } else {

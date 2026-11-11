@@ -548,6 +548,27 @@ export def test_doctor_fix_resolves_perms_and_orphan_links [] {
     }
 }
 
+export def test_doctor_secrets_materialized_warning [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb"); mkdir $sb
+        let m = ($home | path join "modules" "m"); mkdir $m
+        "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n\n[ygg.secrets]\nmaterialize = true\n" | save -f ($home | path join "host.toml")
+        "K = \"op://v/i/f\"\n" | save -f ($home | path join "secrets.toml")
+        let findings = (run-doctor $home --sandbox $sb)
+        let mat = ($findings | where check == "secrets_materialized")
+        assert equal ($mat | length) 1
+        assert equal ($mat.0.severity) "warn"
+
+        # When materialize is false or default, no secrets_materialized finding
+        "[[modules]]\nname = \"m\"\n\n[ygg.secrets]\nmaterialize = false\n" | save -f ($home | path join "host.toml")
+        let findings2 = (run-doctor $home --sandbox $sb)
+        assert equal ($findings2 | where check == "secrets_materialized" | length) 0
+    }
+}
+
+
 
 
 
