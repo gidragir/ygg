@@ -271,26 +271,34 @@ def check-canonical [plan: record, targets: table]: nothing -> list<record> {
     $rows
 }
 
-# journal_incomplete: pending WAL transaction from an interrupted run (RFC-027)
+# journal_interrupted / journal_failed: transaction status audit (RFC-043)
 def check-journal [ygg_home: string]: nothing -> list<record> {
     let journal = (check-pending-journal $ygg_home)
-    if ($journal.incomplete? | default false) {
-        let ts = ($journal.timestamp? | default "unknown")
-        let steps_info = if ($journal.steps? != null) {
-            let active = ($journal.steps | transpose k v | where v in ["IN_PROGRESS", "COMMITTED"] | each { |r| $"($r.k):($r.v)" } | str join ", ")
-            if ($active != "") { $" \(last steps: ($active)\)" } else { "" }
-        } else { "" }
-        [
-            (finding "journal_incomplete" "error" ($ygg_home | path join ".state" "journal.json") $"interrupted transaction from ($ts)($steps_info)" "run 'ygg apply' to recover or inspect and delete .state/journal.json")
-        ]
-    } else {
-        []
+    let journal_path = ($ygg_home | path join ".state" "journal.json")
+    match $journal.state {
+        "interrupted" => {
+            let ts = if ($journal.started != "") { $" from ($journal.started)" } else { "" }
+            [
+                (finding "journal_interrupted" "error" $journal_path $"interrupted transaction($ts)" "run 'ygg apply' to recover or inspect and delete .state/journal.json")
+            ]
+        },
+        "failed" => {
+            let detail = if ($journal.error != "") {
+                $"transaction failed at step '($journal.failed_step)': ($journal.error)"
+            } else {
+                $"transaction failed at step '($journal.failed_step)'"
+            }
+            [
+                (finding "journal_failed" "warn" $journal_path $detail "run 'ygg apply' to recover or inspect and delete .state/journal.json")
+            ]
+        },
+        _ => []
     }
 }
 
 # Read-only audit of the host (RFC-017). Rows: { check, severity (error | warn), target, detail, fix }.
 # Checks: link, link_pending, orphan_link, state_orphan, sync, perm, tool, collision, shadow,
-# secrets, canonical, journal_incomplete; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
+# secrets, canonical, journal_interrupted, journal_failed; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
 export def run-doctor [
     ygg_home: string,
     --sandbox: string = ""

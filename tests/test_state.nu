@@ -170,19 +170,37 @@ export def test_host_lock_prevents_concurrent_runs_and_cleans_stale [] {
     }
 }
 
-export def test_journal_transaction_lifecycle [] {
+export def test_journal_v2_states [] {
     with-temp-ygg { |home|
-        ensure-ygg-dirs $home
-        assert equal (check-pending-journal $home).incomplete false
-        let jpath = (begin-journal-transaction $home { modules: ["m1"] })
-        assert ($jpath | path exists)
+        assert equal (check-pending-journal $home).state "none"
+        begin-journal-transaction $home { modules: [], env: { A: "secret-ish" } }
+        let j = (open ($home | path join ".state" "journal.json"))
+        assert equal $j.version 2
+        assert ("plan" not-in ($j | columns))
+        assert equal $j.pid $nu.pid
+        assert equal (check-pending-journal $home).state "active"
+
+        record-journal-step $home "packages" "COMMITTED"
         record-journal-step $home "links" "IN_PROGRESS"
-        let status = (check-pending-journal $home)
-        assert ($status.incomplete == true) "Expected incomplete journal"
-        assert equal $status.steps.links "IN_PROGRESS"
+        fail-journal-transaction $home "boom"
+        let st = (check-pending-journal $home)
+        assert equal $st.state "failed"
+        assert equal $st.failed_step "links"
+        assert equal $st.error "boom"
+
         commit-journal-transaction $home
-        assert (not ($home | path join ".state" "journal.json" | path exists)) "Journal must be deleted on commit"
-        assert equal (check-pending-journal $home).incomplete false
+        assert equal (check-pending-journal $home).state "none"
+    }
+}
+
+export def test_journal_dead_pid_is_interrupted [] {
+    with-temp-ygg { |home|
+        begin-journal-transaction $home { modules: [] }
+        let jf = ($home | path join ".state" "journal.json")
+        open $jf | upsert pid 2147483646 | to json | save -f $jf
+        assert equal (check-pending-journal $home).state "interrupted"
+        "{\"timestamp\":\"x\",\"steps\":{}}" | save -f $jf     # v1
+        assert equal (check-pending-journal $home).state "interrupted"
     }
 }
 

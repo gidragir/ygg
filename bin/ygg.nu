@@ -293,10 +293,15 @@ def apply-plan [
 
     let mod_count = ($plan_mods | length)
 
-    # Check pending journal before starting mutations (RFC-027)
+    mut effective_refresh_packages = $refresh_packages
+    # Check pending journal before starting mutations (RFC-043)
     let pending_journal = (check-pending-journal $ygg_home)
-    if ($pending_journal.incomplete? | default false) {
-        print -e $"[ygg] Warning: Interrupted transaction detected in .state/journal.json \(started ($pending_journal.timestamp? | default 'unknown')\). Resuming operation."
+    if $pending_journal.state in ["interrupted", "failed"] {
+        print -e $"[ygg] Recovering: previous apply ($pending_journal.state) at step '($pending_journal.failed_step)'; re-running full pipeline."
+        let packages_committed = (($pending_journal.steps?.packages? | default "") == "COMMITTED")
+        if not $packages_committed {
+            $effective_refresh_packages = true
+        }
     }
 
     if $dry_run {
@@ -307,7 +312,7 @@ def apply-plan [
             let res = (prune-unused-packages $ygg_home $plan --dry-run --force-system-prune=$force_system_prune --pkg=$pkg --sandbox=$effective_sandbox)
             $pruned_cmds = $res.executed
         }
-        let pkg_res = (install-packages $ygg_home $plan --dry-run --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
+        let pkg_res = (install-packages $ygg_home $plan --dry-run --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$effective_refresh_packages --sandbox=$effective_sandbox)
         for o in $ops {
             if $all or ($o.op != "OK") {
                 print-op-line $o
@@ -344,81 +349,103 @@ def apply-plan [
         return
     }
 
-    # Begin WAL transaction (RFC-027)
+    # Begin WAL transaction (RFC-043)
     begin-journal-transaction $ygg_home $plan
 
-    # 1. Prune unused packages if requested (RFC-030)
-    mut prune_res = { executed: [], failed: [], skipped: [] }
-    if $prune_packages {
-        $prune_res = (prune-unused-packages $ygg_home $plan --force-system-prune=$force_system_prune --pkg=$pkg --sandbox=$effective_sandbox)
+    try {
+        # 1. Prune unused packages if requested (RFC-030 / RFC-043)
+        record-journal-step $ygg_home "prune_packages" "IN_PROGRESS"
+        mut prune_res = { executed: [], failed: [], skipped: [] }
+        if $prune_packages {
+            $prune_res = (prune-unused-packages $ygg_home $plan --force-system-prune=$force_system_prune --pkg=$pkg --sandbox=$effective_sandbox)
+        }
+        if ($prune_res.failed | is-not-empty) {
+            record-journal-step $ygg_home "prune_packages" "FAILED"
+        } else {
+            record-journal-step $ygg_home "prune_packages" "COMMITTED"
+        }
+
+        # 2. Install packages
+        record-journal-step $ygg_home "packages" "IN_PROGRESS"
+        let pkg_res = (install-packages $ygg_home $plan --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$effective_refresh_packages --sandbox=$effective_sandbox)
+        if ($pkg_res.failed | is-not-empty) {
+            record-journal-step $ygg_home "packages" "FAILED"
+        } else {
+            record-journal-step $ygg_home "packages" "COMMITTED"
+        }
+
+        # 3. Deploy links and file copies (PRUNE first; per-link failures are collected)
+        record-journal-step $ygg_home "links" "IN_PROGRESS"
+        let link_res = (apply-links $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
+        if ($link_res.failed | is-not-empty) {
+            record-journal-step $ygg_home "links" "FAILED"
+        } else {
+            record-journal-step $ygg_home "links" "COMMITTED"
+        }
+
+        # 4. Compile shell environments and aliases
+        record-journal-step $ygg_home "env" "IN_PROGRESS"
+        compile-environment $ygg_home $plan --force=$force --sandbox=$effective_sandbox | ignore
+        record-journal-step $ygg_home "env" "COMMITTED"
+
+        # 5. Run module procedural setup scripts
+        record-journal-step $ygg_home "setup" "IN_PROGRESS"
+        for mod_entry in $plan_mods {
+            run-module-setup $ygg_home $mod_entry --force=$force --sandbox=$effective_sandbox
+        }
+        record-journal-step $ygg_home "setup" "COMMITTED"
+
+        # on_change hooks of links (RFC-015): last step; a failing hook only warns
+        run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox | ignore
+
+        # 6. Declarative services management (RFC-037 / RFC-043)
+        record-journal-step $ygg_home "services" "IN_PROGRESS"
+        run-service-actions $ygg_home $plan $ops --sandbox=$effective_sandbox | ignore
+        record-journal-step $ygg_home "services" "COMMITTED"
+
+        print $"Applied ($mod_count) module\(s\)."
+
+        for f in $link_res.failed {
+            print -e $"[ygg] Error: failed to link '($f.dest)' -> '($f.src)' \(($f.module)\): ($f.stderr)"
+        }
+
+        mut errors = []
+        if ($prune_res.failed | is-not-empty) {
+            let failed_pkgs = ($prune_res.failed | str join ", ")
+            $errors = ($errors | append ("Package pruning failed for: " + $failed_pkgs))
+        }
+        if ($pkg_res.failed | is-not-empty) {
+            let failed_pkgs = ($pkg_res.failed | each { |f| $f.mgr + ": " + $f.pkg + " (" + $f.reason + ")" } | str join ", ")
+            $errors = ($errors | append ("Package installation failed for: " + $failed_pkgs))
+        }
+        if ($link_res.failed | is-not-empty) {
+            $errors = ($errors | append $"($link_res.failed | length) link\(s\) failed: ($link_res.failed | get dest | str join ', ')")
+        }
+        if ($errors | is-not-empty) {
+            error make { msg: ($errors | str join "; ") }
+        }
+
+        # 7. Finalize (RFC-043)
+        record-journal-step $ygg_home "finalize" "IN_PROGRESS"
+        # Rotate old backups and garbage collect orphaned hashes (RFC-028)
+        let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+        let max_count = ($host_cfg | get -o ygg.backups.max_count | default 20)
+        let max_age_days = ($host_cfg | get -o ygg.backups.max_age_days | default 30)
+        rotate-backups $ygg_home --max-count=$max_count --max-age-days=$max_age_days | ignore
+
+        let active_keys = (collect-active-hash-keys $plan)
+        gc-state-hashes $ygg_home $active_keys | ignore
+
+        # Generate or update ygg.lock (RFC-032)
+        generate-ygg-lock $ygg_home $plan | ignore
+        record-journal-step $ygg_home "finalize" "COMMITTED"
+
+        # Commit WAL transaction on clean completion (RFC-043)
+        commit-journal-transaction $ygg_home
+    } catch { |e|
+        fail-journal-transaction $ygg_home ($e.msg? | default ($e | to text))
+        error make $e
     }
-
-    # 2. Install packages
-    record-journal-step $ygg_home "packages" "IN_PROGRESS"
-    let pkg_res = (install-packages $ygg_home $plan --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
-    record-journal-step $ygg_home "packages" "COMMITTED"
-
-    # 2. Deploy links and file copies (PRUNE first; per-link failures are collected)
-    record-journal-step $ygg_home "links" "IN_PROGRESS"
-    let link_res = (apply-links $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
-    record-journal-step $ygg_home "links" "COMMITTED"
-
-    # 3. Compile shell environments and aliases
-    record-journal-step $ygg_home "env" "IN_PROGRESS"
-    compile-environment $ygg_home $plan --force=$force --sandbox=$effective_sandbox | ignore
-    record-journal-step $ygg_home "env" "COMMITTED"
-
-    # 4. Run module procedural setup scripts
-    record-journal-step $ygg_home "setup" "IN_PROGRESS"
-    for mod_entry in $plan_mods {
-        run-module-setup $ygg_home $mod_entry --force=$force --sandbox=$effective_sandbox
-    }
-    record-journal-step $ygg_home "setup" "COMMITTED"
-
-    # 5. on_change hooks of links (RFC-015): last step; a failing hook only warns
-    record-journal-step $ygg_home "hooks" "IN_PROGRESS"
-    run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox | ignore
-    record-journal-step $ygg_home "hooks" "COMMITTED"
-
-    # Declarative services management (RFC-037)
-    run-service-actions $ygg_home $plan $ops --sandbox=$effective_sandbox | ignore
-
-    print $"Applied ($mod_count) module\(s\)."
-
-    for f in $link_res.failed {
-        print -e $"[ygg] Error: failed to link '($f.dest)' -> '($f.src)' \(($f.module)\): ($f.stderr)"
-    }
-
-    mut errors = []
-    if ($prune_res.failed | is-not-empty) {
-        let failed_pkgs = ($prune_res.failed | str join ", ")
-        $errors = ($errors | append ("Package pruning failed for: " + $failed_pkgs))
-    }
-    if ($pkg_res.failed | is-not-empty) {
-        let failed_pkgs = ($pkg_res.failed | each { |f| $f.mgr + ": " + $f.pkg + " (" + $f.reason + ")" } | str join ", ")
-        $errors = ($errors | append ("Package installation failed for: " + $failed_pkgs))
-    }
-    if ($link_res.failed | is-not-empty) {
-        $errors = ($errors | append $"($link_res.failed | length) link\(s\) failed: ($link_res.failed | get dest | str join ', ')")
-    }
-    if ($errors | is-not-empty) {
-        error make { msg: ($errors | str join "; ") }
-    }
-
-    # Rotate old backups and garbage collect orphaned hashes (RFC-028)
-    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
-    let max_count = ($host_cfg | get -o ygg.backups.max_count | default 20)
-    let max_age_days = ($host_cfg | get -o ygg.backups.max_age_days | default 30)
-    rotate-backups $ygg_home --max-count=$max_count --max-age-days=$max_age_days | ignore
-
-    let active_keys = (collect-active-hash-keys $plan)
-    gc-state-hashes $ygg_home $active_keys | ignore
-
-    # Generate or update ygg.lock (RFC-032)
-    generate-ygg-lock $ygg_home $plan | ignore
-
-    # Commit WAL transaction on clean completion (RFC-027)
-    commit-journal-transaction $ygg_home
 }
 
 # Show planned changes across all modules without modifying the filesystem

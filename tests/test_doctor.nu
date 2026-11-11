@@ -410,23 +410,42 @@ export def test_journal_transaction_lifecycle_and_doctor_detection [] {
         let sb = $env.YGG_SANDBOX
         ensure-ygg-dirs $home
         write-host $home []
-        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_incomplete" | length) 0
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_interrupted" | length) 0
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_failed" | length) 0
 
+        # Active transaction produces no doctor findings
         begin-journal-transaction $home { modules: ["m1"] }
         record-journal-step $home "links" "IN_PROGRESS"
+        let active_st = (check-pending-journal $home)
+        assert equal $active_st.state "active"
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_interrupted" | length) 0
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_failed" | length) 0
 
-        let status = (check-pending-journal $home)
-        assert ($status.incomplete == true) "Expected incomplete journal"
+        # Interrupted transaction (dead pid) produces error finding
+        let jfile = ($home | path join ".state" "journal.json")
+        open $jfile | upsert pid 2147483646 | to json | save -f $jfile
+        let int_st = (check-pending-journal $home)
+        assert equal $int_st.state "interrupted"
+        let rep_int = (run-doctor $home --sandbox $sb)
+        let rows_int = (rows-of $rep_int "journal_interrupted")
+        assert equal ($rows_int | length) 1
+        assert equal ($rows_int | first | get severity) "error"
 
-        let rep = (run-doctor $home --sandbox $sb)
-        let rows = (rows-of $rep "journal_incomplete")
-        assert equal ($rows | length) 1
-        assert equal ($rows | first | get severity) "error"
-        assert equal ($rows | first | get check) "journal_incomplete"
+        # Failed transaction produces warn finding
+        fail-journal-transaction $home "mock link failure"
+        let fail_st = (check-pending-journal $home)
+        assert equal $fail_st.state "failed"
+        let rep_fail = (run-doctor $home --sandbox $sb)
+        let rows_fail = (rows-of $rep_fail "journal_failed")
+        assert equal ($rows_fail | length) 1
+        assert equal ($rows_fail | first | get severity) "warn"
+        assert ($rows_fail | first | get detail | str contains "mock link failure")
 
+        # Commit removes journal and findings
         commit-journal-transaction $home
         assert (not ($home | path join ".state" "journal.json" | path exists)) "Journal must be deleted on commit"
-        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_incomplete" | length) 0
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_interrupted" | length) 0
+        assert equal (rows-of (run-doctor $home --sandbox $sb) "journal_failed" | length) 0
     }
 }
 

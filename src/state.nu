@@ -342,33 +342,42 @@ export def release-host-lock [lock_file: string]: nothing -> nothing {
     }
 }
 
-# Begin transaction journal in $YGG_HOME/.state/journal.json (RFC-027)
-export def begin-journal-transaction [ygg_home: string, plan: record]: nothing -> string {
+# Begin transaction journal in $YGG_HOME/.state/journal.json (RFC-043)
+export def begin-journal-transaction [ygg_home: string, plan: record, command: string = "apply"]: nothing -> string {
     ensure-ygg-dirs $ygg_home
     let state_dir = ($ygg_home | path join ".state")
     let journal_file = ($state_dir | path join "journal.json")
     let plan_str = ($plan | to json)
     let plan_hash = ($plan_str | hash sha256)
     let payload = {
-        timestamp: (date now | format date "%Y-%m-%dT%H:%M:%SZ"),
+        version: 2,
+        pid: $nu.pid,
+        command: $command,
+        started: (date now | format date "%Y-%m-%dT%H:%M:%SZ"),
         plan_hash: $plan_hash,
-        plan: $plan,
+        status: "in_progress",
+        failed_step: "",
+        error: "",
         steps: {
+            prune_packages: "PENDING",
             packages: "PENDING",
             links: "PENDING",
-            env: "PENDING",
             setup: "PENDING",
-            hooks: "PENDING"
+            env: "PENDING",
+            services: "PENDING",
+            finalize: "PENDING"
         }
     }
     let rand_id = (random chars --length 8)
     let tmp_file = ($state_dir | path join $"journal.json.tmp.($rand_id)")
     $payload | to json --indent 2 | save -f $tmp_file
+    restrict-file-access $tmp_file | ignore
     mv -f $tmp_file $journal_file
+    restrict-file-access $journal_file | ignore
     $journal_file
 }
 
-# Atomically update step status in transaction journal (RFC-027)
+# Atomically update step status in transaction journal (RFC-043)
 export def record-journal-step [ygg_home: string, step_name: string, status: string]: nothing -> nothing {
     let state_dir = ($ygg_home | path join ".state")
     let journal_file = ($state_dir | path join "journal.json")
@@ -385,10 +394,67 @@ export def record-journal-step [ygg_home: string, step_name: string, status: str
     let rand_id = (random chars --length 8)
     let tmp_file = ($state_dir | path join $"journal.json.tmp.($rand_id)")
     $updated_payload | to json --indent 2 | save -f $tmp_file
+    restrict-file-access $tmp_file | ignore
     mv -f $tmp_file $journal_file
+    restrict-file-access $journal_file | ignore
 }
 
-# Commit transaction journal by removing $YGG_HOME/.state/journal.json (RFC-027)
+# Fail transaction journal by recording failure status, failed step, and error message (RFC-043)
+export def fail-journal-transaction [ygg_home: string, error_msg: string]: nothing -> nothing {
+    let state_dir = ($ygg_home | path join ".state")
+    let journal_file = ($state_dir | path join "journal.json")
+    if not ($journal_file | path exists) {
+        return
+    }
+    let loaded = (try {
+        let val = (open $journal_file)
+        if (($val | describe) starts-with "record") { $val } else { {} }
+    } catch { {} })
+
+    let steps = ($loaded.steps? | default {})
+    let known_steps = ["prune_packages", "packages", "links", "setup", "env", "services", "finalize"]
+    let cols = ($steps | columns)
+    let step_keys = ($known_steps | where { |k| $k in $cols } | append ($cols | where { |k| $k not-in $known_steps }))
+
+    mut failed_step = ""
+    for k in $step_keys {
+        let st = ($steps | get -o $k | default "PENDING")
+        if $st in ["IN_PROGRESS", "FAILED"] {
+            $failed_step = $k
+            break
+        }
+    }
+    if $failed_step == "" {
+        for k in $step_keys {
+            let st = ($steps | get -o $k | default "PENDING")
+            if $st != "COMMITTED" {
+                $failed_step = $k
+                break
+            }
+        }
+    }
+
+    mut updated_steps = $steps
+    if ($failed_step != "") {
+        $updated_steps = ($updated_steps | upsert $failed_step "FAILED")
+    }
+
+    let updated_payload = ($loaded
+        | upsert status "failed"
+        | upsert failed_step $failed_step
+        | upsert error $error_msg
+        | upsert steps $updated_steps
+    )
+
+    let rand_id = (random chars --length 8)
+    let tmp_file = ($state_dir | path join $"journal.json.tmp.($rand_id)")
+    $updated_payload | to json --indent 2 | save -f $tmp_file
+    restrict-file-access $tmp_file | ignore
+    mv -f $tmp_file $journal_file
+    restrict-file-access $journal_file | ignore
+}
+
+# Commit transaction journal by removing $YGG_HOME/.state/journal.json (RFC-043)
 export def commit-journal-transaction [ygg_home: string]: nothing -> nothing {
     let journal_file = ($ygg_home | path join ".state" "journal.json")
     if ($journal_file | path exists) {
@@ -396,24 +462,123 @@ export def commit-journal-transaction [ygg_home: string]: nothing -> nothing {
     }
 }
 
-# Check for incomplete pending transaction journal in $YGG_HOME/.state/journal.json (RFC-027)
-export def check-pending-journal [ygg_home: string]: nothing -> record {
+# Check for transaction journal state in $YGG_HOME/.state/journal.json (RFC-043)
+# State enum: "none" (file absent), "active" (in_progress with live PID),
+# "interrupted" (in_progress with dead PID, v1 format, unreadable), "failed" (failed status)
+export def check-pending-journal [ygg_home: string]: nothing -> record<state: string, started: string, failed_step: string, error: string, plan_hash: string> {
     let journal_file = ($ygg_home | path join ".state" "journal.json")
     if not ($journal_file | path exists) {
-        return { incomplete: false }
+        return {
+            state: "none",
+            started: "",
+            failed_step: "",
+            error: "",
+            plan_hash: "",
+            steps: {}
+        }
     }
+
     let data = (try {
         let val = (open $journal_file)
-        if (($val | describe) starts-with "record") { $val } else { {} }
-    } catch { {} })
+        if (($val | describe) starts-with "record") { $val } else { null }
+    } catch { null })
+
+    if ($data == null) {
+        return {
+            state: "interrupted",
+            started: "",
+            failed_step: "",
+            error: "unreadable journal",
+            plan_hash: "",
+            steps: {}
+        }
+    }
+
+    let started = ($data.started? | default ($data.timestamp? | default ""))
+    let plan_hash = ($data.plan_hash? | default "")
     let steps = ($data.steps? | default {})
+    let error_text = ($data.error? | default "")
+
+    # v1 journal (missing version or not 2) is treated as interrupted
+    if (($data.version? | default 0) != 2) {
+        mut failed_step = ($data.failed_step? | default "")
+        if $failed_step == "" {
+            let cols = ($steps | columns)
+            let known = ["prune_packages", "packages", "links", "setup", "env", "services", "finalize"]
+            let order = ($known | where { |k| $k in $cols } | append ($cols | where { |k| $k not-in $known }))
+            for k in $order {
+                let st = ($steps | get -o $k | default "PENDING")
+                if $st in ["IN_PROGRESS", "FAILED"] {
+                    $failed_step = $k
+                    break
+                }
+            }
+            if $failed_step == "" {
+                for k in $order {
+                    let st = ($steps | get -o $k | default "PENDING")
+                    if $st != "COMMITTED" {
+                        $failed_step = $k
+                        break
+                    }
+                }
+            }
+        }
+        return {
+            state: "interrupted",
+            started: $started,
+            failed_step: $failed_step,
+            error: $error_text,
+            plan_hash: $plan_hash,
+            steps: $steps
+        }
+    }
+
+    # Version 2
+    let status = ($data.status? | default "")
+    mut failed_step = ($data.failed_step? | default "")
+    if $failed_step == "" {
+        let cols = ($steps | columns)
+        let known = ["prune_packages", "packages", "links", "setup", "env", "services", "finalize"]
+        let order = ($known | where { |k| $k in $cols } | append ($cols | where { |k| $k not-in $known }))
+        for k in $order {
+            let st = ($steps | get -o $k | default "PENDING")
+            if $st in ["IN_PROGRESS", "FAILED"] {
+                $failed_step = $k
+                break
+            }
+        }
+        if $failed_step == "" {
+            for k in $order {
+                let st = ($steps | get -o $k | default "PENDING")
+                if $st != "COMMITTED" {
+                    $failed_step = $k
+                    break
+                }
+            }
+        }
+    }
+
+    let state = if $status == "failed" {
+        "failed"
+    } else if $status == "in_progress" {
+        let pid = ($data.pid? | default 0)
+        let is_alive = (check-process-alive $pid)
+        if $is_alive {
+            "active"
+        } else {
+            "interrupted"
+        }
+    } else {
+        "interrupted"
+    }
+
     {
-        incomplete: true,
-        file: $journal_file,
-        timestamp: ($data.timestamp? | default ""),
-        plan_hash: ($data.plan_hash? | default ""),
-        steps: $steps,
-        data: $data
+        state: $state,
+        started: $started,
+        failed_step: $failed_step,
+        error: $error_text,
+        plan_hash: $plan_hash,
+        steps: $steps
     }
 }
 
