@@ -43,7 +43,7 @@
     {
       "id": "docs",
       "name": "Docs",
-      "summary": "Модуль и компоненты директории `docs` (8 файлов)",
+      "summary": "Модуль и компоненты директории `docs` (10 файлов)",
       "l1_path": "subsystems/docs.md",
       "tags": [
         "Generic / Multi-language",
@@ -55,9 +55,11 @@
         "docs/plans/2026-11-08-ygg-phase2-engine-fixes.md",
         "docs/plans/2026-11-08-ygg-phase2-modules-migration.md",
         "docs/plans/2026-11-08-ygg-phase3-implementation-plan.md",
+        "docs/plans/2026-11-10-ygg-phase4-implementation-plan.md",
         "docs/specs/2026-11-07-modular-omni-architecture-design.md",
         "docs/specs/2026-11-08-ygg-engine-improvements-and-hardening.md",
-        "docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md"
+        "docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md",
+        "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md"
       ],
       "files": [
         {
@@ -81,6 +83,10 @@
           "is_entrypoint": false
         },
         {
+          "path": "docs/plans/2026-11-10-ygg-phase4-implementation-plan.md",
+          "is_entrypoint": false
+        },
+        {
           "path": "docs/specs/2026-11-07-modular-omni-architecture-design.md",
           "is_entrypoint": false
         },
@@ -90,6 +96,10 @@
         },
         {
           "path": "docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md",
+          "is_entrypoint": false
+        },
+        {
+          "path": "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md",
           "is_entrypoint": false
         }
       ],

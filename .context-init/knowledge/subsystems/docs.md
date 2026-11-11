@@ -3,21 +3,21 @@ directory: docs
 source:
   kind: git
   blob_sha: bc7b01622e6c9396ec77aaf7db69d124fddc0cc6
-  commit_sha: 3eb8cb030a30f14e76f33897acd879d4223275e4
+  commit_sha: ac486e880edb2f0a1fc2abdaa8a24e77bb9f471d
 generated_by:
   component: context-init
   role: update
   model: none
 freshness:
-  total_entries: 8
-  sampled_entries: 8
+  total_entries: 10
+  sampled_entries: 10
   unsampled_entries: 0
   pending_child_changes: 0
 ---
 
 # Подсистема: Docs (L1)
 
-Модуль и компоненты директории `docs` (8 файлов)
+Модуль и компоненты директории `docs` (10 файлов)
 
 > **Идентификатор:** `docs`
 > **Теги:** Generic / Multi-language, docs
@@ -31,9 +31,11 @@ freshness:
 | `docs/plans/2026-11-08-ygg-phase2-engine-fixes.md` | Исходный код |
 | `docs/plans/2026-11-08-ygg-phase2-modules-migration.md` | Исходный код |
 | `docs/plans/2026-11-08-ygg-phase3-implementation-plan.md` | Исходный код |
+| `docs/plans/2026-11-10-ygg-phase4-implementation-plan.md` | Исходный код |
 | `docs/specs/2026-11-07-modular-omni-architecture-design.md` | Исходный код |
 | `docs/specs/2026-11-08-ygg-engine-improvements-and-hardening.md` | Исходный код |
 | `docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md` | Исходный код |
+| `docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md` | Исходный код |
 
 ## 🔑 Ключевой контракт и экспорты
 ```text
