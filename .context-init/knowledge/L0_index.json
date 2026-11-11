@@ -199,8 +199,10 @@
         "def resolve-env-value [v: string, sb: string]: nothing -> string",
         "def secret-keys [p: string]: nothing -> record",
         "export def missing-secret-keys [template: string, secrets: string]: nothing -> list<string>",
-        "export def resolve-secret-value [raw: string]: nothing -> string",
-        "export def compile-environment [ ygg_home: string, plan: record, --dry-run, --force, --sandbox: string = \"\" ]: nothing -> nothing"
+        "export def classify-secret-value [raw: string]: nothing -> record<kind: string, ref: string>",
+        "export def load-secrets-env [ygg_home: string]: nothing -> record",
+        "export def validate-secret-providers [ygg_home: string]: nothing -> list<string>",
+        "export def resolve-secret-value [raw: string]: nothing -> string"
       ],
       "summary_source": "heuristic"
     },

@@ -2,6 +2,7 @@
 # Yggdrasil configuration manager — File linker, unfolding, 3-way sync & safe pruning
 
 use state.nu [load-state, save-state, expand-target-path, backup-existing, detect-host-os, to-win32-path]
+use env.nu [validate-secret-providers]
 
 # Make a file executable (owner) if it is not already; chmod stderr is suppressed.
 # In nu 0.116 `ls -lD` mode is a 9-char string ("rwxr-xr-x") without a type char.
@@ -954,6 +955,17 @@ export def preflight-check [
                 })
             }
         }
+    }
+
+    # 0b. Secret providers (RFC-041): CLI required for secret schemes in secrets.toml must exist in PATH
+    let sec_errs = (validate-secret-providers $ygg_home)
+    for err in $sec_errs {
+        $problems = ($problems | append {
+            module: "secrets",
+            key: "secrets.toml",
+            reason: "missing_secret_provider",
+            detail: $err
+        })
     }
 
     # 1. Every link candidate of the effective plan (losing candidates too: RFC-020 p.2 "all links")

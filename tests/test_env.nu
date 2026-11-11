@@ -377,4 +377,41 @@ export def test_env_compiles_fish_shell_files [] {
     }
 }
 
+export def test_classify_secret_value [] {
+    assert equal (classify-secret-value "plain") { kind: "literal", ref: "plain" }
+    assert equal (classify-secret-value "op://v/i/f") { kind: "op", ref: "op://v/i/f" }
+    assert equal (classify-secret-value "bw://item") { kind: "bw", ref: "bw://item" }
+    assert equal (classify-secret-value "pass:mail/x") { kind: "pass", ref: "mail/x" }
+    assert equal (classify-secret-value "eval:echo 1") { kind: "eval", ref: "echo 1" }
+    assert equal (classify-secret-value "literal:pass:abc") { kind: "literal", ref: "pass:abc" }
+}
+
+export def test_module_env_scheme_is_literal_and_not_executed [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb"); mkdir $sb
+        let marker = ($home | path join "pwned")
+        let m = ($home | path join "modules" "m"); mkdir $m
+        $"name = \"m\"\nos = [\"linux\"]\n[env]\nX = \"eval:touch ($marker)\"\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            compile-environment $home (resolve-effective-plan $home) --sandbox $sb
+        }
+        assert (not ($marker | path exists))
+        assert (open --raw ($home | path join ".state" "env" "env.zsh") | str contains $"export X='eval:touch ($marker)'")
+    }
+}
+
+export def test_validate_secret_providers_reports_missing_cli [] {
+    with-temp-ygg { |home|
+        "K = \"op://v/i/f\"\nL = \"plain\"\n" | save -f ($home | path join "secrets.toml")
+        let empty_bin = ($home | path join "empty-bin"); mkdir $empty_bin
+        with-env { PATH: [$empty_bin] } {
+            let errs = (validate-secret-providers $home)
+            assert equal ($errs | length) 1
+            assert ($errs.0 | str contains "op")
+        }
+    }
+}
+
 

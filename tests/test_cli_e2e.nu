@@ -1007,6 +1007,40 @@ export def test_dry_run_skips_setup_unless_dry_run_safe [] {
     }
 }
 
+export def test_cli_apply_blocks_missing_secret_provider_before_packages [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let pkg_log = ($home | path join "pkg.log")
+        let mod_src = ($home | path join "mod-a")
+        mkdir $mod_src
+
+        'name = "mod-a"
+os = ["linux", "cachyos"]
+[packages]
+cargo = ["x"]
+' | save -f ($mod_src | path join "ygg.toml")
+
+        mkdir ($home | path join "modules")
+        ^ln -s $mod_src ($home | path join "modules" "mod-a")
+        "[[modules]]\nname = \"mod-a\"\n" | save -f ($home | path join "host.toml")
+        "K = \"op://v/i/f\"\n" | save -f ($home | path join "secrets.toml")
+
+        let nu_dir = ($nu.current-exe | path dirname)
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env {
+            YGG_HOME: $home,
+            YGG_SANDBOX: $sb,
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: $pkg_log,
+            PATH: [$nu_dir]
+        } { ^nu $ygg_bin apply --force --sandbox $sb | complete })
+
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "op")
+        assert (not ($pkg_log | path exists))
+    }
+}
+
 
 
 

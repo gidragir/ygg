@@ -82,93 +82,155 @@ export def missing-secret-keys [template: string, secrets: string]: nothing -> l
     | where { |k| (($have | get -o $k | default "") | into string) == "" }
 }
 
-# Resolve secret value using external resolvers if URI prefix is present (RFC-034)
+# Classify secret value by URI scheme prefix (RFC-041)
+# kind in "literal" | "op" | "bw" | "pass" | "eval"
+# ref: stripped string for literal:/pass:/eval:; untouched whole URI for op:// and bw://
+export def classify-secret-value [raw: string]: nothing -> record<kind: string, ref: string> {
+    if ($raw | str starts-with "literal:") {
+        { kind: "literal", ref: ($raw | str substring 8..) }
+    } else if ($raw | str starts-with "op://") {
+        { kind: "op", ref: $raw }
+    } else if ($raw | str starts-with "bw://") {
+        { kind: "bw", ref: $raw }
+    } else if ($raw | str starts-with "pass:") {
+        { kind: "pass", ref: ($raw | str substring 5..) }
+    } else if ($raw | str starts-with "eval:") {
+        { kind: "eval", ref: ($raw | str substring 5..) }
+    } else {
+        { kind: "literal", ref: $raw }
+    }
+}
+
+# Load secrets record from $ygg_home/secrets.toml ([env] section or top-level keys)
+export def load-secrets-env [ygg_home: string]: nothing -> record {
+    let sec_file = ($ygg_home | path join "secrets.toml")
+    secret-keys $sec_file
+}
+
+# Validate that required CLIs for secret schemes in secrets.toml exist in PATH (RFC-041)
+export def validate-secret-providers [ygg_home: string]: nothing -> list<string> {
+    let sec_env = (load-secrets-env $ygg_home)
+    if ($sec_env | is-empty) {
+        return []
+    }
+    let kinds = ($sec_env
+        | values
+        | where { |v| not (($v | describe) starts-with "record") and not (($v | describe) starts-with "table") }
+        | each { |v| (classify-secret-value ($v | into string)).kind }
+        | uniq
+    )
+
+    let provider_map = {
+        op: "op"
+        bw: "bw"
+        pass: "pass"
+        eval: "nu"
+    }
+
+    mut missing = []
+    for kind in $kinds {
+        if $kind in $provider_map {
+            let cli = ($provider_map | get $kind)
+            let exists = (try {
+                which $cli | where { |it| ($it.path? | default "" | str trim | is-not-empty) } | is-not-empty
+            } catch { false })
+            if not $exists {
+                $missing = ($missing | append $"Required secret provider CLI '($cli)' for scheme '($kind)' is missing from PATH")
+            }
+        }
+    }
+    $missing
+}
+
+# Resolve secret value using external resolvers if URI prefix is present (RFC-034, RFC-041)
 # Supported schemas:
 #   - `op://<vault>/<item>/<field>` -> 1Password CLI: `^op read ...`
 #   - `bw://<item>/<field>` -> Bitwarden CLI: `^bw get ...`
 #   - `pass:<path>` -> Pass: `^pass show ...`
 #   - `eval:<command>` -> In-memory execution: `nu -c ... | complete`
+#   - `literal:<val>` -> Strips literal: prefix, returns remaining string untouched
 export def resolve-secret-value [raw: string]: nothing -> string {
-    if ($raw | str starts-with "op://") {
-        let res = try {
-            ^op read $raw | complete
-        } catch { |err|
-            { exit_code: 1, stdout: "", stderr: ($err | into string) }
-        }
-        if $res.exit_code != 0 {
-            let err_msg = if ($res.stderr | str trim | is-not-empty) {
-                $res.stderr | str trim
-            } else {
-                $"command exited with code ($res.exit_code)"
+    let classified = (classify-secret-value $raw)
+    match $classified.kind {
+        "op" => {
+            let res = try {
+                ^op read $classified.ref | complete
+            } catch { |err|
+                { exit_code: 1, stdout: "", stderr: ($err | into string) }
             }
-            error make { msg: $"Failed to resolve 1Password secret '($raw)': ($err_msg)" }
+            if $res.exit_code != 0 {
+                let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                    $res.stderr | str trim
+                } else {
+                    $"command exited with code ($res.exit_code)"
+                }
+                error make { msg: $"Failed to resolve 1Password secret '($classified.ref)': ($err_msg)" }
+            }
+            ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
         }
-        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+        "bw" => {
+            let path = ($classified.ref | str substring 5..)
+            let parts = ($path | split row "/")
+            let res = try {
+                if ($parts | length) >= 2 {
+                    let item = $parts.0
+                    let field = $parts.1
+                    ^bw get $field $item | complete
+                } else {
+                    let item = $parts.0
+                    ^bw get password $item | complete
+                }
+            } catch { |err|
+                { exit_code: 1, stdout: "", stderr: ($err | into string) }
+            }
+            if $res.exit_code != 0 {
+                let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                    $res.stderr | str trim
+                } else {
+                    $"command exited with code ($res.exit_code)"
+                }
+                error make { msg: $"Failed to resolve Bitwarden secret '($classified.ref)': ($err_msg)" }
+            }
+            ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+        }
+        "pass" => {
+            let pass_path = $classified.ref
+            let res = try {
+                ^pass show $pass_path | complete
+            } catch { |err|
+                { exit_code: 1, stdout: "", stderr: ($err | into string) }
+            }
+            if $res.exit_code != 0 {
+                let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                    $res.stderr | str trim
+                } else {
+                    $"command exited with code ($res.exit_code)"
+                }
+                error make { msg: $"Failed to resolve Pass secret '($classified.ref)': ($err_msg)" }
+            }
+            ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+        }
+        "eval" => {
+            let cmd = $classified.ref
+            let res = try {
+                ^nu -c $cmd | complete
+            } catch { |err|
+                { exit_code: 1, stdout: "", stderr: ($err | into string) }
+            }
+            if $res.exit_code != 0 {
+                let err_msg = if ($res.stderr | str trim | is-not-empty) {
+                    $res.stderr | str trim
+                } else {
+                    $"command exited with code ($res.exit_code)"
+                }
+                error make { msg: $"Failed to resolve eval secret '($classified.ref)': ($err_msg)" }
+            }
+            ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
+        }
+        _ => {
+            $classified.ref
+        }
     }
-
-    if ($raw | str starts-with "bw://") {
-        let path = ($raw | str substring 5..)
-        let parts = ($path | split row "/")
-        let res = try {
-            if ($parts | length) >= 2 {
-                let item = $parts.0
-                let field = $parts.1
-                ^bw get $field $item | complete
-            } else {
-                let item = $parts.0
-                ^bw get password $item | complete
-            }
-        } catch { |err|
-            { exit_code: 1, stdout: "", stderr: ($err | into string) }
-        }
-        if $res.exit_code != 0 {
-            let err_msg = if ($res.stderr | str trim | is-not-empty) {
-                $res.stderr | str trim
-            } else {
-                $"command exited with code ($res.exit_code)"
-            }
-            error make { msg: $"Failed to resolve Bitwarden secret '($raw)': ($err_msg)" }
-        }
-        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
-    }
-
-    if ($raw | str starts-with "pass:") {
-        let pass_path = ($raw | str substring 5..)
-        let res = try {
-            ^pass show $pass_path | complete
-        } catch { |err|
-            { exit_code: 1, stdout: "", stderr: ($err | into string) }
-        }
-        if $res.exit_code != 0 {
-            let err_msg = if ($res.stderr | str trim | is-not-empty) {
-                $res.stderr | str trim
-            } else {
-                $"command exited with code ($res.exit_code)"
-            }
-            error make { msg: $"Failed to resolve Pass secret '($raw)': ($err_msg)" }
-        }
-        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
-    }
-
-    if ($raw | str starts-with "eval:") {
-        let cmd = ($raw | str substring 5..)
-        let res = try {
-            ^nu -c $cmd | complete
-        } catch { |err|
-            { exit_code: 1, stdout: "", stderr: ($err | into string) }
-        }
-        if $res.exit_code != 0 {
-            let err_msg = if ($res.stderr | str trim | is-not-empty) {
-                $res.stderr | str trim
-            } else {
-                $"command exited with code ($res.exit_code)"
-            }
-            error make { msg: $"Failed to resolve eval secret '($raw)': ($err_msg)" }
-        }
-        return ($res.stdout | str trim -r -c "\r" | str trim -r -c "\n")
-    }
-
-    $raw
 }
 
 # Compile environment variables, secrets, and aliases across active modules and hosts
@@ -198,30 +260,31 @@ export def compile-environment [
         return
     }
 
-    # 1. Load secrets from $ygg_home/secrets.toml
-    let sec_file = ($ygg_home | path join "secrets.toml")
-    let sec_env = if ($sec_file | path exists) {
-        let sec_data = (try { open $sec_file } catch { {} })
-        let extracted = (if "env" in $sec_data { $sec_data.env } else { $sec_data })
-        if (($extracted | describe) starts-with "record") {
-            $extracted
-        } else {
-            {}
-        }
-    } else {
-        {}
-    }
+    # 1. Load secrets from $ygg_home/secrets.toml (RFC-041)
+    let sec_env = (load-secrets-env $ygg_home)
 
     # 2. Merge plan environment with secrets (secrets take precedence)
     let plan_env = ($plan.env? | default {})
-    let merged_env = ($plan_env | merge $sec_env)
     let merged_aliases = ($plan.aliases? | default {})
 
-    # Normalize environment values to strings, skipping complex sub-records
-    let clean_env = ($merged_env | transpose k v | where { |it| not (($it.v | describe) starts-with "record") and not (($it.v | describe) starts-with "table") } | reduce -f {} { |it, acc|
-        let resolved_secret = (resolve-secret-value ($it.v | into string))
-        $acc | upsert $it.k (resolve-env-value $resolved_secret $sb)
-    })
+    # Plan env values are strictly literal; secret values are resolved (RFC-041)
+    mut acc_env = {}
+
+    for row in ($plan_env | transpose k v) {
+        if not (($row.v | describe) starts-with "record") and not (($row.v | describe) starts-with "table") {
+            let lit_val = ($row.v | into string)
+            $acc_env = ($acc_env | upsert $row.k (resolve-env-value $lit_val $sb))
+        }
+    }
+
+    for row in ($sec_env | transpose k v) {
+        if not (($row.v | describe) starts-with "record") and not (($row.v | describe) starts-with "table") {
+            let raw_str = ($row.v | into string)
+            let resolved_secret = (resolve-secret-value $raw_str)
+            $acc_env = ($acc_env | upsert $row.k (resolve-env-value $resolved_secret $sb))
+        }
+    }
+    let clean_env = $acc_env
 
     # 3. Ensure target directory exists
     let env_dir = ($ygg_home | path join ".state" "env")
