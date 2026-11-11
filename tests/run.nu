@@ -1,6 +1,12 @@
 #!/usr/bin/env nu
 # tests/run.nu — Test runner for ygg test suite
 
+def clean-ygg-env []: nothing -> record {
+    $env | columns
+    | where { |k| ($k starts-with "YGG_") and ($k != "YGG_RUN_HOST_E2E") }
+    | reduce -f {} { |k, acc| $acc | insert $k null }
+}
+
 def main [--filter: string = ""] {
     let tests_dir = $env.FILE_PWD
     let test_files = (glob ($tests_dir | path join "test_*.nu") | sort)
@@ -25,7 +31,9 @@ def main [--filter: string = ""] {
         cd $tests_dir
 
         # Try to discover tests in the file
-        let disc = (^nu -I $tests_dir -c $"use ($file_name) *; scope commands | where name starts-with 'test_' | select name | to json" | complete)
+        let disc = (with-env (clean-ygg-env) {
+            ^nu -I $tests_dir -c $"use ($file_name) *; scope commands | where name starts-with 'test_' | select name | to json" | complete
+        })
         if $disc.exit_code != 0 {
             print $"❌ FAIL: ($file_name) \(failed to compile or import\)"
             print $disc.stderr
@@ -41,7 +49,9 @@ def main [--filter: string = ""] {
                 continue
             }
 
-            let run_res = (^nu -I $tests_dir -c $"use ($file_name) *; ($test_fn)" | complete)
+            let run_res = (with-env (clean-ygg-env) {
+                ^nu -I $tests_dir -c $"use ($file_name) *; ($test_fn)" | complete
+            })
             if $run_res.exit_code == 0 {
                 print $"  ✅ PASS: ($test_fn)"
                 $total_passed = $total_passed + 1

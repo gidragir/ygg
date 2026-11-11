@@ -7,8 +7,15 @@ const YGG_BIN = (path self | path dirname | path dirname | path join "bin" "ygg.
 const WT_ROOT = "/data/projects/worktree/ygg-phase2"
 
 def make-sandbox [name: string]: nothing -> record<root: string, ygg_home: string, home: string, pkg_log: string> {
-    let id = (random chars --length 6)
-    let root = $"/tmp/ygg-stage2-($name)-($id)"
+    let root = if ($nu.os-info.family == "windows") {
+        let base = ($env.TEMP? | default ($env.TMP? | default "C:\\Temp"))
+        let rand_suffix = (random chars --length 8)
+        let dir = ($base | path join $"ygg-stage2-($name)-($rand_suffix)")
+        mkdir $dir
+        $dir
+    } else {
+        ^mktemp -d -t $"ygg-stage2-($name).XXXXXX" | str trim
+    }
     let ygg_home = ($root | path join ".ygg")
     let home = ($root | path join "home")
     let pkg_log = ($root | path join "pkg.log")

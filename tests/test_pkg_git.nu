@@ -42,8 +42,9 @@ os = ["linux"]
 pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
 
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_SANDBOX: "/tmp/sb" } {
-            let res = (install-packages (resolve-effective-plan $home) --sandbox "/tmp/sb")
+        let sb = ($home | path join "sb")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_SANDBOX: $sb } {
+            let res = (install-packages (resolve-effective-plan $home) --sandbox $sb)
             assert (($res | describe) starts-with "record")
             assert equal $res.executed []
             assert equal $res.failed []
@@ -62,8 +63,9 @@ os = ["linux"]
 pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
 
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_SANDBOX: "/tmp/sb" } {
-            let res = (install-packages (resolve-effective-plan $home) --sandbox "/tmp/sb")
+        let sb = ($home | path join "sb")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_SANDBOX: $sb } {
+            let res = (install-packages (resolve-effective-plan $home) --sandbox $sb)
             assert ($log | path exists)
             let lines = (open --raw $log)
             assert ($lines | str contains "pacman")

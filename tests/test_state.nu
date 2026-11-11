@@ -32,19 +32,19 @@ export def test_state_roundtrip_and_dirs [] {
 }
 
 export def test_expand_target_path_with_sandbox_and_tokens [] {
-    let sb = "/tmp/ygg-sb-check"
+    let sb = ($env.PWD | path join "fake-sb-check")
     let p = (expand-target-path "~/.config/niri" --sandbox $sb)
-    assert equal $p "/tmp/ygg-sb-check/.config/niri"
+    assert equal $p ($sb | path join ".config" "niri")
 
     # Also verify token expansions with sandbox
     let p_appdata = (expand-target-path "$APPDATA/test" --sandbox $sb)
-    assert equal $p_appdata "/tmp/ygg-sb-check/AppData/Roaming/test"
+    assert equal $p_appdata ($sb | path join "AppData" "Roaming" "test")
 
     let p_local = (expand-target-path "$LOCALAPPDATA/test" --sandbox $sb)
-    assert equal $p_local "/tmp/ygg-sb-check/AppData/Local/test"
+    assert equal $p_local ($sb | path join "AppData" "Local" "test")
 
     let p_docs = (expand-target-path "$DOCUMENTS/test" --sandbox $sb)
-    assert equal $p_docs "/tmp/ygg-sb-check/Documents/test"
+    assert equal $p_docs ($sb | path join "Documents" "test")
 
     # Verify detect-host-os override
     with-env { YGG_HOST_OS_OVERRIDE: "windows" } {
@@ -68,25 +68,28 @@ export def test_backup_moves_regular_file_outside_config [] {
 }
 
 export def test_assert_sandbox_home [] {
+    let fake_home = ($env.PWD | path join "fake-ygg-home")
+    let fake_sb = ($env.PWD | path join "fake-preview")
+
     # 1. No sandbox -> success
     with-env { YGG_SANDBOX: "", YGG_HOME: "" } {
         assert-sandbox-home ""
     }
 
     # 2. Sandbox provided, YGG_HOME set -> success
-    with-env { YGG_SANDBOX: "", YGG_HOME: "/tmp/ygg-home" } {
-        assert-sandbox-home "/tmp/preview"
+    with-env { YGG_SANDBOX: "", YGG_HOME: $fake_home } {
+        assert-sandbox-home $fake_sb
     }
 
     # 3. YGG_SANDBOX in env, YGG_HOME set -> success
-    with-env { YGG_SANDBOX: "/tmp/preview", YGG_HOME: "/tmp/ygg-home" } {
+    with-env { YGG_SANDBOX: $fake_sb, YGG_HOME: $fake_home } {
         assert-sandbox-home ""
     }
 
     # 4. Sandbox provided, YGG_HOME empty -> error
     let err_arg = (try {
         with-env { YGG_SANDBOX: "", YGG_HOME: "" } {
-            assert-sandbox-home "/tmp/preview"
+            assert-sandbox-home $fake_sb
         }
         ""
     } catch { |e| $e.msg })
@@ -94,7 +97,7 @@ export def test_assert_sandbox_home [] {
 
     # 5. YGG_SANDBOX in env, YGG_HOME empty -> error
     let err_env = (try {
-        with-env { YGG_SANDBOX: "/tmp/preview", YGG_HOME: "" } {
+        with-env { YGG_SANDBOX: $fake_sb, YGG_HOME: "" } {
             assert-sandbox-home ""
         }
         ""
@@ -200,6 +203,16 @@ export def test_rotate_backups_and_gc_state_hashes [] {
         let st = (load-state $home)
         assert ("orphan_me" not-in ($st.hashes | columns)) "Orphan hash must be purged"
     }
+}
+
+export def test_tests_have_no_literal_tmp_paths [] {
+    let tests_dir = if ($env.FILE_PWD? != null) { $env.FILE_PWD } else if (($env.PWD | path join "tests") | path exists) { $env.PWD | path join "tests" } else { $env.PWD }
+    let hits = (glob ($tests_dir | path join "*.nu") | each { |f|
+        open --raw $f | lines | enumerate
+        | where { |l| ($l.item | str contains '"/tmp/') and not ($l.item | str contains "str contains") }
+        | each { |l| $"($f | path basename):($l.index + 1)" }
+    } | flatten)
+    assert equal $hits []
 }
 
 

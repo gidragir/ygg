@@ -20,7 +20,8 @@ export def with-temp-ygg [action: closure]: nothing -> nothing {
     try {
         with-env {
             YGG_HOME: $ygg_home,
-            YGG_SANDBOX: $ygg_sandbox
+            YGG_SANDBOX: $ygg_sandbox,
+            YGG_MOCK_PKG_LOG: ""
         } {
             do $action $ygg_home
         }
