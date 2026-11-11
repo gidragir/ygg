@@ -491,7 +491,7 @@ export def prune-unused-packages [
             continue
         }
 
-        if ($mgr in $SUDO_MGRS) and not (sudo-available) {
+        if (not $dry_run) and ($mgr in $SUDO_MGRS) and not (sudo-available) {
             let msg = $"Package manager '($mgr)' requires sudo, which is not available non-interactively. Run 'sudo -v' first or use --skip-packages."
             print -e $"[ygg] Error: ($msg)"
             $failed = ($failed | append $"($mgr): sudo requires a password; run 'sudo -v' first or use --skip-packages")
@@ -525,7 +525,6 @@ export def prune-unused-packages [
         for pkg in $stale_pkgs {
             let argv = (pkg-uninstall-argv $mgr $pkg)
             let cmd_str = ($argv | str join " ")
-            $executed = ($executed | append $cmd_str)
 
             let unuse_argv = if ($mgr == "mise") {
                 ["mise", "unuse", "--path", "~/.config/mise/config.local.toml", $pkg]
@@ -534,6 +533,7 @@ export def prune-unused-packages [
             }
 
             if $dry_run {
+                $executed = ($executed | append $cmd_str)
                 if ($unuse_argv | is-not-empty) {
                     $executed = ($executed | append ($unuse_argv | str join " "))
                 }
@@ -542,6 +542,7 @@ export def prune-unused-packages [
 
             if $mock {
                 $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
+                $executed = ($executed | append $cmd_str)
                 if ($unuse_argv | is-not-empty) {
                     let unuse_cmd_str = ($unuse_argv | str join " ")
                     $"($unuse_cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
@@ -553,6 +554,7 @@ export def prune-unused-packages [
                 let r = (run-with-timeout (expand-argv $argv) $timeout)
                 if ($r.exit_code == 0) {
                     $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
+                    $executed = ($executed | append $cmd_str)
                     if ($unuse_argv | is-not-empty) {
                         let r_unuse = (run-with-timeout (expand-argv $unuse_argv) $timeout)
                         if ($r_unuse.exit_code == 0) {

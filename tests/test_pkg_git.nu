@@ -959,6 +959,7 @@ export def test_prune_unused_packages_real_mock_execution [] {
 export def test_prune_unused_packages_system_guard [] {
     with-temp-ygg { |home|
         ensure-ygg-dirs $home
+        let log = ($home | path join "pkg.log")
         save-state $home {
             links: {},
             copies: {},
@@ -970,16 +971,18 @@ export def test_prune_unused_packages_system_guard [] {
         }
         let plan = { packages: {} }
 
-        # Without --force-system-prune: system packages must be skipped
-        let cmds_safe = (prune-unused-packages $home $plan --dry-run).executed
-        assert ($cmds_safe | any { |c| $c =~ "uv tool uninstall black" }) "Safe manager must be pruned"
-        assert (not ($cmds_safe | any { |c| $c =~ "pacman" })) "Pacman must not be pruned without force"
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            # Without --force-system-prune: system packages must be skipped
+            let cmds_safe = (prune-unused-packages $home $plan --dry-run).executed
+            assert ($cmds_safe | any { |c| $c =~ "uv tool uninstall black" }) "Safe manager must be pruned"
+            assert (not ($cmds_safe | any { |c| $c =~ "pacman" })) "Pacman must not be pruned without force"
 
-        # With --force-system-prune: system packages are included
-        let cmds_forced = (prune-unused-packages $home $plan --dry-run --force-system-prune).executed
-        assert ($cmds_forced | any { |c| $c =~ "uv tool uninstall black" })
-        assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm git" })
-        assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm curl" })
+            # With --force-system-prune: system packages are included
+            let cmds_forced = (prune-unused-packages $home $plan --dry-run --force-system-prune).executed
+            assert ($cmds_forced | any { |c| $c =~ "uv tool uninstall black" })
+            assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm git" })
+            assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm curl" })
+        }
     }
 }
 
