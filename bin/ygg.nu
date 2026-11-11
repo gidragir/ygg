@@ -304,7 +304,8 @@ def apply-plan [
         report-collisions $resolved
         mut pruned_cmds: list<string> = []
         if $prune_packages {
-            $pruned_cmds = (prune-unused-packages $ygg_home $plan --dry-run --force-system-prune=$force_system_prune)
+            let res = (prune-unused-packages $ygg_home $plan --dry-run --force-system-prune=$force_system_prune --pkg=$pkg --sandbox=$effective_sandbox)
+            $pruned_cmds = $res.executed
         }
         let pkg_res = (install-packages $ygg_home $plan --dry-run --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox)
         for o in $ops {
@@ -347,8 +348,9 @@ def apply-plan [
     begin-journal-transaction $ygg_home $plan
 
     # 1. Prune unused packages if requested (RFC-030)
+    mut prune_res = { executed: [], failed: [], skipped: [] }
     if $prune_packages {
-        prune-unused-packages $ygg_home $plan --force-system-prune=$force_system_prune
+        $prune_res = (prune-unused-packages $ygg_home $plan --force-system-prune=$force_system_prune --pkg=$pkg --sandbox=$effective_sandbox)
     }
 
     # 2. Install packages
@@ -388,6 +390,10 @@ def apply-plan [
     }
 
     mut errors = []
+    if ($prune_res.failed | is-not-empty) {
+        let failed_pkgs = ($prune_res.failed | str join ", ")
+        $errors = ($errors | append ("Package pruning failed for: " + $failed_pkgs))
+    }
     if ($pkg_res.failed | is-not-empty) {
         let failed_pkgs = ($pkg_res.failed | each { |f| $f.mgr + ": " + $f.pkg + " (" + $f.reason + ")" } | str join ", ")
         $errors = ($errors | append ("Package installation failed for: " + $failed_pkgs))

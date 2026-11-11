@@ -2,8 +2,8 @@
 directory: src/pkg.nu
 source:
   kind: git
-  blob_sha: a0ed4cc578a3f3913a7c89eb973bad22972b8725
-  commit_sha: 0470f79d512e279002641040ba1b0c036d054848
+  blob_sha: 10d83fa7d96853b4415a2c8f64a3f2f423716114
+  commit_sha: 50329f4ba803387811cfb82b1fc9798a43f8b1d0
 generated_by:
   component: context-init
   role: update

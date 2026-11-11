@@ -903,7 +903,7 @@ export def test_prune_unused_packages_isolated_providers [] {
         ensure-ygg-dirs $home
         save-state $home { links: {}, copies: {}, hashes: {}, packages: { uv: ["ruff", "black"] } }
         let plan = { packages: { uv: ["ruff"] } }
-        let cmds = (prune-unused-packages $home $plan --dry-run)
+        let cmds = (prune-unused-packages $home $plan --dry-run).executed
         assert ($cmds | any { |c| $c =~ "uv tool uninstall black" }) "Expected black uninstallation"
         # Verify dry-run does not mutate state.packages
         let st = (load-state $home)
@@ -935,7 +935,7 @@ export def test_prune_unused_packages_real_mock_execution [] {
             }
         }
         with-env { YGG_MOCK_PKG_LOG: $log } {
-            let cmds = (prune-unused-packages $home $plan)
+            let cmds = (prune-unused-packages $home $plan).executed
             assert ($cmds | any { |c| $c =~ "uv tool uninstall black" })
             assert ($cmds | any { |c| $c =~ "mise uninstall python@3.11" })
             assert ($cmds | any { |c| $c =~ "pnpm remove -g eslint" })
@@ -971,12 +971,12 @@ export def test_prune_unused_packages_system_guard [] {
         let plan = { packages: {} }
 
         # Without --force-system-prune: system packages must be skipped
-        let cmds_safe = (prune-unused-packages $home $plan --dry-run)
+        let cmds_safe = (prune-unused-packages $home $plan --dry-run).executed
         assert ($cmds_safe | any { |c| $c =~ "uv tool uninstall black" }) "Safe manager must be pruned"
         assert (not ($cmds_safe | any { |c| $c =~ "pacman" })) "Pacman must not be pruned without force"
 
         # With --force-system-prune: system packages are included
-        let cmds_forced = (prune-unused-packages $home $plan --dry-run --force-system-prune)
+        let cmds_forced = (prune-unused-packages $home $plan --dry-run --force-system-prune).executed
         assert ($cmds_forced | any { |c| $c =~ "uv tool uninstall black" })
         assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm git" })
         assert ($cmds_forced | any { |c| $c =~ "pacman -R --noconfirm curl" })
@@ -1042,8 +1042,61 @@ uv = ["ruff"]' | save -f ($mod_dir | path join "ygg.toml")
         }
     }
 }
+def seed-pkg-state [home: string, pkgs: record] {
+    ensure-ygg-dirs $home
+    save-state $home { links: {}, copies: {}, hashes: {}, packages: $pkgs }
+}
 
+export def test_prune_in_sandbox_without_mock_executes_nothing [] {
+    with-temp-ygg { |home|
+        seed-pkg-state $home { cargo: ["ripgrep", "stale-crate"] }
+        let plan = { packages: { cargo: ["ripgrep"] }, modules: [] }
+        let res = (prune-unused-packages $home $plan --sandbox ($home | path join "sb"))
+        assert equal $res.executed []
+        assert equal (load-state $home).packages.cargo ["ripgrep", "stale-crate"]
+    }
+}
 
+export def test_prune_history_survives_plain_apply [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            install-packages $home { packages: { cargo: ["a", "b"] }, modules: [] } | ignore
+            install-packages $home { packages: { cargo: ["a"] }, modules: [] } | ignore
+            install-packages $home { packages: { cargo: ["a"] }, modules: [] } | ignore   # cached branch
+            assert ("b" in (load-state $home).packages.cargo)
+            let res = (prune-unused-packages $home { packages: { cargo: ["a"] }, modules: [] })
+            assert ($res.executed | any { |c| $c | str contains "b" })
+            assert equal (load-state $home).packages.cargo ["a"]
+        }
+    }
+}
 
+export def test_prune_respects_pkg_filter_and_system_guard [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        seed-pkg-state $home { cargo: ["x"], pnpm: ["y"], pacman: ["z"] }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let res = (prune-unused-packages $home { packages: {}, modules: [] } --pkg "cargo")
+            assert equal ($res.executed | length) 1
+            assert ($res.executed.0 | str contains "x")
+            let st = (load-state $home).packages
+            assert equal $st.pnpm ["y"]
+            assert equal $st.pacman ["z"]
+        }
+    }
+}
+
+export def test_pkg_uninstall_argv_keeps_spaces_intact [] {
+    # через мок-лог: пакет с пробелом в имени не распадается на аргументы
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        seed-pkg-state $home { cargo: ["odd name"] }
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let res = (prune-unused-packages $home { packages: {}, modules: [] })
+            assert ($res.executed.0 | str ends-with "odd name")
+        }
+    }
+}
 
 

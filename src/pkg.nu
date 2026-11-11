@@ -12,11 +12,14 @@ const UNCACHED_MGRS = ["pacman", "paru"]
 # Managers checked with `pacman -T` before installing (RFC-022)
 const NATIVE_MGRS = ["pacman", "paru"]
 
-# Safe managers whose packages can be cleanly uninstalled without impacting system stability (RFC-030)
-const SAFE_PRUNE_MGRS = ["uv", "mise", "pnpm", "cargo"]
+# Safe managers whose packages can be cleanly uninstalled without impacting system stability (RFC-030, RFC-044)
+const SAFE_PRUNE_MGRS = ["uv", "mise", "pnpm", "cargo", "scoop"]
 
-# System package managers requiring --force-system-prune to uninstall (RFC-030)
-const SYSTEM_PRUNE_MGRS = ["pacman", "paru", "apt", "dnf", "zypper", "brew", "winget", "scoop"]
+# System package managers requiring --force-system-prune to uninstall (RFC-030, RFC-044)
+const SYSTEM_PRUNE_MGRS = ["pacman", "paru", "apt", "dnf", "zypper", "brew", "winget"]
+
+# Managers requiring sudo to install or uninstall (RFC-048)
+const SUDO_MGRS = ["pacman", "apt", "dnf", "zypper"]
 
 # RFC-005 / RFC-013: package installation commands as argv lists (one invocation per entry)
 def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>> {
@@ -340,20 +343,24 @@ export def install-packages [
             continue
         }
 
+        # RFC-044: package history is preserved across applies (union instead of overwrite)
+        let prev_pkgs = ((load-state $ygg_home).packages? | default {} | get -o $mgr | default [])
+        let union_pkgs = ($prev_pkgs | append $pkgs | uniq)
+
         # RFC-014: package-set cache (bypassed by --refresh-packages and an explicit --pkg)
         let cacheable = not ($mgr in $UNCACHED_MGRS)
         let set_hash = (pkg-set-hash $pkgs)
         let hash_key = $"pkg:($mgr)"
         if $cacheable and (not $refresh_packages) and ($selected | is-empty) and (($hashes | get -o $hash_key) == $set_hash) {
             $skipped = ($skipped | append $mgr)
-            $new_packages = ($new_packages | upsert $mgr $pkgs)
+            $new_packages = ($new_packages | upsert $mgr $union_pkgs)
             continue
         }
 
         # RFC-022: only packages that are not installed yet reach pacman / paru
         let todo = if ($mgr in $NATIVE_MGRS) { missing-native-pkgs $pkgs } else { $pkgs }
         if ($todo | is-empty) {
-            $new_packages = ($new_packages | upsert $mgr $pkgs)
+            $new_packages = ($new_packages | upsert $mgr $union_pkgs)
             continue
         }
 
@@ -394,8 +401,6 @@ export def install-packages [
             if $cacheable {
                 $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
             }
-            let prev_pkgs = ((load-state $ygg_home).packages? | default {} | get -o $mgr | default [])
-            let union_pkgs = ($prev_pkgs | append $pkgs | uniq)
             $new_packages = ($new_packages | upsert $mgr $union_pkgs)
         }
     }
@@ -411,44 +416,85 @@ export def install-packages [
     { executed: $executed, skipped: $skipped, failed: $failed }
 }
 
-# RFC-030: package uninstallation command as a shell string
-def pkg-uninstall-cmd [mgr: string, pkg: string]: nothing -> string {
+# RFC-030 / RFC-044: package uninstallation command as argv list
+export def pkg-uninstall-argv [mgr: string, pkg: string]: nothing -> list<string> {
     match $mgr {
-        "uv" => $"uv tool uninstall ($pkg)",
-        "mise" => $"mise uninstall ($pkg)",
-        "pnpm" => $"pnpm remove -g ($pkg)",
-        "cargo" => $"cargo uninstall ($pkg)",
-        "pacman" => $"sudo pacman -R --noconfirm ($pkg)",
-        "paru" => $"paru -R --noconfirm ($pkg)",
-        "apt" => $"sudo apt-get remove -y ($pkg)",
-        "dnf" => $"sudo dnf remove -y ($pkg)",
-        "zypper" => $"sudo zypper remove -y ($pkg)",
-        "brew" => $"brew uninstall ($pkg)",
-        "winget" => $"winget uninstall --exact ($pkg)",
-        "scoop" => $"scoop uninstall ($pkg)",
-        _ => $"($mgr) uninstall ($pkg)"
+        "uv" => ["uv", "tool", "uninstall", $pkg],
+        "mise" => ["mise", "uninstall", $pkg],
+        "pnpm" => ["pnpm", "remove", "-g", $pkg],
+        "cargo" => ["cargo", "uninstall", $pkg],
+        "pacman" => ["sudo", "pacman", "-R", "--noconfirm", $pkg],
+        "paru" => ["paru", "-R", "--noconfirm", $pkg],
+        "apt" => ["sudo", "apt-get", "remove", "-y", $pkg],
+        "dnf" => ["sudo", "dnf", "remove", "-y", $pkg],
+        "zypper" => ["sudo", "zypper", "remove", "-y", $pkg],
+        "brew" => ["brew", "uninstall", $pkg],
+        "winget" => ["winget", "uninstall", "--exact", $pkg],
+        "scoop" => ["scoop", "uninstall", $pkg],
+        _ => [$mgr, "uninstall", $pkg]
     }
 }
 
-# RFC-030: prune packages that are in state.packages but absent in current plan
+# RFC-030 / RFC-044: prune packages that are in state.packages but absent in current plan
 export def prune-unused-packages [
     ygg_home: string,
     current_plan: record,
     --dry-run,
-    --force-system-prune
-]: nothing -> list<string> {
+    --force-system-prune,
+    --pkg: string = "",
+    --sandbox: string = ""
+]: nothing -> record<executed: list<string>, failed: list<string>, skipped: list<string>> {
+    let empty_res = { executed: [], failed: [], skipped: [] }
+    let env_sb = ($env.YGG_SANDBOX? | default "")
+    let effective_sb = if ($sandbox != "") { $sandbox } else { $env_sb }
+    let mock = (is-mock-mode)
+    if (not $dry_run) and (not $mock) and ($effective_sb != "") {
+        return $empty_res
+    }
+
     let state = (load-state $ygg_home)
     let state_pkgs = ($state.packages? | default {})
     let plan_pkgs_rec = ($current_plan.packages? | default {})
-    let mock = (is-mock-mode)
+    let selected = if ($pkg | is-empty) { [] } else { $pkg | split row "," | each { |s| $s | str trim } | where { |s| ($s != "") } }
+    let allowed_mgrs = (allowed-package-managers (detect-host-os))
 
-    mut executed_cmds: list<string> = []
+    mut executed: list<string> = []
+    mut failed: list<string> = []
+    mut skipped: list<string> = []
     mut updated_packages: record = $state_pkgs
     mut updated_hashes: record = ($state.hashes? | default {})
 
     for mgr in ($state_pkgs | columns) {
+        if ($selected | is-not-empty) and not ($mgr in $selected) {
+            continue
+        }
+
+        if not ($mgr in $allowed_mgrs) {
+            $skipped = ($skipped | append $mgr)
+            continue
+        }
+
+        let is_missing = if $mock {
+            ($mgr in (csv-env "YGG_MOCK_PKG_MISSING"))
+        } else {
+            (which $mgr | is-empty)
+        }
+        if $is_missing {
+            print -e $"[ygg] Warning: Package manager '($mgr)' not found on PATH. Skipping prune."
+            $skipped = ($skipped | append $mgr)
+            continue
+        }
+
         let is_safe = ($mgr in $SAFE_PRUNE_MGRS)
         if (not $is_safe) and (not $force_system_prune) {
+            $skipped = ($skipped | append $mgr)
+            continue
+        }
+
+        if ($mgr in $SUDO_MGRS) and not (sudo-available) {
+            let msg = $"Package manager '($mgr)' requires sudo, which is not available non-interactively. Run 'sudo -v' first or use --skip-packages."
+            print -e $"[ygg] Error: ($msg)"
+            $failed = ($failed | append $"($mgr): sudo requires a password; run 'sudo -v' first or use --skip-packages")
             continue
         }
 
@@ -477,24 +523,48 @@ export def prune-unused-packages [
 
         mut pruned_this_mgr: list<string> = []
         for pkg in $stale_pkgs {
-            let cmd_str = (pkg-uninstall-cmd $mgr $pkg)
-            $executed_cmds = ($executed_cmds | append $cmd_str)
+            let argv = (pkg-uninstall-argv $mgr $pkg)
+            let cmd_str = ($argv | str join " ")
+            $executed = ($executed | append $cmd_str)
+
+            let unuse_argv = if ($mgr == "mise") {
+                ["mise", "unuse", "--path", "~/.config/mise/config.local.toml", $pkg]
+            } else {
+                []
+            }
 
             if $dry_run {
+                if ($unuse_argv | is-not-empty) {
+                    $executed = ($executed | append ($unuse_argv | str join " "))
+                }
                 continue
             }
 
             if $mock {
                 $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
+                if ($unuse_argv | is-not-empty) {
+                    let unuse_cmd_str = ($unuse_argv | str join " ")
+                    $"($unuse_cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
+                    $executed = ($executed | append $unuse_cmd_str)
+                }
                 $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
             } else {
-                let argv = ($cmd_str | split row " ")
                 let timeout = (default-pkg-timeout $mgr)
                 let r = (run-with-timeout (expand-argv $argv) $timeout)
                 if ($r.exit_code == 0) {
                     $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
+                    if ($unuse_argv | is-not-empty) {
+                        let r_unuse = (run-with-timeout (expand-argv $unuse_argv) $timeout)
+                        if ($r_unuse.exit_code == 0) {
+                            $executed = ($executed | append ($unuse_argv | str join " "))
+                        } else {
+                            print -e $"[ygg] Warning: Failed to unuse '($pkg)' with '($mgr)': ($r_unuse.stderr | str trim)"
+                        }
+                    }
                 } else {
-                    print -e $"[ygg] Warning: Failed to prune '($pkg)' with '($mgr)': ($r.stderr | str trim)"
+                    let err_msg = $"Failed to prune '($pkg)' with '($mgr)': ($r.stderr | str trim)"
+                    print -e $"[ygg] Warning: ($err_msg)"
+                    $failed = ($failed | append $"($mgr): ($pkg) - ($r.stderr | str trim)")
                 }
             }
         }
@@ -513,9 +583,9 @@ export def prune-unused-packages [
         }
     }
 
-    if (not $dry_run) and ($executed_cmds | is-not-empty) {
+    if (not $dry_run) and ($executed | is-not-empty) {
         save-state $ygg_home ($state | upsert packages $updated_packages | upsert hashes $updated_hashes)
     }
 
-    $executed_cmds
+    { executed: $executed, failed: $failed, skipped: ($skipped | uniq) }
 }
