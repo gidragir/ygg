@@ -187,6 +187,7 @@ def "main remove" [
     name: string, # Module name
     --no-lock # Do not take the host lock
 ] {
+    assert-sandbox-home ($env.YGG_SANDBOX? | default "")
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
@@ -952,7 +953,7 @@ def generate-completions-ps1 []: nothing -> string {
 def "main completions" [
     shell: string
 ] {
-    let s = ($shell | str downcase)
+    let s = ($shell | str lowercase)
     match $s {
         "nu" | "nushell" => {
             print (generate-completions-nu)

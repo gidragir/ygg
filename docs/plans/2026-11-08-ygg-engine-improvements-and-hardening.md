@@ -23,7 +23,7 @@
 
 ## Global Constraints
 
-- Работать в `/data/projects/ygg` (симлинк на `/home/gidragir/projects/ygg`), без создания новых worktree.
+- Работать в корне репозитория `ygg`, без создания новых worktree.
 - **ZERO HOST MUTATION:** Ни один тест и ни один пробный запуск не имеют права читать или модифицировать реальные `~/.ygg`, `~/.config` или `$HOME`. Все запуски выполняются строго во временных каталогах `/tmp/ygg-test-*` с явно заданными `YGG_HOME`, `YGG_SANDBOX` и `YGG_MOCK_PKG_LOG`.
 - **Чистота ядра:** В `src/*.nu` и `bin/*` запрещены захардкоженные имена пользовательских репозиториев или инструментов (`omni-dotfiles`, `ai-dotfiles`, `chezmoi`, `sops` и т.п.).
 - **Zero-Data-Loss:** `remove-link-only` удаляет только симлинк/Junction; физические файлы и каталоги при замене или удалении (`dir_copy`, отредактированный `copy`) всегда перемещаются в `$YGG_HOME/.state/backups/<timestamp>/` через `backup-with-notice`.

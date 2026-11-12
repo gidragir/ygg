@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-11",
+  "updated_at": "2026-11-12",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml",
@@ -31,11 +31,11 @@
       ],
       "key_symbols": [
         "def \"main version\" []",
-        "def main [--version (-v)]",
-        "def \"main init\" [ name?: string, --os: string = \"linux\" ]",
-        "def \"main add\" [ source: string, --scope (-s): string = \"\", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = \"\", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = \"\", --no-lock ]",
+        "def main [ --version (-v) # Print version ]",
+        "def \"main init\" [ name?: string, --os: string = \"linux\" # Comma-separated target OS list for the new module (default: linux) ]",
+        "def \"main add\" [ source: string, # Local directory or git URL of the module(...) --scope (-s): string = \"\", # Comma-separated scopes to activate for the module --dry-run (-n), # Show the plan without modifying anything --force (-f), # Overwrite conflicting files and links (wit...",
         "def assert-pkg-flags [pkg: string, skip_packages: bool]",
-        "def \"main remove\" [ name: string, --no-lock ]"
+        "def \"main remove\" [ name: string, # Module name --no-lock # Do not take the host lock ]"
       ],
       "summary_source": "heuristic"
     },
@@ -167,12 +167,12 @@
         "def to-list [value: any]: nothing -> list<string>",
         "def list-files-rel [root: string, prefix: string = \"\"]: nothing -> list<string>",
         "def check-links [ops: table]: nothing -> list<record>",
-        "def check-orphan-links [state: record, targets: table, sb: string]: nothing -> list<record>",
+        "def is-owned-link [p: string, state: record, roots: list<string>]: nothing -> bool",
+        "def check-orphan-links [state: record, targets: table, sb: string, roots: list<string>]: nothing -> list<record>",
         "def check-state-orphans [state: record, host_modules: list<string>]: nothing -> list<record>",
         "def check-sync [state: record]: nothing -> list<record>",
-        "export def is-windows-acl-insecure [output: string]: nothing -> bool",
-        "export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record>",
-        "def check-tools [plan: record]: nothing -> list<record>"
+        "export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool",
+        "def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string>"
       ],
       "summary_source": "heuristic"
     },
@@ -197,13 +197,14 @@
       "key_symbols": [
         "export def format-windows-env-script [clean_env: record, path_entries: list<string>, user_home: string]: nothing -> string",
         "def resolve-env-value [v: string, sb: string]: nothing -> string",
+        "def quote-path-posix [v: string]: nothing -> string",
+        "def quote-path-fish [v: string]: nothing -> string",
         "def secret-keys [p: string]: nothing -> record",
         "export def missing-secret-keys [template: string, secrets: string]: nothing -> list<string>",
         "export def classify-secret-value [raw: string]: nothing -> record<kind: string, ref: string>",
         "export def load-secrets-env [ygg_home: string]: nothing -> record",
         "export def validate-secret-providers [ygg_home: string]: nothing -> list<string>",
-        "export def secret-provider-argv [kind: string, ref: string]: nothing -> list<string>",
-        "def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> string"
+        "export def secret-provider-argv [kind: string, ref: string]: nothing -> list<string>"
       ],
       "summary_source": "heuristic"
     },
@@ -233,8 +234,7 @@
         "def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool]: nothing -> record",
         "export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record",
         "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>",
-        "export def remove-module [ygg_home: string, name: string]: nothing -> nothing",
-        "export def update-module [ygg_home: string, name: string]: nothing -> record"
+        "export def remove-module [ygg_home: string, name: string]: nothing -> nothing"
       ],
       "summary_source": "heuristic"
     },
@@ -338,6 +338,7 @@
         }
       ],
       "key_symbols": [
+        "export def pkg-env [mgr: string]: nothing -> record",
         "def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>>",
         "def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string>",
         "def default-pkg-timeout [mgr: string]: nothing -> int",
@@ -346,8 +347,7 @@
         "export def allowed-package-managers [host_os: record]: nothing -> list<string>",
         "export def missing-package-managers [plan: record]: nothing -> list<string>",
         "def is-mock-mode []: nothing -> bool",
-        "def csv-env [name: string]: nothing -> list<string>",
-        "def missing-native-pkgs [pkgs: list<string>]: nothing -> list<string>"
+        "def csv-env [name: string]: nothing -> list<string>"
       ],
       "summary_source": "heuristic"
     },

@@ -134,7 +134,7 @@ export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool {
     let broad = ["S-1-1-0" "S-1-5-11" "S-1-5-32-545" "S-1-5-32-546" "S-1-5-7"]
     $acl_lines | lines | any { |l|
         let parts = ($l | str trim | split row "|")
-        (($parts | length) >= 3) and (($parts | get 0 | str trim | str replace -a "\u{feff}" "" | str uppercase) in $broad) and (($parts | get 2 | str trim | str downcase) == "allow")
+        (($parts | length) >= 3) and (($parts | get 0 | str trim | str replace -a "\u{feff}" "" | str uppercase) in $broad) and (($parts | get 2 | str trim | str lowercase) == "allow")
     }
 }
 
@@ -224,11 +224,18 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
     $rows
 }
 
+# True when the Nushell version is at least (0, MIN_NU_MINOR) for major 0 and any later major (RFC-057)
+export def nu-version-ok [ver: string]: nothing -> bool {
+    let parts = ($ver | split row "." | each { |p| try { $p | into int } catch { 0 } })
+    let major = ($parts | get -o 0 | default 0)
+    let minor = ($parts | get -o 1 | default 0)
+    ($major > 0) or ($minor >= $MIN_NU_MINOR)
+}
+
 # tool: nu >= 0.116, git, package managers with packages in the plan
 def check-tools [plan: record]: nothing -> list<record> {
     mut rows = []
-    let ver = ((version).version | split row "." | each { |p| try { $p | into int } catch { 0 } })
-    if (($ver | get -o 0 | default 0) == 0) and (($ver | get -o 1 | default 0) < $MIN_NU_MINOR) {
+    if not (nu-version-ok (version).version) {
         $rows = ($rows | append (finding "tool" "error" "nu" $"nu ((version).version) is older than 0.($MIN_NU_MINOR)" $"upgrade nu to 0.($MIN_NU_MINOR) or newer"))
     }
     if (which git | is-empty) {

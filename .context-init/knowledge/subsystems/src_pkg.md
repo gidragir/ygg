@@ -2,8 +2,8 @@
 directory: src/pkg.nu
 source:
   kind: git
-  blob_sha: 1794ea9b1c4d7222a5608c29fa246aea98429aa0
-  commit_sha: a6965b2d3ab2d4c100462b64280c84382d4ed740
+  blob_sha: 7b72abb578e76b18b1c3f4c6a8c894cd78a1bf10
+  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
 generated_by:
   component: context-init
   role: update
@@ -30,6 +30,7 @@ freshness:
 
 ## 🔑 Ключевой контракт и экспорты
 ```text
+export def pkg-env [mgr: string]: nothing -> record
 def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>>
 def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string>
 def default-pkg-timeout [mgr: string]: nothing -> int
@@ -39,7 +40,6 @@ export def allowed-package-managers [host_os: record]: nothing -> list<string>
 export def missing-package-managers [plan: record]: nothing -> list<string>
 def is-mock-mode []: nothing -> bool
 def csv-env [name: string]: nothing -> list<string>
-def missing-native-pkgs [pkgs: list<string>]: nothing -> list<string>
 ```
 
 ## 🧪 Запуск и тестирование

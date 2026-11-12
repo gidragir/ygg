@@ -2,8 +2,8 @@
 directory: src/git.nu
 source:
   kind: git
-  blob_sha: b0d75bc5603121a0f799d7a6fae36e9e147ddf6f
-  commit_sha: 1f344c8c8737ad7e1eacfb2d58543910242a6601
+  blob_sha: 2400ecd3fc217f40cdd3482b6bea5272d4631472
+  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
 generated_by:
   component: context-init
   role: update
@@ -38,7 +38,6 @@ def stage-module [ygg_home: string, source: string, scopes: list<string>, force:
 export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record
 export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>
 export def remove-module [ygg_home: string, name: string]: nothing -> nothing
-export def update-module [ygg_home: string, name: string]: nothing -> record
 ```
 
 ## 🧪 Запуск и тестирование

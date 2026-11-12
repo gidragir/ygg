@@ -675,3 +675,11 @@ export def test_doctor_fix_state_orphan_keeps_regular_file [] {
         assert equal ($res | get 0.action) "record removed, file left in place"
     }
 }
+
+export def test_nu_version_ok [] {
+    assert (nu-version-ok "1.0.0")
+    assert (nu-version-ok "0.116.1")
+    assert (nu-version-ok "0.117.0")
+    assert (not (nu-version-ok "0.115.0"))
+    assert (not (nu-version-ok "0.99.9"))
+}

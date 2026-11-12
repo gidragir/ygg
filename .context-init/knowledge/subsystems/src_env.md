@@ -2,8 +2,8 @@
 directory: src/env.nu
 source:
   kind: git
-  blob_sha: 1c6b86c3f5a72f5a1c328a70072f2214227f8418
-  commit_sha: 97b3c640b64d17e6df2c67ff21522c87b98fb18e
+  blob_sha: b5ff35ae6e721cc498abc0effafb1bda6653f6f9
+  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
 generated_by:
   component: context-init
   role: update
@@ -32,13 +32,14 @@ freshness:
 ```text
 export def format-windows-env-script [clean_env: record, path_entries: list<string>, user_home: string]: nothing -> string
 def resolve-env-value [v: string, sb: string]: nothing -> string
+def quote-path-posix [v: string]: nothing -> string
+def quote-path-fish [v: string]: nothing -> string
 def secret-keys [p: string]: nothing -> record
 export def missing-secret-keys [template: string, secrets: string]: nothing -> list<string>
 export def classify-secret-value [raw: string]: nothing -> record<kind: string, ref: string>
 export def load-secrets-env [ygg_home: string]: nothing -> record
 export def validate-secret-providers [ygg_home: string]: nothing -> list<string>
 export def secret-provider-argv [kind: string, ref: string]: nothing -> list<string>
-def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> string
 ```
 
 ## 🧪 Запуск и тестирование

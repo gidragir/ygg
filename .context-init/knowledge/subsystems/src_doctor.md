@@ -2,8 +2,8 @@
 directory: src/doctor.nu
 source:
   kind: git
-  blob_sha: ae428ab9640c05b9a953250f6dd827896fc52d96
-  commit_sha: 97b3c640b64d17e6df2c67ff21522c87b98fb18e
+  blob_sha: e8c9e74103735941e6ab41c00282005ce1b1fb15
+  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
 generated_by:
   component: context-init
   role: update
@@ -34,12 +34,12 @@ def finding [check: string, severity: string, target: string, detail: string, fi
 def to-list [value: any]: nothing -> list<string>
 def list-files-rel [root: string, prefix: string = ""]: nothing -> list<string>
 def check-links [ops: table]: nothing -> list<record>
-def check-orphan-links [state: record, targets: table, sb: string]: nothing -> list<record>
+def is-owned-link [p: string, state: record, roots: list<string>]: nothing -> bool
+def check-orphan-links [state: record, targets: table, sb: string, roots: list<string>]: nothing -> list<record>
 def check-state-orphans [state: record, host_modules: list<string>]: nothing -> list<record>
 def check-sync [state: record]: nothing -> list<record>
-export def is-windows-acl-insecure [output: string]: nothing -> bool
-export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record>
-def check-tools [plan: record]: nothing -> list<record>
+export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool
+def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string>
 ```
 
 ## 🧪 Запуск и тестирование

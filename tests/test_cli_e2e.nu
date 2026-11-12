@@ -1260,3 +1260,18 @@ export def test_completions_nu_complete_modules_record_is_empty [] {
         assert equal (^nu -c $"source '($out)'; nu-complete ygg-modules | to json" | from json) []
     }
 }
+
+export def test_remove_refuses_real_home_under_sandbox [] {
+    with-temp-ygg { |home|
+        let fake_home = ($home | path join "fake_user_home")
+        mkdir $fake_home
+        let sb = ($home | path join "preview")
+        mkdir $sb
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+
+        let res = (with-env { HOME: $fake_home, YGG_HOME: "", YGG_SANDBOX: $sb } { ^nu $ygg_bin remove x | complete })
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "YGG_HOME")
+        assert (not (($fake_home | path join ".ygg") | path exists))
+    }
+}

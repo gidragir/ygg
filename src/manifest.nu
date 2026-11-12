@@ -642,7 +642,7 @@ export def resolve-effective-plan [
             $mod_path = [$mod_path]
         }
 
-        # Merge in active scopes for this module (origin_rank 1..N in active scope order)
+        # Merge in active scopes for this module (origin_rank 1..N follows the order of the scope keys in the manifest, not the host's active scope order)
         mut scope_rank = 0
         let manifest_scopes = ($manifest.scope? | default {})
         let scope_keys = if (($manifest_scopes | describe) starts-with "record") {

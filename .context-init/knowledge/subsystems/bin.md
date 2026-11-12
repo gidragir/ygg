@@ -2,8 +2,8 @@
 directory: bin/ygg.nu
 source:
   kind: git
-  blob_sha: b98eebb171552914b08dd8e57043bcf253cceca6
-  commit_sha: a6965b2d3ab2d4c100462b64280c84382d4ed740
+  blob_sha: 7db50e9bd384a06582f2480f94cd1d0dd48d0398
+  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
 generated_by:
   component: context-init
   role: update
@@ -31,11 +31,11 @@ freshness:
 ## 🔑 Ключевой контракт и экспорты
 ```text
 def "main version" []
-def main [--version (-v)]
-def "main init" [ name?: string, --os: string = "linux" ]
-def "main add" [ source: string, --scope (-s): string = "", --dry-run (-n), --force (-f), --skip-packages (-S), --pkg: string = "", --pkg-timeout: int = -1, --refresh-packages, --sandbox: string = "", --no-lock ]
+def main [ --version (-v) # Print version ]
+def "main init" [ name?: string, --os: string = "linux" # Comma-separated target OS list for the new module (default: linux) ]
+def "main add" [ source: string, # Local directory or git URL of the module(...) --scope (-s): string = "", # Comma-separated scopes to activate for the module --dry-run (-n), # Show the plan without modifying anything --force (-f), # Overwrite conflicting files and links (wit...
 def assert-pkg-flags [pkg: string, skip_packages: bool]
-def "main remove" [ name: string, --no-lock ]
+def "main remove" [ name: string, # Module name --no-lock # Do not take the host lock ]
 ```
 
 ## 🧪 Запуск и тестирование

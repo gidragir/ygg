@@ -2,8 +2,8 @@
 directory: docs
 source:
   kind: git
-  blob_sha: 59ee3828fe10e6c43580f7cf70a08719eb0e713f
-  commit_sha: 0aca436558fb4c31003aa79ad7586966277a79d9
+  blob_sha: 7033979706b1c0adae68da000158dc229943306b
+  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
 generated_by:
   component: context-init
   role: update
