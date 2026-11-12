@@ -20,7 +20,7 @@
 
 ## Global Constraints
 
-- Ветка `fix/ygg-engine-phase2` от `main` в `/data/projects/ygg`. Не сливать в `main` и не пушить.
+- Ветка `fix/ygg-engine-phase2` от `main` в корне репозитория `ygg`. Не сливать в `main` и не пушить.
 - Запрещено менять файлы, ветки и индекс в `/data/projects/{omni-dotfiles,dotfiles,ai-dotfiles,win-dotfiles}` и в `/data/projects/worktree/ygg-phase2/*`; из worktrees только чтение и запуск harness.
 - Любой запуск `ygg` и тестов: `HOME`, `YGG_HOME`, `YGG_SANDBOX`, `YGG_MOCK_PKG_LOG` в `/tmp/...`. Реальные `~/.ygg`, `~/.config`, `~/.hermes`, `~/.gemini`, `~/.claude`, сервисы не трогать.
 - Все команды с префиксом `rtk`; `rtk fd`, `rtk rg` (без `-E`), без GNU `find`/`grep`.

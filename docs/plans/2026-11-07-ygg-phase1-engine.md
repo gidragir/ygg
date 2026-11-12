@@ -2,17 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Создать в `/data/projects/ygg` автономный кроссплатформенный CLI-менеджер модулей `ygg` на Nushell с полным покрытием изолированными ФС-автотестами (Этап 1 спецификации).
+**Goal:** Создать в корне репозитория `ygg` автономный кроссплатформенный CLI-менеджер модулей `ygg` на Nushell с полным покрытием изолированными ФС-автотестами (Этап 1 спецификации).
 
 **Architecture:** Независимый от `omni-dotfiles` пакет модулей Nushell (`src/*.nu`) с точками входа `bin/ygg` (Unix) и `bin/ygg.cmd` (Windows Non-Admin), управляющий единой директорией `$YGG_HOME` (`~/.ygg/`). Вся работа с ФС, пакетными менеджерами и сессией ОС параметризуется переменными `YGG_HOME`, `--sandbox` и `YGG_MOCK_PKG`, что позволяет выполнять полный цикл интеграционных тестов в `/tmp` без затрагивания хоста.
 
 **Tech Stack:** Nushell (`nu`), `TOML` (нативный парсер Nushell), `git`, `just` (`set shell := ["nu", "-c"]`), `mise`.
 
-**Spec:** `/data/projects/ygg/docs/specs/2026-11-07-modular-omni-architecture-design.md`
+**Spec:** `docs/specs/2026-11-07-modular-omni-architecture-design.md`
 
 ## Global Constraints
 
-- Репозиторий движка создаётся изолированно в `/data/projects/ygg` (живой `$HOME` хоста во время разработки и тестов не модифицируется).
+- Репозиторий движка создаётся изолированно в корне репозитория `ygg` (живой `$HOME` хоста во время разработки и тестов не модифицируется).
 - Нулевой внешний шаблонизатор (`Zero-Templates`): все манифесты строго в формате `TOML` (`host.toml`, `secrets.toml`, `ygg.toml`, опциональные `packages.toml`, `links.toml`, `env.toml`, `aliases.toml`), внутренний стейт — `.state/state.json`.
 - Windows Non-Admin: запрещены файловые симлинки на Windows и требования Developer Mode; для папок используется `cmd /c mklink /J` (NTFS Junction), для одиночных файлов и `[save]` — контролируемое копирование с `3-way hash sync`, для скриптов в `bin` — автогенерация `.cmd`-врапперов.
 - Чистота ОС (`Zero-Trash`): бэкапы сохраняются только в `$YGG_HOME/.state/backups/<timestamp>/`, никаких `.bak` внутри `~/.config/`; удаление ссылок (`unlink`/`prune`) удаляет только сам симлинк/Junction, никогда не удаляя рекурсивно содержимое целевых папок.
@@ -28,7 +28,7 @@
 
 ---
 
-## File Structure (`/data/projects/ygg`)
+## File Structure (корень репозитория `ygg`)
 
 - `mise.toml` — фиксация `nushell` и `just` для проекта.
 - `justfile` — рецепты `test` и `check` (`set shell := ["nu", "-c"]`).
