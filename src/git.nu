@@ -40,7 +40,8 @@ export def warn-if-not-canonicalizable [path: string]: nothing -> nothing {
 export def discard-staged-module [prep: record]: nothing -> nothing {
     let tmp = ($prep.tmp_clone? | default "")
     let safe_subpath = ([".state", "tmp"] | path join)
-    let has_safe_prefix = ($tmp | str contains $safe_subpath)
+    # clones of a read-only add live in a system temp dir named ygg-add-*
+    let has_safe_prefix = ($tmp | str contains $safe_subpath) or (($tmp | path basename) | str starts-with "ygg-add-")
     if ($tmp != "") and ($tmp | path exists) and $has_safe_prefix {
         rm -rf $tmp
     }
@@ -48,7 +49,7 @@ export def discard-staged-module [prep: record]: nothing -> nothing {
 
 # Stage a module without touching modules/ or host.toml (RFC-012).
 # Local directory: path = the expanded source; Git source: cloned into .state/tmp/clone-*.
-def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool]: nothing -> record {
+def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool, read_only: bool]: nothing -> record {
     # A local module directory must exist on disk, contain ygg.toml, and not be a bare/git repository
     let is_local_dir = (
         ($source | path exists) and
@@ -66,9 +67,14 @@ def stage-module [ygg_home: string, source: string, scopes: list<string>, force:
             $source
         }
 
-        let tmp_parent = ($ygg_home | path join ".state" "tmp")
-        mkdir $tmp_parent
-        let tmp_clone = ($tmp_parent | path join $"clone-(random chars --length 8)")
+        # read-only (add --dry-run): clone into a system temp dir, YGG_HOME stays untouched
+        let tmp_clone = if $read_only {
+            (^mktemp -d -t ygg-add-XXXXXXXX | str trim)
+        } else {
+            let tmp_parent = ($ygg_home | path join ".state" "tmp")
+            mkdir $tmp_parent
+            ($tmp_parent | path join $"clone-(random chars --length 8)")
+        }
 
         let clone_res = (^git clone $git_url $tmp_clone | complete)
         if $clone_res.exit_code != 0 {
@@ -165,14 +171,17 @@ export def add-module [
     source: string,
     --scopes: list<string> = [],
     --dry-run,
-    --force
+    --force,
+    --read-only # never write into YGG_HOME (no ensure-ygg-dirs, clone into a system temp dir); implies --dry-run
 ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string> {
-    ensure-ygg-dirs $ygg_home
-    let prep = (stage-module $ygg_home $source $scopes $force)
+    if not $read_only {
+        ensure-ygg-dirs $ygg_home
+    }
+    let prep = (stage-module $ygg_home $source $scopes $force $read_only)
     if ($prep.tmp_clone == "") {
         warn-if-not-canonicalizable $prep.path
     }
-    if $dry_run {
+    if $dry_run or $read_only {
         return $prep
     }
     register-staged-module $ygg_home $prep --force=$force
@@ -211,6 +220,10 @@ export def checkout-module-ref [mod_path: string, ref: string, rev: string]: not
     let head_of = { ^git -C $mod_path rev-parse HEAD | complete | get stdout | str trim }
     if ($rev == "") and ($ref == "") {
         return { status: "skipped", message: "no ref/rev pin", head: (do $head_of) }
+    }
+    # A pin starting with '-' would be parsed by git as an option
+    if ($rev | str starts-with "-") or ($ref | str starts-with "-") {
+        return { status: "error", message: $"invalid ref '(if ($rev != "") { $rev } else { $ref })': must not start with '-'", head: (do $head_of) }
     }
     let dirty = (^git -C $mod_path status --porcelain | complete)
     if ($dirty.exit_code != 0) or ($dirty.stdout | str trim | is-not-empty) {
@@ -277,6 +290,10 @@ export def update-module [ygg_home: string, name: string]: nothing -> record {
         let stash_res = (^git -C $mod_path stash push -u -m "ygg-update-stash" | complete)
         if $stash_res.exit_code == 0 {
             $stashed = true
+        } else {
+            # Never touch a dirty tree whose changes could not be stashed (no reset --hard below)
+            let reason = ($stash_res.stderr | str trim | lines | first | default "unknown error")
+            return { name: $name, status: "error", message: $"cannot stash local changes \(($reason)\); update skipped" }
         }
     }
 

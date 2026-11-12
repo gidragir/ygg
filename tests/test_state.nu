@@ -305,3 +305,21 @@ export def test_gc_hashes_by_prefix [] {
         assert equal ((load-state $home).hashes | columns | sort) ["legacy-key", "pkg:cargo", "setup:m:build.v2:x"]
     }
 }
+
+export def test_non_integer_pid_in_journal_and_lock_does_not_throw [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let jfile = ($home | path join ".state" "journal.json")
+        {
+            version: 2, status: "in_progress", pid: "abc", started: "2026-11-08T00:00:00Z",
+            plan_hash: "h", steps: { links: "IN_PROGRESS" }
+        } | to json | save -f $jfile
+        assert equal (check-pending-journal $home).state "interrupted"
+
+        let lock = ($home | path join ".state" "host.lock")
+        { pid: "not-a-pid", timestamp: "2026-11-08T00:00:00Z", command: "x" } | to json | save -f $lock
+        let got = (acquire-host-lock $home "update")
+        assert equal (open $got | from json | get pid) $nu.pid
+        release-host-lock $got
+    }
+}

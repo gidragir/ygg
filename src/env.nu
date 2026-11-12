@@ -182,7 +182,24 @@ export def secret-provider-argv [kind: string, ref: string]: nothing -> list<str
     }
 }
 
-# Format command line for lazy shell evaluation across supported shells (RFC-042)
+# Quote one argv element for a target shell (RFC-042)
+def quote-lazy-arg [shell: string, arg: string]: nothing -> string {
+    match $shell {
+        "fish" => { $"'($arg | str replace --all '\' '\\' | str replace --all "'" "\\'")'" }
+        "ps1" => { $"'($arg | str replace --all "'" "''")'" }
+        "nu" => {
+            if not ($arg | str contains "'") {
+                $"'($arg)'"
+            } else {
+                $"\"($arg | str replace --all '\' '\\' | str replace --all '\"' '\\\"')\""
+            }
+        }
+        _ => { $"'($arg | str replace --all "'" "'\\''")'" }
+    }
+}
+
+# Format command line for lazy shell evaluation across supported shells (RFC-042).
+# Every element after the command is quoted (plain words stay bare, the last one is always quoted).
 def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> string {
     if ($argv | is-empty) {
         return ""
@@ -191,34 +208,18 @@ def format-lazy-provider-cmd [shell: string, argv: list<string>]: nothing -> str
     if ($argv | length) == 1 {
         return (if $shell == "nu" { $"^($cmd)" } else { $cmd })
     }
-    let subcmds = ($argv | skip 1 | drop 1)
-    let sub_str = if ($subcmds | is-empty) { "" } else { " " + ($subcmds | str join " ") }
-    let target = ($argv | last)
-
+    let rest = ($argv | skip 1)
+    let last_idx = (($rest | length) - 1)
+    let parts = ($rest | enumerate | each { |it|
+        if ($it.index != $last_idx) and ($it.item =~ '^[A-Za-z0-9_-]+$') {
+            $it.item
+        } else {
+            quote-lazy-arg $shell $it.item
+        }
+    } | str join " ")
     match $shell {
-        "zsh" => {
-            let esc_target = ($target | str replace --all "'" "'\\''")
-            $"($cmd)($sub_str) '($esc_target)'"
-        }
-        "fish" => {
-            let esc_target = ($target | str replace --all '\' '\\' | str replace --all "'" "\\'")
-            $"($cmd)($sub_str) '($esc_target)'"
-        }
-        "ps1" => {
-            let esc_target = ($target | str replace --all "'" "''")
-            $"($cmd)($sub_str) '($esc_target)'"
-        }
-        "nu" => {
-            let esc_target = if not ($target | str contains "'") {
-                $"'($target)'"
-            } else {
-                $"\"($target | str replace --all '\\' '\\\\' | str replace --all '\"' '\\\"')\""
-            }
-            $"^($cmd)($sub_str) ($esc_target) | str trim"
-        }
-        _ => {
-            $"($cmd)($sub_str) '($target)'"
-        }
+        "nu" => { $"^($cmd) ($parts) | str trim" }
+        _ => { $"($cmd) ($parts)" }
     }
 }
 

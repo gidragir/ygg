@@ -543,3 +543,29 @@ export def test_path_quoting_and_empty [] {
         assert (not (open --raw ($env_dir | path join "env.nu") | str contains "PATH"))
     }
 }
+
+export def test_lazy_provider_quotes_every_argv_element [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        setup-secret-home $home false
+        let marker = "YGG_INJECT_MARK"
+        ("B = \"bw://my item/fld$(touch " + $marker + ")\"\n") | save -f ($home | path join "secrets.toml")
+        let bin = ($home | path join "mock-bin"); mkdir $bin
+        "#!/bin/sh\necho S3CRET\n" | save -f ($bin | path join "bw")
+        ^chmod +x ($bin | path join "bw")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", PATH: ($env.PATH | prepend $bin) } {
+            compile-environment $home (resolve-effective-plan $home) --sandbox $sb
+        }
+        let env_dir = ($home | path join ".state" "env")
+        let field = ("fld$(touch " + $marker + ")")
+        let zsh = (open --raw ($env_dir | path join "env.zsh"))
+        assert ($zsh | str contains $"bw get '($field)' 'my item'") $zsh
+        assert ((open --raw ($env_dir | path join "env.fish")) | str contains $"bw get '($field)' 'my item'")
+        assert ((open --raw ($env_dir | path join "env.ps1")) | str contains $"bw get '($field)' 'my item'")
+        assert ((open --raw ($env_dir | path join "env.nu")) | str contains $"^bw get '($field)' 'my item' | str trim")
+        if (which zsh | is-not-empty) {
+            assert equal (^zsh -n ($env_dir | path join "env.zsh") | complete | get exit_code) 0
+        }
+        assert (not ($marker | path exists))
+    }
+}

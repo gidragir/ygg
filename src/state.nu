@@ -286,6 +286,11 @@ export def restrict-file-access [path: string]: nothing -> bool {
 }
 
 
+# Coerce a PID read from a journal or lock file to int; anything unparsable becomes 0 (dead)
+def coerce-pid [value: any]: nothing -> int {
+    try { $value | into int } catch { 0 }
+}
+
 # Check if a process with given PID is still running (EPERM on Unix counts as alive, RFC-046)
 export def check-process-alive [pid: int]: nothing -> bool {
     if $pid <= 0 {
@@ -340,8 +345,8 @@ export def acquire-host-lock [ygg_home: string, command: string, --no-lock]: not
     # Legacy lock name: live PID refuses, otherwise removed (RFC-046 p.6)
     let legacy = ($state_dir | path join "ygg.lock")
     if ($legacy | path exists) {
-        let ld = (try { open $legacy | from json } catch { {} })
-        let lpid = ($ld.pid? | default 0)
+        let ld = (try { open $legacy | from json | if (($in | describe) starts-with "record") { $in } else { {} } } catch { {} })
+        let lpid = (coerce-pid ($ld.pid? | default 0))
         if (check-process-alive $lpid) {
             error make { msg: $"Host is locked by another ygg instance \(PID: ($lpid), legacy lock '($legacy)'\). Aborting." }
         }
@@ -361,8 +366,8 @@ export def acquire-host-lock [ygg_home: string, command: string, --no-lock]: not
     let result = (try {
         mut taken = (hard-link-file $tmp $lock_file)
         if not $taken {
-            let lock_data = (try { open $lock_file | from json } catch { {} })
-            let lock_pid = ($lock_data.pid? | default 0)
+            let lock_data = (try { open $lock_file | from json | if (($in | describe) starts-with "record") { $in } else { {} } } catch { {} })
+            let lock_pid = (coerce-pid ($lock_data.pid? | default 0))
             let lock_host = ($lock_data.host? | default $my_host)
             if $lock_host != $my_host {
                 error make { msg: $"Host lock '($lock_file)' is held by another machine '($lock_host)' \(PID: ($lock_pid)\). Remove the file manually if it is stale." }
@@ -374,7 +379,7 @@ export def acquire-host-lock [ygg_home: string, command: string, --no-lock]: not
             let stale = ($state_dir | path join $"host.lock.stale.(random int 0..2147483646)")
             let moved = (try { mv $lock_file $stale; true } catch { false })
             if $moved {
-                let moved_pid = (try { open $stale | from json | get -o pid | default 0 } catch { 0 })
+                let moved_pid = (coerce-pid (try { open $stale | from json | get -o pid | default 0 } catch { 0 }))
                 if $moved_pid != $lock_pid {
                     # Took over a lock that was acquired meanwhile: put it back
                     hard-link-file $stale $lock_file | ignore
@@ -628,7 +633,7 @@ export def check-pending-journal [ygg_home: string]: nothing -> record<state: st
     let state = if $status == "failed" {
         "failed"
     } else if $status == "in_progress" {
-        let pid = ($data.pid? | default 0)
+        let pid = (coerce-pid ($data.pid? | default 0))
         let is_alive = (check-process-alive $pid)
         if $is_alive {
             "active"

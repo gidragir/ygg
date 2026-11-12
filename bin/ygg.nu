@@ -136,7 +136,7 @@ def "main add" [
 
         # RFC-012: stage first (no change to modules/ or host.toml), check the plan with the module
         # as a virtual entry, and register only after pre-flight passed (RFC-020).
-        let prep = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --force=$force)
+        let prep = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --read-only=$dry_run --force=$force)
         let extra = [{ name: $prep.name, path: $prep.path, scopes: $all_scopes }]
 
         if $dry_run {
@@ -300,7 +300,12 @@ def apply-plan [
     # Check pending journal before starting mutations (RFC-043)
     let pending_journal = (check-pending-journal $ygg_home)
     if $pending_journal.state in ["interrupted", "failed"] {
-        print -e $"[ygg] Recovering: previous apply ($pending_journal.state) at step '($pending_journal.failed_step)'; re-running full pipeline."
+        let rec_step = (if ($pending_journal.failed_step | is-empty) { "unknown" } else { $pending_journal.failed_step })
+        if $dry_run {
+            print -e $"[ygg] Would recover: previous apply ($pending_journal.state) at step '($rec_step)'; would re-run the full pipeline."
+        } else {
+            print -e $"[ygg] Recovering: previous apply ($pending_journal.state) at step '($rec_step)'; re-running full pipeline."
+        }
         let packages_committed = (($pending_journal.steps?.packages? | default "") == "COMMITTED")
         if not $packages_committed {
             $effective_refresh_packages = true

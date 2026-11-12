@@ -1035,10 +1035,21 @@ export def test_readonly_commands_do_not_touch_fresh_home [] {
         let sb = ($home | path join "sb"); mkdir $sb
         "modules = []\n" | save -f ($home | path join "host.toml")
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        # sources for `add --dry-run` (created before the snapshot, so they are part of it)
+        let loc = ($home | path join "src-loc"); mkdir $loc
+        "name = \"loc\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($loc | path join "ygg.toml")
+        let gitsrc = ($home | path join "src-git.git"); mkdir $gitsrc
+        "name = \"gm\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($gitsrc | path join "ygg.toml")
+        ^git -C $gitsrc init -q -b main
+        ^git -C $gitsrc add .
+        ^git -c user.email=t@t -c user.name=t -C $gitsrc commit -q -m init
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
             let before = (tree-snapshot $home)
-            for cmd in [["diff"], ["status"], ["doctor"], ["apply", "--dry-run"]] {
-                ^nu $ygg_bin ...$cmd | complete | ignore
+            for cmd in [["diff"], ["status"], ["doctor"], ["apply", "--dry-run"], ["add", "--dry-run", $loc], ["add", "--dry-run", $gitsrc], ["clean", "--dry-run"]] {
+                let r = (^nu $ygg_bin ...$cmd | complete)
+                if ($cmd | first) in ["add", "clean"] {
+                    assert equal $r.exit_code 0 $"($cmd | str join ' ') failed: ($r.stderr)"
+                }
                 assert equal (tree-snapshot $home) $before $"($cmd | str join ' ') mutated YGG_HOME"
             }
             assert (not ($home | path join ".state" | path exists))
@@ -1273,5 +1284,22 @@ export def test_remove_refuses_real_home_under_sandbox [] {
         assert ($res.exit_code != 0)
         assert ($res.stderr | str contains "YGG_HOME")
         assert (not (($fake_home | path join ".ygg") | path exists))
+    }
+}
+
+export def test_apply_dry_run_reports_would_recover [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        "modules = []\n" | save -f ($home | path join "host.toml")
+        mkdir ($home | path join ".state")
+        { version: 2, status: "failed", started: "2026-11-08T00:00:00Z", plan_hash: "h", steps: {} }
+            | to json | save -f ($home | path join ".state" "journal.json")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let res = (^nu $ygg_bin apply --dry-run | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            assert ($res.stderr | str contains "Would recover: previous apply failed at step 'unknown'") $res.stderr
+            assert (not ($res.stderr | str contains "Recovering:"))
+        }
     }
 }

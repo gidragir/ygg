@@ -1228,3 +1228,102 @@ export def test_update_conflict_exits_1_cli [] {
         }
     }
 }
+
+# Bare upstream + module clone registered via add-module; returns paths
+def make-upstream-module [home: string]: nothing -> record {
+    let upstream = ($home | path join "upstream.git")
+    let work_up = ($home | path join "work_up")
+    ^git init --bare -b main $upstream
+    ^git clone $upstream $work_up
+    ^git -C $work_up config user.email "t@t.local"
+    ^git -C $work_up config user.name "Tester"
+    $"name = \"demo\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
+    "base\n" | save -f ($work_up | path join "notes.txt")
+    "base\n" | save -f ($work_up | path join "other.txt")
+    ^git -C $work_up add .
+    ^git -C $work_up commit -m "init"
+    ^git -C $work_up push -u origin main
+    with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } { add-module $home $upstream | ignore }
+    { upstream: $upstream, work_up: $work_up, cloned: ($home | path join "modules" "demo") }
+}
+
+# Put the module into a mid-merge state (UU notes.txt) plus an unstaged edit of other.txt
+def make-unstashable-module [home: string]: nothing -> record {
+    let r = (make-upstream-module $home)
+    let git_c = [-c user.email=t@t -c user.name=t]
+    "local\n" | save -f ($r.cloned | path join "notes.txt")
+    ^git ...$git_c -C $r.cloned commit -qam "local change"
+    "upstream\n" | save -f ($r.work_up | path join "notes.txt")
+    ^git ...$git_c -C $r.work_up commit -qam "upstream change"
+    ^git -C $r.work_up push -q
+    ^git ...$git_c -C $r.cloned pull --no-rebase --no-edit | complete | ignore
+    "my unstaged edit\n" | save -f ($r.cloned | path join "other.txt")
+    $r
+}
+
+export def test_update_never_resets_dirty_tree_when_stash_fails [] {
+    with-temp-ygg { |home|
+        let r = (make-unstashable-module $home)
+        let st_before = (^git -C $r.cloned status --porcelain | complete | get stdout)
+        assert ($st_before | str contains "UU notes.txt") "setup must produce an unmerged path"
+        let head_before = (^git -C $r.cloned rev-parse HEAD | str trim)
+        let notes_before = (open --raw ($r.cloned | path join "notes.txt"))
+
+        let res = (update-module $home "demo")
+        assert equal $res.status "error"
+        assert ($res.message | str contains "cannot stash")
+        assert equal (open --raw ($r.cloned | path join "other.txt")) "my unstaged edit\n"
+        assert equal (open --raw ($r.cloned | path join "notes.txt")) $notes_before
+        assert equal (^git -C $r.cloned rev-parse HEAD | str trim) $head_before
+        assert equal (^git -C $r.cloned status --porcelain | complete | get stdout) $st_before
+    }
+}
+
+export def test_cli_update_keeps_local_changes_when_stash_fails [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        let r = (make-unstashable-module $home)
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            ^nu $ygg_bin update | complete
+        })
+        assert equal $res.exit_code 1
+        assert equal (open --raw ($r.cloned | path join "other.txt")) "my unstaged edit\n"
+        assert (^git -C $r.cloned status --porcelain | complete | get stdout | str contains "UU notes.txt")
+    }
+}
+
+export def test_checkout_module_ref_rejects_option_like_pins [] {
+    with-temp-ygg { |home|
+        let r = (make-upstream-module $home)
+        let head_before = (^git -C $r.cloned rev-parse HEAD | str trim)
+        for pin in [["--orphan=x" ""] ["" "-f"]] {
+            let res = (checkout-module-ref $r.cloned ($pin | get 0) ($pin | get 1))
+            assert equal $res.status "error"
+            assert ($res.message | str contains "invalid ref") $res.message
+            assert equal $res.head $head_before
+        }
+    }
+}
+
+export def test_add_dry_run_read_only_leaves_home_untouched [] {
+    with-temp-ygg { |home|
+        let r = (make-upstream-module $home)
+        # fresh second home so the snapshot is exactly "nothing"
+        let home2 = ($home | path join "fresh-home"); mkdir $home2
+        let local_src = ($home | path join "local-mod"); mkdir $local_src
+        $"name = \"loc\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($local_src | path join "ygg.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            for src in [$local_src $r.upstream] {
+                let prep = (add-module $home2 $src --dry-run --read-only)
+                assert equal (ls -a $home2 | length) 0 $"add-module --read-only created files for ($src)"
+                if $prep.tmp_clone != "" {
+                    assert (not ($prep.tmp_clone | str starts-with $home2))
+                    assert ($prep.tmp_clone | path exists)
+                }
+                discard-staged-module $prep
+                if $prep.tmp_clone != "" { assert (not ($prep.tmp_clone | path exists)) }
+            }
+        }
+    }
+}
