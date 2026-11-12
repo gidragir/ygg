@@ -1161,6 +1161,16 @@ export def test_preflight_rejects_service_name_starting_with_dash [] {
     }
 }
 
+export def test_preflight_launchd_accepts_label_rejects_path [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let ok = (preflight-check $home { services: { launchd: { enable: ["com.example.agent"] } } } --quiet)
+        assert equal ($ok | where key == "services") []
+        let bad = (preflight-check $home { services: { launchd: { enable: ["~/Library/LaunchAgents/x.plist"] } } } --quiet)
+        assert equal ($bad | where key == "services" | length) 1
+    }
+}
+
 export def test_preflight_rejects_invalid_env_and_alias_names [] {
     with-temp-ygg { |home|
         ensure-ygg-dirs $home

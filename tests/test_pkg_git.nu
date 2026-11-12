@@ -1327,3 +1327,47 @@ export def test_add_dry_run_read_only_leaves_home_untouched [] {
         }
     }
 }
+
+# BUG-4: a failing `git status` must never be read as "clean tree" (update would reset --hard,
+# remove would rm -rf uncommitted work).
+def git-status-failing-shim [home: string]: nothing -> string {
+    let bin = ($home | path join "git-shim"); mkdir $bin
+    let real = (which git | get 0.path)
+    $"#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = status ] && { echo 'fatal: simulated status failure' >&2; exit 128; }; done\nexec '($real)' \"$@\"\n" | save -f ($bin | path join "git")
+    ^chmod +x ($bin | path join "git")
+    $bin
+}
+
+export def test_failed_git_status_never_destroys_local_changes [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bare = ($home | path join "mod.git")
+        let work = ($home | path join "work_mod")
+        ^git init -q --bare -b main $bare
+        ^git clone -q $bare $work
+        ^git -C $work config user.email "t@t.local"
+        ^git -C $work config user.name "Tester"
+        "name = \"fragile\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($work | path join "ygg.toml")
+        "line = base\n" | save -f ($work | path join "app.conf")
+        ^git -C $work add .
+        ^git -C $work commit -q -m "init"
+        ^git -C $work push -q -u origin main
+
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            add-module $home $bare
+            let mod_dir = ($home | path join "modules" "fragile")
+            "line = local_custom\n" | save -f ($mod_dir | path join "app.conf")
+            let shim = (git-status-failing-shim $home)
+            with-env { PATH: ($env.PATH | prepend $shim) } {
+                let res = (update-module $home "fragile")
+                assert equal $res.status "error"
+                assert equal (open --raw ($mod_dir | path join "app.conf")) "line = local_custom\n"
+
+                let rm_res = (try { remove-module $home "fragile"; "removed" } catch { |e| $e.msg })
+                assert ($rm_res != "removed") "remove must refuse when git status cannot be read"
+                assert equal (open --raw ($mod_dir | path join "app.conf")) "line = local_custom\n"
+            }
+        }
+    }
+}

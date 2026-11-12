@@ -191,7 +191,7 @@ def quote-lazy-arg [shell: string, arg: string]: nothing -> string {
             if not ($arg | str contains "'") {
                 $"'($arg)'"
             } else {
-                $"\"($arg | str replace --all '\' '\\' | str replace --all '\"' '\\\"')\""
+                $"\"($arg | str replace --all '\' '\\' | str replace --all '"' '\"')\""
             }
         }
         _ => { $"'($arg | str replace --all "'" "'\\''")'" }

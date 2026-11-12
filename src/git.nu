@@ -15,7 +15,11 @@ def assert-module-clean [mod_dir: string, name: string, action: string]: nothing
         return
     }
     let st = (^git -C $mod_dir status --porcelain | complete)
-    if ($st.exit_code == 0) and ($st.stdout | str trim | is-not-empty) {
+    # An unreadable status is never "clean": the caller would rm -rf / replace uncommitted work
+    if $st.exit_code != 0 {
+        error make { msg: $"Cannot ($action) module '($name)': git status failed in '($mod_dir)': ($st.stderr | str trim)" }
+    }
+    if ($st.stdout | str trim | is-not-empty) {
         error make { msg: $"Cannot ($action) module '($name)': directory has uncommitted changes in '($mod_dir)'" }
     }
 }
@@ -67,9 +71,10 @@ def stage-module [ygg_home: string, source: string, scopes: list<string>, force:
             $source
         }
 
-        # read-only (add --dry-run): clone into a system temp dir, YGG_HOME stays untouched
+        # read-only (add --dry-run): clone into a system temp dir, YGG_HOME stays untouched.
+        # Built-in (uutils) mktemp: atomic and cross-platform, no Unix `mktemp` on PATH required
         let tmp_clone = if $read_only {
-            (^mktemp -d -t ygg-add-XXXXXXXX | str trim)
+            (mktemp --directory --tmpdir ygg-add-XXXXXXXX)
         } else {
             let tmp_parent = ($ygg_home | path join ".state" "tmp")
             mkdir $tmp_parent
@@ -280,10 +285,18 @@ export def update-module [ygg_home: string, name: string]: nothing -> record {
         return { name: $name, status: "skipped", message: "no remotes configured" }
     }
 
-    let head_before = (^git -C $mod_path rev-parse HEAD | complete).stdout | str trim
+    let head_res = (^git -C $mod_path rev-parse HEAD | complete)
+    let head_before = ($head_res.stdout | str trim)
+    if ($head_res.exit_code != 0) or ($head_before == "") {
+        return { name: $name, status: "error", message: $"cannot resolve HEAD \(($head_res.stderr | str trim)\); update skipped" }
+    }
     let branch_before = (^git -C $mod_path branch --show-current | complete).stdout | str trim
-    let status_raw = (^git -C $mod_path status --porcelain | complete).stdout | str trim
-    let is_dirty = ($status_raw != "")
+    # An unreadable status is never "clean": the recovery path below runs reset --hard
+    let status_res = (^git -C $mod_path status --porcelain | complete)
+    if $status_res.exit_code != 0 {
+        return { name: $name, status: "error", message: $"cannot read git status \(($status_res.stderr | str trim)\); update skipped" }
+    }
+    let is_dirty = (($status_res.stdout | str trim) != "")
 
     mut stashed = false
     if $is_dirty {
@@ -439,7 +452,9 @@ export def modules-status [ygg_home: string]: nothing -> table {
         }
 
         let dirty = if $is_git {
-            ((^git -C $mod_path status --porcelain | complete).stdout | str trim) != ""
+            # read-only report: an unreadable status is shown as dirty (never as a clean tree)
+            let st = (^git -C $mod_path status --porcelain | complete)
+            ($st.exit_code != 0) or (($st.stdout | str trim) != "")
         } else {
             false
         }
@@ -568,7 +583,9 @@ export def verify-ygg-lock [ygg_home: string, plan: record]: nothing -> list<str
         }
 
         let dirty_res = (^git -C $mod_dir status --porcelain | complete)
-        if ($dirty_res.exit_code == 0) and ($dirty_res.stdout | str trim | is-not-empty) {
+        if $dirty_res.exit_code != 0 {
+            $errors = ($errors | append $"Module '($mod_name)' git status failed: ($dirty_res.stderr | str trim)")
+        } else if ($dirty_res.stdout | str trim | is-not-empty) {
             $errors = ($errors | append $"Module '($mod_name)' has uncommitted changes")
         }
     }

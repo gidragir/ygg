@@ -543,10 +543,13 @@ def build-service-cmd [manager: string, action: string, service: string]: nothin
             ["powershell", "-NoProfile", "-Command", "Restart-Service -Name $args[0]", $service]
         }
     } else if $manager == "launchd" {
+        # RFC-055 p.7: the manifest names only the label; the plist path and the gui/<uid> domain
+        # target are derived here (argv runs without a shell, so `~` would never expand).
+        # `load -w` is kept over `bootstrap`: it is idempotent for an already loaded agent.
         if $action == "enable" {
-            ["launchctl", "load", "-w", $service]
+            ["launchctl", "load", "-w", ($nu.home-dir | path join "Library" "LaunchAgents" $"($service).plist")]
         } else {
-            ["launchctl", "kickstart", "-k", $service]
+            ["launchctl", "kickstart", "-k", $"gui/(^id -u | str trim)/($service)"]
         }
     } else {
         error make { msg: $"unsupported service manager '($manager)'" }

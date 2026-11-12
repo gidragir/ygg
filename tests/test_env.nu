@@ -548,6 +548,7 @@ export def test_lazy_provider_quotes_every_argv_element [] {
     with-temp-ygg { |home|
         let sb = ($home | path join "sb"); mkdir $sb
         setup-secret-home $home false
+        cd $home  # the relative marker must land inside the temp home, never in the caller's cwd
         let marker = "YGG_INJECT_MARK"
         ("B = \"bw://my item/fld$(touch " + $marker + ")\"\n") | save -f ($home | path join "secrets.toml")
         let bin = ($home | path join "mock-bin"); mkdir $bin
@@ -565,6 +566,41 @@ export def test_lazy_provider_quotes_every_argv_element [] {
         assert ((open --raw ($env_dir | path join "env.nu")) | str contains $"^bw get '($field)' 'my item' | str trim")
         if (which zsh | is-not-empty) {
             assert equal (^zsh -n ($env_dir | path join "env.zsh") | complete | get exit_code) 0
+        }
+        assert (not ($marker | path exists))
+    }
+}
+
+# BUG-1: an argv element holding both ' and " must round-trip through every generated env file
+# and never execute when the file is loaded.
+export def test_lazy_provider_quotes_mixed_quotes_round_trip [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb"); mkdir $sb
+        setup-secret-home $home false
+        # bw:// splits item/field on '/', so the payload is slash-free and runs with cwd = home
+        cd $home
+        let marker = ($home | path join "pwned")
+        let field = "x'\"; touch pwned; \"a\\b$(id)"
+        ({ B: $"bw://my item/($field)" } | to toml) | save -f ($home | path join "secrets.toml")
+        let bin = ($home | path join "mock-bin"); mkdir $bin
+        "#!/bin/sh\nprintf '%s' \"$2\"\n" | save -f ($bin | path join "bw")
+        ^chmod +x ($bin | path join "bw")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", PATH: ($env.PATH | prepend $bin) } {
+            compile-environment $home (resolve-effective-plan $home) --sandbox $sb
+            let env_dir = ($home | path join ".state" "env")
+            let nu_res = (^$nu.current-exe -n -c $"source '($env_dir | path join "env.nu")'; print -n $env.B" | complete)
+            assert equal $nu_res.exit_code 0 $nu_res.stderr
+            assert equal $nu_res.stdout $field
+            if (which zsh | is-not-empty) {
+                let zsh_res = (^zsh -f -c $"source '($env_dir | path join "env.zsh")'; printf '%s' \"$B\"" | complete)
+                assert equal $zsh_res.exit_code 0 $zsh_res.stderr
+                assert equal $zsh_res.stdout $field
+            }
+            if (which fish | is-not-empty) {
+                let fish_res = (^fish --no-config -c $"source '($env_dir | path join "env.fish")'; printf '%s' \"$B\"" | complete)
+                assert equal $fish_res.exit_code 0 $fish_res.stderr
+                assert equal $fish_res.stdout $field
+            }
         }
         assert (not ($marker | path exists))
     }

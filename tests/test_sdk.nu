@@ -704,3 +704,22 @@ export def test_service_sandbox_skips_before_sudo_check [] {
         }
     }
 }
+
+# BUG-2 / RFC-055 p.7: the manifest names a launchd label; ygg derives the plist path and the gui/<uid> target
+export def test_service_launchd_label_builds_plist_and_domain_target [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let log = ($home | path join "svc.log")
+        let plan = { services: { launchd: { enable: ["com.example.agent"], restart_on_change: { "com.example.agent": ["k"] } } } }
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let res = (run-service-actions $home $plan [{ op: "LINK", key: "k", dest: "d", src: "s" }])
+            assert equal ($res | where status != "ok") []
+        }
+        let plist = ($nu.home-dir | path join "Library" "LaunchAgents" "com.example.agent.plist")
+        let uid = (^id -u | str trim)
+        let text = (open --raw $log)
+        assert ($text | str contains $"service: launchctl load -w ($plist)") $text
+        assert ($text | str contains $"service: launchctl kickstart -k gui/($uid)/com.example.agent") $text
+    }
+}

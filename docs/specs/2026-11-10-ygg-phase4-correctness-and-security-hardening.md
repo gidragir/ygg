@@ -411,12 +411,14 @@ Nu-completions ([bin/ygg.nu:587](../../bin/ygg.nu)) содержат несущ�
 2. `systemd-system`: команда с префиксом `sudo`, перед ней проверка RFC-048.
 3. `enable` выполняется один раз: после успеха в `state.hashes` пишется `svc:<mgr>:<svc> = "enabled"`; при наличии ключа действие пропускается. `--force` сбрасывает кэш.
 4. `service-trigger-matches`: совпадение, если триггер равен `key` ссылки, либо `dest_raw`, либо развёрнутому `dest`. Сопоставления по `basename` и по суффиксу удаляются.
-5. Имя сервиса проверяется по `^[A-Za-z0-9@._:-]+$` в `preflight-check`.
+5. Имя сервиса проверяется по `^[A-Za-z0-9@._:][A-Za-z0-9@._:-]*$` в `preflight-check` (ведущий `-` запрещён: имя не должно читаться как флаг).
 6. Действия сервисов — шаг журнала `services`. Сбой любого действия добавляется в итоговый список ошибок `apply` (код возврата 1).
+7. `launchd`: в манифесте указывается только label агента. Путь `~/Library/LaunchAgents/<label>.plist` (развёрнутый, argv без шелла) и таргет `gui/<uid>/<label>` строит `build-service-cmd`: `enable` → `launchctl load -w <plist>` (идемпотентен для уже загруженного агента), `reload`/`restart` → `launchctl kickstart -k gui/<uid>/<label>`.
 
 #### Критерии приёмки
 * Второй `apply` без изменений не пишет `service:` в мок-лог.
 * `[services.rm] enable = ["x"]` → ошибка preflight, мок-лог пуст.
+* `[services.launchd] enable = ["com.example.agent"]` проходит preflight; путь к plist в имени — ошибка preflight.
 
 ---
 
