@@ -519,7 +519,6 @@ export def run-link-hooks [
     $results
 }
 
-
 def to-str-list [value: any]: nothing -> list<string> {
     if $value == null {
         []
@@ -664,6 +663,8 @@ export def run-service-actions [
         let outcome = if $dry_run {
             print $"[ygg] \(dry-run\) SERVICE ($svc) \(($action) ($mgr)\)"
             { status: "dry_run", stderr: "" }
+        } else if ($mock_log == "") and ($sb != "") {
+            { status: "skipped_sandbox", stderr: "" }
         } else if ($mgr == "systemd-system") and not (sudo-available) {
             { status: "failed", stderr: "sudo is not available without a password (non-interactive)" }
         } else if ($mock_log != "") {
@@ -673,8 +674,6 @@ export def run-service-actions [
             } else {
                 { status: "ok", stderr: "" }
             }
-        } else if ($sb != "") {
-            { status: "skipped_sandbox", stderr: "" }
         } else {
             try {
                 let res = (run-with-timeout $cmd_argv 30)

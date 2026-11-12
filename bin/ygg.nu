@@ -342,7 +342,7 @@ def apply-plan [
         for h in $hooks {
             print ("  " + ("HOOK" | fill --alignment left --width 15) + " " + $h.cmd + "  (" + $h.module + ": " + ($h.keys | str join ", ") + ")")
         }
-        run-service-actions $ygg_home $plan $ops --dry-run --sandbox=$effective_sandbox | ignore
+        run-service-actions $ygg_home $plan $ops --dry-run --force=$force --sandbox=$effective_sandbox | ignore
         let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length) + ($pruned_cmds | length))
         let unchanged = ($ops | where op == "OK" | length)
         print $"Plan: ($changes) change\(s\), ($unchanged) unchanged across ($mod_count) module\(s\). No changes made."

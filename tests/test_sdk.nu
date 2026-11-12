@@ -685,3 +685,22 @@ export def test_service_systemd_system_requires_sudo [] {
         }
     }
 }
+
+export def test_service_sandbox_skips_before_sudo_check [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bin = ($home | path join "shim")
+        mkdir $bin
+        let rec = ($home | path join "sudo.rec")
+        "#!/bin/sh\necho called >> \"$0.rec\"\nexit 1\n" | save -f ($bin | path join "sudo")
+        ^chmod +x ($bin | path join "sudo")
+        let plan = { services: { systemd: { system: { enable: ["a.service"] } } } }
+        with-env { PATH: ($env.PATH | prepend $bin), YGG_NONINTERACTIVE: "1", YGG_MOCK_PKG_LOG: "" } {
+            let res = (run-service-actions $home $plan [] --sandbox ($home | path join "sb"))
+            assert equal ($res | first | get status) "skipped_sandbox"
+            assert (not (($bin | path join "sudo.rec") | path exists)) "sudo must not be invoked in sandbox"
+            assert equal ((load-state $home).hashes | columns | where { |k| $k starts-with "svc:" }) []
+        }
+    }
+}

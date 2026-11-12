@@ -1152,3 +1152,11 @@ export def test_preflight_rejects_bad_service_manager_and_name [] {
         assert equal ($ok | where key == "services") []
     }
 }
+
+export def test_preflight_rejects_service_name_starting_with_dash [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let p = (preflight-check $home { services: { systemd: { user: { enable: ["--now"] } } } } --quiet)
+        assert equal ($p | where key == "services" | length) 1
+    }
+}

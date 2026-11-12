@@ -1100,7 +1100,7 @@ export def preflight-check [
                 }
             }
             for n in $names {
-                if not (($n | into string) =~ '^[A-Za-z0-9@._:-]+$') {
+                if not (($n | into string) =~ '^[A-Za-z0-9@._:][A-Za-z0-9@._:-]*$') {
                     $problems = ($problems | append {
                         module: "services", key: "services", reason: "invalid_service_name",
                         detail: $"Invalid service name '($n)' for manager '($cfg.manager)'"
