@@ -9,7 +9,7 @@ export def with-temp-ygg [action: closure]: nothing -> nothing {
         mkdir $dir
         $dir
     } else {
-        ^mktemp -d -t ygg-test.XXXXXX | str trim
+        ^mktemp -d -t ygg-test.XXXXXX | str trim | path expand
     }
 
     let ygg_home = ($tmp | path join "ygg-home")
@@ -46,4 +46,8 @@ export def stat-mode [p: string]: nothing -> string {
     } else {
         ^stat -c "%a" $p | str trim
     }
+}
+
+export def safe-glob [pattern: string]: nothing -> list<string> {
+    glob ($pattern | str replace --all '\' '/')
 }

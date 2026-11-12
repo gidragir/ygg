@@ -23,7 +23,7 @@ rog = "~/.config/rog"
 ' | save -f ($m1 | path join "ygg.toml")
 
         'name = "override"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 starship = "~/.config/starship.toml"
 ' | save -f ($m2 | path join "ygg.toml")
@@ -58,7 +58,7 @@ export def test_manifest_1_to_n_and_table_link_forms [] {
         let m = ($home | path join "modules" "m")
         mkdir $m
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "glazewm" = ["~/.config/glazewm", "~/.glzr/glazewm"]
 [links."niri/cfg/*"]
@@ -87,16 +87,16 @@ export def test_manifest_rejects_invalid_link_table_and_mode [] {
         let m = ($home | path join "modules" "m")
         mkdir $m
         # 1. Table without target
-        "name = \"m\"\nos = [\"linux\"]\n[links.a]\non_change = \"echo 1\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links.a]\non_change = \"echo 1\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         assert (try { resolve-effective-plan $home; false } catch { true })
 
         # 2. Unknown mode (e.g. merge)
-        "name = \"m\"\nos = [\"linux\"]\n[links.a]\ntarget = \"~/a\"\nmode = \"merge\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links.a]\ntarget = \"~/a\"\nmode = \"merge\"\n" | save -f ($m | path join "ygg.toml")
         assert (try { resolve-effective-plan $home; false } catch { true })
 
         # 3. mode with /*
-        "name = \"m\"\nos = [\"linux\"]\n[links.\"a/*\"]\ntarget = \"~/a/*\"\nmode = \"dir\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links.\"a/*\"]\ntarget = \"~/a/*\"\nmode = \"dir\"\n" | save -f ($m | path join "ygg.toml")
         assert (try { resolve-effective-plan $home; false } catch { true })
     }
 }
@@ -218,7 +218,7 @@ export def test_resolve_effective_plan_filter_and_config_merge [] {
         mkdir $m1 $m2
 
         'name = "m1"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [config]
 editor = "nano"
 theme = "solarized"
@@ -227,7 +227,7 @@ m1_link = "~/.config/m1"
 ' | save -f ($m1 | path join "ygg.toml")
 
         'name = "m2"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [config]
 editor = "helix"
 [links]
@@ -261,13 +261,13 @@ export def test_resolve_effective_plan_glob_links_multi_modules [] {
         mkdir $m1 $m2
 
         'name = "m1"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "scripts/*" = "~/.zsh/scripts/"
 ' | save -f ($m1 | path join "ygg.toml")
 
         'name = "m2"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "scripts/*" = "~/.zsh/scripts/"
 ' | save -f ($m2 | path join "ygg.toml")
@@ -294,7 +294,7 @@ export def test_load_module_manifest_validation_failures [] {
         let bad2 = ($home | path join "modules" "no_os")
         mkdir $bad1 $bad2
 
-        'os = ["linux"]' | save -f ($bad1 | path join "ygg.toml")
+        'os = ["linux", "windows", "macos"]' | save -f ($bad1 | path join "ygg.toml")
         'name = "no_os"' | save -f ($bad2 | path join "ygg.toml")
 
         let res1 = (try { load-module-manifest $bad1; false } catch { true })
@@ -390,16 +390,16 @@ export def test_manifest_resolve_plan_sorts_modules_topologically [] {
         mkdir $m_core $m_waybar $m_hypr
 
         'name = "core"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 ' | save -f ($m_core | path join "ygg.toml")
 
         'name = "waybar"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 depends_on = ["core"]
 ' | save -f ($m_waybar | path join "ygg.toml")
 
         'name = "hyprland"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 depends_on = ["waybar", "core"]
 ' | save -f ($m_hypr | path join "ygg.toml")
 
@@ -424,7 +424,7 @@ export def test_preflight_detects_missing_module_dependency [] {
         mkdir $m_app
 
         'name = "app"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 depends_on = ["missing-mod"]
 ' | save -f ($m_app | path join "ygg.toml")
 
@@ -490,7 +490,7 @@ export def test_manifest_declarative_services_merge [] {
         let m = ($home | path join "modules" "svcmod")
         mkdir $m
         'name = "svcmod"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 
 [services.systemd.user]
 enable = ["syncthing.service"]

@@ -35,7 +35,7 @@ export def hash-watch-set [watch_globs: list<string>, base_dir: string]: nothing
         if $is_exact {
             let ptype = ($resolved_pattern | path type)
             if ($ptype == "dir") {
-                let dir_files = (try { glob ($resolved_pattern | path join "**" "*") } catch { [] })
+                let dir_files = (try { glob (($resolved_pattern | path join "**" "*") | str replace --all '\' '/') } catch { [] })
                 for df in $dir_files {
                     if (($df | path type) == "file") {
                         $files = ($files | append ($df | path expand))
@@ -45,11 +45,11 @@ export def hash-watch-set [watch_globs: list<string>, base_dir: string]: nothing
                 $files = ($files | append ($resolved_pattern | path expand))
             }
         } else {
-            let matched = (try { glob $resolved_pattern } catch { [] })
+            let matched = (try { glob ($resolved_pattern | str replace --all '\' '/') } catch { [] })
             for m in $matched {
                 let ptype = ($m | path type)
                 if ($ptype == "dir") {
-                    let dir_files = (try { glob ($m | path join "**" "*") } catch { [] })
+                    let dir_files = (try { glob (($m | path join "**" "*") | str replace --all '\' '/') } catch { [] })
                     for df in $dir_files {
                         if (($df | path type) == "file") {
                             $files = ($files | append ($df | path expand))

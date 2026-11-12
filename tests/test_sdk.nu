@@ -346,7 +346,7 @@ export def test_safe_link_backs_up_real_dir_and_preserves_relative_src [] {
             assert equal (ls -lD $dest | get 0.target) "../../plugins"
             assert (not ($plugins | path join "plugins" | path exists))
             assert ($dest | path join "p.py" | path exists)
-            let saved = (glob ($backups | path join "**" "local.txt"))
+            let saved = (glob (($backups | path join "**" "local.txt") | str replace --all '\' '/'))
             assert equal ($saved | length) 1
             assert equal (open --raw ($saved | first)) "host data\n"
 
@@ -354,7 +354,7 @@ export def test_safe_link_backs_up_real_dir_and_preserves_relative_src [] {
             let inode1 = (ls -lD $dest | get 0.inode)
             safe-link "../../plugins" "~/.hermes/profiles/coder/plugins"
             assert equal (ls -lD $dest | get 0.inode) $inode1
-            assert equal (glob ($backups | path join "**" "local.txt") | length) 1
+            assert equal (glob (($backups | path join "**" "local.txt") | str replace --all '\' '/') | length) 1
 
             # 4. A different target replaces the link (no nested link inside the old target)
             safe-link "../../plugins2" "~/.hermes/profiles/coder/plugins"
@@ -407,7 +407,7 @@ export def test_run_link_hooks_lifecycle_dedup_and_failure_recovery [] {
         }
         "d1\n" | save -f ($mod_src | path join "cfg" "dir" "inner.conf")
         'name = "hm"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links."cfg/a.conf"]
 target = "~/.config/hm/a.conf"
 on_change = "reload-a"

@@ -503,7 +503,7 @@ pacman = ["curl"]
             assert equal $d2.exit_code 0 $d2.stderr
             assert ($d2.stdout | lines | any { |l| ($l | str trim | str starts-with "LINK") and ($l | str contains "remote-cfg") })
             assert equal (snapshot-add $home $sb) $before
-            assert (glob $clones | is-empty)
+            assert (glob ($clones | str replace --all '\' '/') | is-empty)
 
             # 3. Real add with a missing source fails on pre-flight before registration
             let r3 = (^nu $ygg_bin add $bad --sandbox $sb | complete)
@@ -518,7 +518,7 @@ pacman = ["curl"]
             assert ($r4.exit_code != 0)
             assert ($r4.stderr | str contains "absent")
             assert equal (snapshot-add $home $sb) $before
-            assert (glob $clones | is-empty)
+            assert (glob ($clones | str replace --all '\' '/') | is-empty)
 
             # 5. Real add of the valid module registers and applies it
             let r5 = (^nu $ygg_bin add $good --sandbox $sb | complete)
@@ -1027,7 +1027,7 @@ export def test_cli_completions_generation [] {
 }
 
 def tree-snapshot [root: string]: nothing -> list<string> {
-    glob ($root | path join "**" "*") | sort | each { |p| $"($p)|(ls -D $p | get 0.modified)" }
+    glob (($root | path join "**" "*") | str replace --all '\' '/') | sort | each { |p| $"($p)|(ls -D $p | get 0.modified)" }
 }
 
 export def test_readonly_commands_do_not_touch_fresh_home [] {
@@ -1062,7 +1062,7 @@ export def test_dry_run_skips_setup_unless_dry_run_safe [] {
         let sb = ($home | path join "sb"); mkdir $sb
         let m = ($home | path join "modules" "m"); mkdir $m
         let marker = ($home | path join "marker")
-        "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n" | save -f ($m | path join "ygg.toml")
         $"touch '($marker)'\n" | save -f ($m | path join "setup.nu")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)

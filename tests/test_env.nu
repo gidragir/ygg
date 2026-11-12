@@ -11,7 +11,7 @@ export def test_env_special_chars_escaping [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]" | save -f ($m1 | path join "ygg.toml")
         "EDITOR = \"nvim\"\nPROJECTS_ROOT = \"~/projects\"" | save -f ($m1 | path join "env.toml")
         "ll = \"eza -la\"" | save -f ($m1 | path join "aliases.toml")
         ("[env]\nWEIRD_SECRET = \"pa$$w0rd=\\\"foo\\\" & 'bar'=1\"") | save -f ($home | path join "secrets.toml")
@@ -64,7 +64,7 @@ export def test_env_aliases_powershell_recursion_guard [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]" | save -f ($m1 | path join "ygg.toml")
         "git = \"git --no-pager\"\nll = \"eza -la\"\nnu = \"nu\"" | save -f ($m1 | path join "aliases.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
 
@@ -90,7 +90,7 @@ export def test_env_aliases_nushell_and_zsh [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]" | save -f ($m1 | path join "ygg.toml")
         "ll = \"echo test_ok\"" | save -f ($m1 | path join "aliases.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
 
@@ -123,7 +123,7 @@ export def test_env_local_nu_preservation [] {
 
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]" | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -141,7 +141,7 @@ export def test_env_without_secrets [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]" | save -f ($m1 | path join "ygg.toml")
         "PUB_VAR = \"hello_world\"" | save -f ($m1 | path join "env.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
 
@@ -171,7 +171,7 @@ export def test_env_dry_run_no_files_written [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]" | save -f ($m1 | path join "ygg.toml")
         "PUB_VAR = \"hello\"" | save -f ($m1 | path join "env.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
 
@@ -205,7 +205,7 @@ export def test_env_expands_leading_tilde_and_home_only [] {
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
         'name = "core"
-os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
+os = ["linux", "windows", "macos"]' | save -f ($m1 | path join "ygg.toml")
         'TILDE_ONLY = "~"
 TILDE_SUB = "~/.kube/config"
 HOME_SUB = "$HOME/.cargo/bin"
@@ -280,7 +280,7 @@ export def test_external_secret_resolvers_in_memory [] {
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
         'name = "core"
-os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
+os = ["linux", "windows", "macos"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
         "[env]\nDYNAMIC_SECRET = \"eval:echo in-memory-token\"\nLITERAL_SECRET = \"literal-val\"" | save -f ($home | path join "secrets.toml")
 
@@ -305,7 +305,7 @@ os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
         'name = "core"
-os = ["linux"]' | save -f ($m1 | path join "ygg.toml")
+os = ["linux", "windows", "macos"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"core\"\n\n[ygg.secrets]\nmaterialize = true\n" | save -f ($home | path join "host.toml")
         "[env]\nBROKEN_SECRET = \"eval:exit 42\"" | save -f ($home | path join "secrets.toml")
 
@@ -398,7 +398,7 @@ export def test_module_env_scheme_is_literal_and_not_executed [] {
         let sb = ($home | path join "sb"); mkdir $sb
         let marker = ($home | path join "pwned")
         let m = ($home | path join "modules" "m"); mkdir $m
-        $"name = \"m\"\nos = [\"linux\"]\n[env]\nX = \"eval:touch ($marker)\"\n" | save -f ($m | path join "ygg.toml")
+        $"name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[env]\nX = \"eval:touch ($marker)\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             compile-environment $home (resolve-effective-plan $home) --sandbox $sb
@@ -429,7 +429,7 @@ def write-mock-op [dir: string] {
 def setup-secret-home [home: string, materialize: bool] {
     ensure-ygg-dirs $home
     let m = ($home | path join "modules" "m"); mkdir $m
-    "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+    "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n" | save -f ($m | path join "ygg.toml")
     $"[[modules]]\nname = \"m\"\n\n[ygg.secrets]\nmaterialize = ($materialize)\n" | save -f ($home | path join "host.toml")
     "K = \"op://v/i/f\"\nQ = \"op://v/it'em/$(id)\"\nP = \"plain\"\n" | save -f ($home | path join "secrets.toml")
 }
@@ -460,7 +460,7 @@ export def test_external_secret_is_lazy_by_default [] {
         setup-secret-home $home false
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos", PATH: ($env.PATH | prepend $bin) } {
             compile-environment $home (resolve-effective-plan $home) --sandbox $sb
-            let leaked = (glob ($home | path join "**" "*") | where { |p| ($p | path type) == "file" and not ($p | str contains "mock-bin") }
+            let leaked = (glob (($home | path join "**" "*") | str replace --all '\' '/') | where { |p| ($p | path type) == "file" and not ($p | str contains "mock-bin") }
                 | where { |p| open --raw $p | str contains "S3CRET" })
             assert equal $leaked []
             let zsh = (open --raw ($home | path join ".state" "env" "env.zsh"))
@@ -502,7 +502,7 @@ export def test_path_entries_reach_all_shells [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
-        "name = \"core\"\nos = [\"linux\"]\npath = [\"~/.local/bin\"]" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]\npath = [\"~/.local/bin\"]" | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)

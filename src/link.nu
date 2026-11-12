@@ -487,7 +487,7 @@ export def report-collisions [resolved: record]: nothing -> nothing {
 # Expand [save] targets with wildcard destinations into concrete files
 def expand-save-targets [save_targets: list]: nothing -> list {
     $save_targets | each { |s|
-        let matches = if (has-wildcard $s.dest) { glob $s.dest } else { [$s.dest] }
+        let matches = if (has-wildcard $s.dest) { glob ($s.dest | str replace --all '\' '/') } else { [$s.dest] }
         $matches | each { |d| $s | merge { dest: $d } }
     } | flatten
 }
@@ -835,7 +835,7 @@ export def save-copied-files [
         let expanded_dest = $save_item.dest
 
         let matches = if ($expanded_dest | str contains "*") or ($expanded_dest | str contains "?") {
-            glob $expanded_dest
+            glob ($expanded_dest | str replace --all '\' '/')
         } else {
             if ($expanded_dest | path exists) { [$expanded_dest] } else { [] }
         }
@@ -914,7 +914,7 @@ def relative-files [dir: string]: nothing -> list<string> {
     if not ($dir | path exists) {
         return []
     }
-    glob --no-dir --no-symlink ($dir | path join "**" "*")
+    glob --no-dir --no-symlink (($dir | path join "**" "*") | str replace --all '\' '/')
     | each { |f| $f | path relative-to $dir }
     | sort
 }

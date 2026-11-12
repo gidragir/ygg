@@ -15,7 +15,7 @@ export def test_mock_pkg_filters_by_host_os [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 pacman = ["wireplumber"]
 winget = ["Git.Git"]
@@ -37,7 +37,7 @@ export def test_sandbox_without_mock_skips_installation [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
@@ -58,7 +58,7 @@ export def test_mock_pkg_runs_under_sandbox [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
@@ -81,7 +81,7 @@ export def test_mock_pkg_dry_run_returns_cmds_without_logging [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 pacman = ["curl"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
@@ -102,7 +102,7 @@ export def test_pkg_failure_is_reported [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 pacman = ["curl"]
 cargo = ["ripgrep"]' | save -f ($m1 | path join "ygg.toml")
@@ -130,7 +130,7 @@ export def test_mise_writes_local_config [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 mise = ["ripgrep"]' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
@@ -443,15 +443,15 @@ export def test_add_module_dirty_guard_and_dry_run_clone_cleanup [] {
             let err_dry = (try { add-module $home $bare --dry-run; "ok" } catch { |e| $e.msg })
             assert ($err_dry | str contains "uncommitted changes")
             assert equal (open --raw ($mod_dir | path join "file.txt")) "dirty change\n"
-            assert (glob ($tmp_root | path join "clone-*") | is-empty)
+            assert (glob (($tmp_root | path join "clone-*") | str replace --all '\' '/') | is-empty)
 
             # 4. --force replaces it; the dirty tree goes to .state/backups, not deleted
             add-module $home $bare --force | ignore
             assert equal (open --raw ($mod_dir | path join "file.txt")) "test content\n"
-            let saved = (glob ($home | path join ".state" "backups" "**" "guarded" "file.txt"))
+            let saved = (glob (($home | path join ".state" "backups" "**" "guarded" "file.txt") | str replace --all '\' '/'))
             assert equal ($saved | length) 1
             assert equal (open --raw ($saved | first)) "dirty change\n"
-            assert (glob ($tmp_root | path join "clone-*") | is-empty)
+            assert (glob (($tmp_root | path join "clone-*") | str replace --all '\' '/') | is-empty)
             assert equal ((load-host-config $home).modules | where name == "guarded" | length) 1
         }
     }
@@ -995,7 +995,7 @@ export def test_install_packages_updates_state_packages [] {
         let m1 = ($home | path join "modules" "m")
         mkdir $m1
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 uv = ["ruff", "black"]
 mise = ["node@20"]' | save -f ($m1 | path join "ygg.toml")
@@ -1017,7 +1017,7 @@ export def test_cli_apply_prune_packages [] {
         let mod_dir = ($home | path join "modules" "m")
         mkdir $mod_dir
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 uv = ["ruff"]' | save -f ($mod_dir | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
@@ -1154,7 +1154,7 @@ def git-in [dir: string, args: list<string>]: nothing -> nothing {
 def make-origin [root: string]: nothing -> record<origin: string, first: string, second: string> {
     let origin = ($root | path join "origin"); mkdir $origin
     git-in $origin [init -q -b main]
-    "name = \"m\"\nos = [\"linux\"]\n" | save -f ($origin | path join "ygg.toml")
+    "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n" | save -f ($origin | path join "ygg.toml")
     git-in $origin [add -A]; git-in $origin [commit -q -m one]
     let first = (^git -C $origin rev-parse HEAD | str trim)
     "x" | save -f ($origin | path join "f"); git-in $origin [add -A]; git-in $origin [commit -q -m two]

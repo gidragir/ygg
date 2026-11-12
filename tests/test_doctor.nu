@@ -54,7 +54,7 @@ def snapshot-tree [root: string]: nothing -> list<string> {
 }
 
 const LINKS_TOML = 'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "a.conf" = "~/.config/a.conf"
 "b.conf" = "~/.config/b.conf"
@@ -151,7 +151,7 @@ export def test_doctor_sync_conflict_and_pending_save [] {
         let sb = $env.YGG_SANDBOX
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             let src = (make-module $home "m" 'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [save]
 "s1.json" = "~/.config/s1.json"
 "s2.json" = "~/.config/s2.json"
@@ -186,7 +186,7 @@ export def test_doctor_perm_on_private_files [] {
         let sb = $env.YGG_SANDBOX
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             make-module $home "m" 'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [doctor]
 private_files = ["~/.config/keys/key.txt"]
 ' | ignore
@@ -221,7 +221,7 @@ export def test_doctor_tool_missing_package_manager [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
         make-module $home "m" 'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [packages]
 cargo = ["ripgrep"]
 ' | ignore
@@ -246,12 +246,12 @@ export def test_doctor_collision_and_shadow [] {
         let sb = $env.YGG_SANDBOX
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             let a = (make-module $home "a" 'name = "a"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "same.conf" = "~/.config/same.conf"
 ')
             let b = (make-module $home "b" 'name = "b"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "same.conf" = "~/.config/same.conf"
 [links.app]
@@ -296,7 +296,7 @@ export def test_doctor_secrets_template [] {
         let sb = $env.YGG_SANDBOX
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             let src = (make-module $home "m" 'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 ')
             "[env]\nAPI_KEY = \"\"\nOTHER_TOKEN = \"\"\n" | save -f ($src | path join "secrets.example.toml")
             write-host $home ["m"]
@@ -581,7 +581,7 @@ export def test_doctor_secrets_materialized_warning [] {
         ensure-ygg-dirs $home
         let sb = ($home | path join "sb"); mkdir $sb
         let m = ($home | path join "modules" "m"); mkdir $m
-        "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n\n[ygg.secrets]\nmaterialize = true\n" | save -f ($home | path join "host.toml")
         "K = \"op://v/i/f\"\n" | save -f ($home | path join "secrets.toml")
         let findings = (run-doctor $home --sandbox $sb)
@@ -622,7 +622,7 @@ export def test_doctor_fix_leaves_foreign_dangling_links [] {
         ensure-ygg-dirs $home
         let sb = ($home | path join "sb"); mkdir ($sb | path join ".config")
         let m = ($home | path join "modules" "m"); mkdir $m
-        "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         let foreign = ($sb | path join ".config" "foreign")
         let owned = ($sb | path join ".config" "owned")

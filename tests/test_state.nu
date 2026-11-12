@@ -266,7 +266,7 @@ export def test_rotate_backups_and_gc_state_hashes [] {
 
 export def test_tests_have_no_literal_tmp_paths [] {
     let tests_dir = if ($env.FILE_PWD? != null) { $env.FILE_PWD } else if (($env.PWD | path join "tests") | path exists) { $env.PWD | path join "tests" } else { $env.PWD }
-    let hits = (glob ($tests_dir | path join "*.nu") | each { |f|
+    let hits = (glob (($tests_dir | path join "*.nu") | str replace --all '\' '/') | each { |f|
         open --raw $f | lines | enumerate
         | where { |l| ($l.item | str contains '"/tmp/') and not ($l.item | str contains "str contains") }
         | each { |l| $"($f | path basename):($l.index + 1)" }

@@ -5,7 +5,7 @@ use std/assert
 use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/link.nu *
-use helpers.nu [with-temp-ygg, stat-inode]
+use helpers.nu [with-temp-ygg, stat-inode, safe-glob]
 
 export def test_glob_shared_dir_and_ownership_conflict [] {
     with-temp-ygg { |home|
@@ -15,8 +15,8 @@ export def test_glob_shared_dir_and_ownership_conflict [] {
         mkdir ($m1 | path join "scripts") ($m2 | path join "scripts")
         "#!/bin/sh\necho 1\n" | save -f ($m1 | path join "scripts" "a.sh")
         "#!/bin/sh\necho 2\n" | save -f ($m2 | path join "scripts" "b.sh")
-        "name = \"m1\"\nos = [\"linux\"]\n[links]\n\"scripts/*\" = \"~/.zsh/scripts/\"\n" | save -f ($m1 | path join "ygg.toml")
-        "name = \"m2\"\nos = [\"linux\"]\n[links]\n\"scripts/*\" = \"~/.zsh/scripts/\"\n" | save -f ($m2 | path join "ygg.toml")
+        "name = \"m1\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"scripts/*\" = \"~/.zsh/scripts/\"\n" | save -f ($m1 | path join "ygg.toml")
+        "name = \"m2\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"scripts/*\" = \"~/.zsh/scripts/\"\n" | save -f ($m2 | path join "ygg.toml")
         "[[modules]]\nname = \"m1\"\n[[modules]]\nname = \"m2\"\n" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -38,7 +38,7 @@ export def test_glob_shared_dir_ownership_conflict_error [] {
         let m = ($home | path join "modules" "m1")
         mkdir ($m | path join "scripts")
         "#!/bin/sh\necho 1\n" | save -f ($m | path join "scripts" "a.sh")
-        "name = \"m1\"\nos = [\"linux\"]\n[links]\n\"scripts/*\" = \"~/.zsh/scripts/\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m1\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"scripts/*\" = \"~/.zsh/scripts/\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m1\"\n" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -62,12 +62,12 @@ export def test_replaces_dangling_symlink_without_backup [] {
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
         "add_newline = false\n" | save -f ($m1 | path join "starship.toml")
-        "name = \"core\"\nos = [\"linux\"]\n[links]\n\"starship.toml\" = \"~/.config/starship.toml\"\n" | save -f ($m1 | path join "ygg.toml")
+        "name = \"core\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"starship.toml\" = \"~/.config/starship.toml\"\n" | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"core\"\n" | save -f ($home | path join "host.toml")
 
         apply-links $home (resolve-effective-plan $home) --sandbox $sb
         assert (($dest | path exists))
-        let backups = (glob ($home | path join ".state/backups/**/*"))
+        let backups = (safe-glob ($home | path join ".state/backups/**/*"))
         assert ($backups | is-empty)
     }
 }
@@ -80,7 +80,7 @@ export def test_scope_switch_prunes_old_links_safely [] {
         "preset\n" | save -f ($m1 | path join "openrgb" "off.orp")
         "fan\n" | save -f ($m1 | path join "rog" "rog.cfg")
         'name = "dotfiles"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [scope.pc.links]
 openrgb = "~/.config/OpenRGB"
 [scope.asus.links]
@@ -180,7 +180,7 @@ export def test_unlink_module [] {
         let m1 = ($home | path join "modules" "m1")
         mkdir $m1
         "test content\n" | save -f ($m1 | path join "file.txt")
-        "name = \"m1\"\nos = [\"linux\"]\n[links]\n\"file.txt\" = \"~/.config/file.txt\"\n" | save -f ($m1 | path join "ygg.toml")
+        "name = \"m1\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"file.txt\" = \"~/.config/file.txt\"\n" | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m1\"\n" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -264,7 +264,7 @@ export def test_apply_links_dry_run [] {
         let m1 = ($home | path join "modules" "m1")
         mkdir $m1
         "test content\n" | save -f ($m1 | path join "file.txt")
-        "name = \"m1\"\nos = [\"linux\"]\n[links]\n\"file.txt\" = \"~/.config/file.txt\"\n" | save -f ($m1 | path join "ygg.toml")
+        "name = \"m1\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"file.txt\" = \"~/.config/file.txt\"\n" | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"m1\"\n" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -317,7 +317,7 @@ export def test_unix_chmod_execution_in_bin [] {
         ^chmod 644 $script_file
 
         'name = "sh_mod"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "bin/my_script.sh" = "~/.local/bin/my_script.sh"' | save -f ($m1 | path join "ygg.toml")
         "[[modules]]\nname = \"sh_mod\"\n" | save -f ($home | path join "host.toml")
@@ -336,7 +336,7 @@ export def test_glob_dest_with_trailing_star [] {
         let m = ($home | path join "modules" "m")
         mkdir ($m | path join "bin")
         "#!/bin/sh\necho hi\n" | save -f ($m | path join "bin" "mytool")
-        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"bin/*\" = \"~/.local/bin/*\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"bin/*\" = \"~/.local/bin/*\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
 
         apply-links $home (resolve-effective-plan $home) --sandbox $sb
@@ -368,7 +368,7 @@ os = ["windows"]
             assert equal ($target | path type) "file"
             assert equal (open --raw $target) "v1\n"
             assert ($target in ((open $state_json).copies | columns))
-            let backups = (glob ($home | path join ".state" "backups" "**" "a.yaml"))
+            let backups = (safe-glob ($home | path join ".state" "backups" "**" "a.yaml"))
             assert ($backups | is-empty)
         }
     }
@@ -395,7 +395,7 @@ os = ["windows"]
 
             let target = ($sb | path join ".config" "app.toml")
             assert equal (open --raw $target) "v1\n"
-            let backups = (glob ($home | path join ".state" "backups" "**" "app.toml"))
+            let backups = (safe-glob ($home | path join ".state" "backups" "**" "app.toml"))
             assert ($backups | is-empty)
         }
     }
@@ -458,11 +458,11 @@ os = ["windows"]
             assert equal (open --raw $target_single) "both-mod-single\n"
             assert equal (open --raw $target_glob) "both-mod-glob\n"
 
-            let b_single = (glob ($home | path join ".state" "backups" "**" "single.toml"))
+            let b_single = (safe-glob ($home | path join ".state" "backups" "**" "single.toml"))
             assert equal ($b_single | length) 1
             assert equal (open --raw ($b_single | first)) "both-host-single\n"
 
-            let b_glob = (glob ($home | path join ".state" "backups" "**" "file.txt"))
+            let b_glob = (safe-glob ($home | path join ".state" "backups" "**" "file.txt"))
             assert equal ($b_glob | length) 1
             assert equal (open --raw ($b_glob | first)) "both-host-glob\n"
         }
@@ -500,7 +500,7 @@ os = ["windows"]
             apply-links $home $new_plan --sandbox $sb
 
             assert (not ($target | path exists))
-            let backups = (glob ($home | path join ".state" "backups" "**" "a.yaml"))
+            let backups = (safe-glob ($home | path join ".state" "backups" "**" "a.yaml"))
             assert equal ($backups | length) 1
             assert equal (open --raw ($backups | first)) "edited-on-host\n"
         }
@@ -535,7 +535,7 @@ os = ["windows"]
             apply-links $home $new_plan --sandbox $sb
 
             assert (not ($target | path exists))
-            let backups = (glob ($home | path join ".state" "backups" "**" "a.yaml"))
+            let backups = (safe-glob ($home | path join ".state" "backups" "**" "a.yaml"))
             assert ($backups | is-empty)
         }
     }
@@ -573,7 +573,7 @@ os = ["windows"]
             assert equal ($target | path type) "symlink"
             assert equal (open --raw ($target | path join "sub.txt")) "sub-content\n"
 
-            let backups = (glob ($home | path join ".state" "backups" "**" "item"))
+            let backups = (safe-glob ($home | path join ".state" "backups" "**" "item"))
             assert equal ($backups | length) 1
             assert equal (open --raw ($backups | first)) "file-content\n"
         }
@@ -589,7 +589,7 @@ export def test_ensure_executable_sets_mode_and_suppresses_stderr [] {
         "#!/bin/sh\necho ok\n" | save -f $s
         ^chmod 0644 $s
         'name = "m"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "bin/tool.sh" = "~/.local/bin/tool.sh"
 ' | save -f ($m | path join "ygg.toml")
@@ -621,7 +621,7 @@ export def test_resolve_link_targets_priority_rules_and_collisions [] {
         # Early module: explicit scope link into a dir that a LATER module globs into;
         # base key "a.kdl" retargeted by the scope must beat base glob "zz/*".
         'name = "early"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "a.kdl" = "~/.config/y/other.kdl"
 "zz/*" = "~/.config/y/*"
@@ -634,7 +634,7 @@ os = ["linux"]
         # Late module: glob over ~/.config/app and an ABSOLUTE path equal to early's "~/.config/same.txt"
         let abs_same = ($sb | path join ".config" "same.txt")
         ('name = "late"
-os = ["linux"]
+os = ["linux", "windows", "macos"]
 [links]
 "cfg/*" = "~/.config/app/*"
 "same.txt" = "' + $abs_same + '"
@@ -712,8 +712,8 @@ name = "late"
         mkdir ($m1 | path join "dirsrc") $m2
         "x\n" | save -f ($m1 | path join "dirsrc" "inner.txt")
         "f\n" | save -f ($m2 | path join "f.txt")
-        "name = \"m1\"\nos = [\"linux\"]\n[links]\n\"dirsrc\" = \"~/.config/nest\"\n" | save -f ($m1 | path join "ygg.toml")
-        "name = \"m2\"\nos = [\"linux\"]\n[links]\n\"f.txt\" = \"~/.config/nest/f.txt\"\n" | save -f ($m2 | path join "ygg.toml")
+        "name = \"m1\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"dirsrc\" = \"~/.config/nest\"\n" | save -f ($m1 | path join "ygg.toml")
+        "name = \"m2\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"f.txt\" = \"~/.config/nest/f.txt\"\n" | save -f ($m2 | path join "ygg.toml")
         "[[modules]]\nname = \"m1\"\n[[modules]]\nname = \"m2\"\n" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -745,7 +745,7 @@ export def test_link_target_matches_and_idempotent_inode [] {
         let sb = ($home | path join "sb")
         let wt1 = ($home | path join "wt1")
         let wt2 = ($home | path join "wt2")
-        let manifest = "name = \"m\"\nos = [\"linux\"]\n[links]\n\"conf.toml\" = \"~/.config/conf.toml\"\n\"dirA\" = \"~/.config/thedir\"\n"
+        let manifest = "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"conf.toml\" = \"~/.config/conf.toml\"\n\"dirA\" = \"~/.config/thedir\"\n"
         for wt in [$wt1, $wt2] {
             mkdir ($wt | path join "dirA") ($wt | path join "dirB")
             "a\n" | save -f ($wt | path join "dirA" "x.txt")
@@ -781,7 +781,7 @@ export def test_link_target_matches_and_idempotent_inode [] {
         assert equal (open --raw $conf) "v2\n"
 
         # 3. Source change -> atomic swap; no .ygg-tmp-* next to dest nor inside old dir
-        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"conf.toml\" = \"~/.config/conf.toml\"\n\"dirB\" = \"~/.config/thedir\"\n" | save -f ($wt2 | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"conf.toml\" = \"~/.config/conf.toml\"\n\"dirB\" = \"~/.config/thedir\"\n" | save -f ($wt2 | path join "ygg.toml")
         let r4 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
         assert equal $r4.applied [$thedir]
         assert equal ($thedir | path type) "symlink"
@@ -849,12 +849,12 @@ export def test_dir_copy_kept_on_apply_and_backed_up_on_prune_and_unlink [] {
             assert equal ($dest | path type) "dir"
             assert equal (open --raw ($dest | path join "a.txt")) "host-edit\n"
             assert equal ((load-state $home).links | get $dest | get type) "dir_copy"
-            assert (glob ($home | path join ".state" "backups" "**" "a.txt") | is-empty)
+            assert (safe-glob ($home | path join ".state" "backups" "**" "a.txt") | is-empty)
 
             # unlink-module moves the copy to backups instead of leaving it untracked
             assert equal (unlink-module $home "m") 1
             assert (not ($dest | path exists))
-            let b = (glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt"))
+            let b = (safe-glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt"))
             assert equal ($b | length) 1
             assert equal (open --raw ($b | first)) "host-edit\n"
             assert (($m | path join "cfgdir" "a.txt") | path exists)
@@ -869,7 +869,7 @@ export def test_dir_copy_kept_on_apply_and_backed_up_on_prune_and_unlink [] {
             let r2 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
             assert equal $r2.pruned [$dest]
             assert (not ($dest | path exists))
-            let b2 = (glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt") | each { |f| open --raw $f })
+            let b2 = (safe-glob ($home | path join ".state" "backups" "**" "cfgdir" "a.txt") | each { |f| open --raw $f })
             assert ("host-edit-2\n" in $b2)
         }
     }
@@ -888,7 +888,7 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         let m = ($home | path join "modules" "dotfiles")
         mkdir ($m | path join "OpenRGB")
         "preset\n" | save -f ($m | path join "OpenRGB" "off.orp")
-        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB\" = { target = \"~/.config/OpenRGB\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
+        "name = \"dotfiles\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"OpenRGB\" = { target = \"~/.config/OpenRGB\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
         let dest = ($sb | path join ".config" "OpenRGB")
 
@@ -906,7 +906,7 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         assert equal ($ops1 | get op) ["OK"]
 
         # Switch to glob: PRUNE of the own old link comes first, then LINK of the child
-        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"dotfiles\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
         let p1 = (resolve-effective-plan $home)
         let r1 = (resolve-link-targets $p1 --sandbox $sb)
         let ops2 = (compute-link-ops $home $r1 --sandbox $sb)
@@ -933,7 +933,7 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         "foreign\n" | save -f ($sb | path join "elsewhere" "keep.txt")
         let dest = ($sb | path join ".config" "OpenRGB")
         ^ln -s ($sb | path join "elsewhere") $dest
-        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"dotfiles\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
 
         let plan = (resolve-effective-plan $home)
@@ -959,7 +959,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         "host-preset\n" | save -f ($sb | path join ".config" "OpenRGB" "off.orp")
         "runtime\n" | save -f ($sb | path join ".config" "OpenRGB" "profile.orp")
         "calib\n" | save -f ($sb | path join ".config" "OpenRGB" ".calib")
-        ("name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB\" = " + $link_value + "\n") | save -f ($m | path join "ygg.toml")
+        ("name = \"dotfiles\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"OpenRGB\" = " + $link_value + "\n") | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
     }
 
@@ -988,7 +988,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         assert ($err | str contains "shadowed_files")
         assert equal ($dest | path type) "dir"
         assert equal (ls -a $dest | length) 3
-        assert (glob ($home | path join ".state" "backups" "**" "*") | is-empty)
+        assert (safe-glob ($home | path join ".state" "backups" "**" "*") | is-empty)
 
         # --force: passes with a warning; old dir is moved into .state/backups with a notice
         let pf = (run-link-nu ("let p = (resolve-effective-plan '" + $home + "'); let r = (resolve-link-targets $p --sandbox '" + $sb + "'); let o = (compute-link-ops '" + $home + "' $r --force --sandbox '" + $sb + "'); preflight-check '" + $home + "' $p $r $o --force --sandbox '" + $sb + "' | length"))
@@ -999,7 +999,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         assert equal $ap.exit_code 0
         assert ($ap.stdout | str contains ("[ygg] Backed up existing '" + $dest + "'"))
         assert equal ($dest | path type) "symlink"
-        let bk = (glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp"))
+        let bk = (safe-glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp"))
         assert equal ($bk | length) 1
         assert ((($bk | first | path dirname) | path join ".calib") | path exists)
     }
@@ -1017,7 +1017,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         assert ($ap.stderr | str contains "profile.orp")
         assert ($ap.stdout | str contains "[ygg] Backed up existing")
         assert equal ($dest | path type) "symlink"
-        assert equal (glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp") | length) 1
+        assert equal (safe-glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp") | length) 1
     }
 
     # 3. Host dir whose files all exist in the source: no shadowing, preflight passes
@@ -1036,7 +1036,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         let m = ($home | path join "modules" "dotfiles")
         mkdir $m
         "x\n" | save -f ($m | path join "OpenRGB")
-        "name = \"dotfiles\"\nos = [\"linux\"]\n[links]\n\"OpenRGB\" = { target = \"~/.config/OpenRGB\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
+        "name = \"dotfiles\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"OpenRGB\" = { target = \"~/.config/OpenRGB\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
         let plan = (resolve-effective-plan $home)
         let r = (resolve-link-targets $plan --sandbox $sb)
@@ -1054,7 +1054,7 @@ export def test_ensure_executable_follows_symlinked_source [] {
         "#!/bin/sh\necho ok\n" | save -f $real
         ^chmod 0644 $real
         ^ln -s $real ($m | path join "bin" "tool.sh")
-        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"bin/tool.sh\" = \"~/.local/bin/tool.sh\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"bin/tool.sh\" = \"~/.local/bin/tool.sh\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
 
         apply-links $home (resolve-effective-plan $home) --sandbox $sb | ignore
@@ -1072,7 +1072,7 @@ export def test_is_dir_consistent_for_symlinked_dir_sources [] {
         "x\n" | save -f ($m | path join "realdir" "x.txt")
         ^ln -s ($m | path join "realdir") ($m | path join "g" "linked")
         ^ln -s ($m | path join "realdir") ($m | path join "explicit")
-        "name = \"m\"\nos = [\"linux\"]\n[links]\n\"g/*\" = \"~/.config/g/*\"\n\"explicit\" = \"~/.config/explicit\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"g/*\" = \"~/.config/g/*\"\n\"explicit\" = \"~/.config/explicit\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         let t = (resolve-link-targets (resolve-effective-plan $home) --sandbox $sb).targets
         let glob_child = ($t | where key == "g/*" | first)
@@ -1089,7 +1089,7 @@ export def test_forget_prune_children_use_normal_link_table [] {
         mkdir ($m | path join "X" "sub")
         "mod-f\n" | save -f ($m | path join "X" "f.txt")
         "mod-a\n" | save -f ($m | path join "X" "sub" "a.txt")
-        "name = \"d\"\nos = [\"linux\"]\n[links]\n\"X\" = { target = \"~/.config/X\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
+        "name = \"d\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"X\" = { target = \"~/.config/X\", mode = \"dir\" }\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"d\"\n" | save -f ($home | path join "host.toml")
         apply-links $home (resolve-effective-plan $home) --sandbox $sb | ignore
         let x = ($sb | path join ".config" "X")
@@ -1097,7 +1097,7 @@ export def test_forget_prune_children_use_normal_link_table [] {
         mkdir ($x | path join "sub")
         "host-f\n" | save -f ($x | path join "f.txt")
         "host-a\n" | save -f ($x | path join "sub" "a.txt")
-        "name = \"d\"\nos = [\"linux\"]\n[links]\n\"X/*\" = \"~/.config/X/*\"\n" | save -f ($m | path join "ygg.toml")
+        "name = \"d\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"X/*\" = \"~/.config/X/*\"\n" | save -f ($m | path join "ygg.toml")
         $x
     }
 
@@ -1124,8 +1124,8 @@ export def test_forget_prune_children_use_normal_link_table [] {
         assert equal (($x | path join "sub") | path type) "symlink"
         assert equal (($x | path join "f.txt") | path type) "symlink"
         assert (not ((($home | path join "modules" "d" "X" "sub" "sub")) | path exists))
-        assert equal (glob ($home | path join ".state" "backups" "**" "sub" "extra.txt") | length) 1
-        assert equal (glob ($home | path join ".state" "backups" "**" "X" "f.txt") | each { |f| open --raw $f }) ["host-f\n"]
+        assert equal (safe-glob ($home | path join ".state" "backups" "**" "sub" "extra.txt") | length) 1
+        assert equal (safe-glob ($home | path join ".state" "backups" "**" "X" "f.txt") | each { |f| open --raw $f }) ["host-f\n"]
     }
 
     # 2. Without host-only files: BACKUP_REPLACE passes preflight and apply succeeds (no "File exists")
