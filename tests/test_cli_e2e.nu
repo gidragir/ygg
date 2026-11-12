@@ -1134,3 +1134,85 @@ export def test_cli_doctor_fix_refuses_when_host_locked [] {
         }
     }
 }
+
+# Flags (long names) of one `export extern "ygg <cmd>"` block of the generated nu completions
+def extern-flags [text: string, cmd: string]: nothing -> list<string> {
+    let head = ('export extern "ygg ' + $cmd + '" [')
+    let lines = ($text | lines)
+    let start = ($lines | enumerate | where { |r| $r.item | str starts-with $head } | get -o 0.index)
+    if $start == null { return [] }
+    let body = ($lines | skip ($start + 1) | take while { |l| not ($l | str starts-with "]") })
+    $body | each { |l| $l | parse --regex '^\s*--([A-Za-z0-9-]+)' | get -o capture0.0 } | compact
+}
+
+export def test_completions_nu_parse_and_match_cli [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let out = ($home | path join "c.nu")
+        ^nu $ygg_bin completions nu | save -f $out
+        assert equal (^nu -c $"source '($out)'" | complete).exit_code 0
+        let text = (open --raw $out)
+        let apply_flags = (extern-flags $text "apply")
+        for f in ["dry-run", "force", "sandbox", "locked", "prune-packages", "no-lock", "force-system-prune", "refresh-packages"] {
+            assert ($f in $apply_flags) $f
+        }
+        let add_flags = (extern-flags $text "add")
+        assert ("force-system-prune" not-in $add_flags)
+        assert ("sandbox" in $add_flags)
+        assert ("force" in (extern-flags $text "save"))
+        assert ("sandbox" in (extern-flags $text "doctor"))
+        assert (not ($text | str contains "older than 7 days"))
+    }
+}
+
+export def test_completions_flags_equal_scope_commands [] {
+    let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+    let text = (^nu $ygg_bin completions nu)
+    let real = (^nu -I ($ygg_bin | path dirname | path dirname | path join "src") -c $"source '($ygg_bin)'; scope commands | where { |c| $c.name | str starts-with 'main ' } | each { |c| { name: \($c.name | str replace 'main ' ''\), flags: \($c.signatures | values | first | where parameter_type in [switch named] | get parameter_name\) } } | to json" | from json)
+    let sdk = ["onchange", "merge-json", "export-secrets", "safe-link"]
+    for r in ($real | where { |r| $r.name not-in $sdk }) {
+        assert equal (extern-flags $text $r.name | sort) ($r.flags | sort) $r.name
+    }
+    for s in $sdk { assert ($s not-in ($text | parse --regex 'export extern "ygg ([a-z-]+)"' | get capture0)) $s }
+}
+
+export def test_completions_table_has_no_empty_descriptions [] {
+    let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+    let src = ($ygg_bin | path dirname | path dirname | path join "src")
+    let rows = (^nu -I $src -c $"source '($ygg_bin)'; cli-signature-table | to json" | from json)
+    assert (($rows | length) >= 12)
+    for r in $rows {
+        assert ($r.description | str trim | is-not-empty) $"command ($r.command) has no description"
+        for f in $r.flags {
+            assert ($f.description | str trim | is-not-empty) $"($r.command) --($f.long) has no description"
+        }
+    }
+}
+
+export def test_completions_other_shells_share_flags [] {
+    let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+    for sh in ["zsh", "bash", "fish", "ps1"] {
+        let txt = (^nu $ygg_bin completions $sh)
+        assert ($txt | str contains "sandbox") $sh
+        assert (not ($txt | str contains "older than 7 days")) $sh
+    }
+    let bash = (^nu $ygg_bin completions bash)
+    let add_branch = ($bash | split row "add)" | get 1 | split row ";;" | get 0)
+    assert ($add_branch | str contains "--sandbox")
+    assert (not ($add_branch | str contains "--force-system-prune"))
+    let apply_branch = ($bash | split row "apply)" | get 1 | split row ";;" | get 0)
+    assert ($apply_branch | str contains "--force-system-prune")
+}
+
+export def test_completions_nu_complete_modules_reads_names [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let out = ($home | path join "c.nu")
+        ^nu $ygg_bin completions nu | save -f $out
+        "[[modules]]\nname = \"m1\"\n\n[[modules]]\nname = \"m2\"\n" | save -f ($home | path join "host.toml")
+        let names = (^nu -c $"source '($out)'; nu-complete ygg-modules | to json" | from json)
+        assert equal $names ["m1", "m2"]
+        "modules = []\n" | save -f ($home | path join "host.toml")
+        assert equal (^nu -c $"source '($out)'; nu-complete ygg-modules | to json" | from json) []
+    }
+}

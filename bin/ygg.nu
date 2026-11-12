@@ -19,7 +19,9 @@ def "main version" [] {
     }
 }
 
-def main [--version (-v)] {
+def main [
+    --version (-v) # Print version
+] {
     if $version {
         main version
         return
@@ -52,7 +54,7 @@ def main [--version (-v)] {
 # Initialize a new module in the current directory
 def "main init" [
     name?: string,
-    --os: string = "linux"
+    --os: string = "linux" # Comma-separated target OS list for the new module (default: linux)
 ] {
     let mod_name = if ($name != null) and ($name != "") {
         $name
@@ -93,16 +95,16 @@ def "main init" [
 
 # Add a module from local directory or git repo, and immediately apply
 def "main add" [
-    source: string,
-    --scope (-s): string = "",
-    --dry-run (-n),
-    --force (-f),
-    --skip-packages (-S),
-    --pkg: string = "",
-    --pkg-timeout: int = -1,
-    --refresh-packages,
-    --sandbox: string = "",
-    --no-lock
+    source: string, # Local directory or git URL of the module (optionally with @scope1,scope2 suffix)
+    --scope (-s): string = "", # Comma-separated scopes to activate for the module
+    --dry-run (-n), # Show the plan without modifying anything
+    --force (-f), # Overwrite conflicting files and links (with backup)
+    --skip-packages (-S), # Skip package installation
+    --pkg: string = "", # Comma-separated package managers to run
+    --pkg-timeout: int = -1, # Package manager timeout in seconds
+    --refresh-packages, # Reinstall packages even if their hash is unchanged
+    --sandbox: string = "", # Use this directory as HOME instead of the real one
+    --no-lock # Do not take the host lock
 ] {
     assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
@@ -182,8 +184,8 @@ def assert-pkg-flags [pkg: string, skip_packages: bool] {
 
 # Remove a module and unlink its managed files
 def "main remove" [
-    name: string,
-    --no-lock
+    name: string, # Module name
+    --no-lock # Do not take the host lock
 ] {
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
@@ -207,18 +209,18 @@ def print-op-line [o: record] {
 
 # Apply configurations, links, packages and setup across all modules
 def "main apply" [
-    --dry-run (-n),
-    --force (-f),
-    --all (-a),
-    --skip-packages (-S),
-    --pkg: string = "",
-    --pkg-timeout: int = -1,
-    --refresh-packages,
-    --sandbox: string = "",
-    --no-lock,
-    --locked,
-    --prune-packages,
-    --force-system-prune
+    --dry-run (-n), # Show the plan without modifying anything
+    --force (-f), # Overwrite conflicting files and links (with backup)
+    --all (-a), # List unchanged operations too in the dry-run output
+    --skip-packages (-S), # Skip package installation
+    --pkg: string = "", # Comma-separated package managers to run
+    --pkg-timeout: int = -1, # Package manager timeout in seconds
+    --refresh-packages, # Reinstall packages even if their hash is unchanged
+    --sandbox: string = "", # Use this directory as HOME instead of the real one
+    --no-lock, # Do not take the host lock
+    --locked, # Fail if modules do not match the lock file
+    --prune-packages, # Remove packages no longer declared by any module
+    --force-system-prune # Allow pruning of system-level packages
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
@@ -459,17 +461,19 @@ def apply-plan [
 
 # Show planned changes across all modules without modifying the filesystem
 def "main diff" [
-    --all (-a),
-    --skip-packages (-S),
-    --pkg: string = "",
-    --refresh-packages,
-    --sandbox: string = ""
+    --all (-a), # List unchanged operations too in the dry-run output
+    --skip-packages (-S), # Skip package installation
+    --pkg: string = "", # Comma-separated package managers to inspect
+    --refresh-packages, # Ignore cached package hashes
+    --sandbox: string = "" # Use this directory as HOME instead of the real one
 ] {
     main apply --dry-run --all=$all --skip-packages=$skip_packages --pkg=$pkg --refresh-packages=$refresh_packages --sandbox=$sandbox
 }
 
 # Update git modules via rebase and apply if clean
-def "main update" [--no-lock] {
+def "main update" [
+    --no-lock # Do not take the host lock
+] {
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
 
@@ -495,9 +499,9 @@ def "main update" [--no-lock] {
 
 # Save reverse-copied files back to their source modules
 def "main save" [
-    --sandbox: string = "",
-    --force,
-    --no-lock
+    --sandbox: string = "", # Use this directory as HOME instead of the real one
+    --force, # Overwrite the module copy with the host version on conflict
+    --no-lock # Do not take the host lock
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
@@ -520,10 +524,10 @@ def "main save" [
 
 # Clean old backups and orphaned state hashes (RFC-028)
 def "main clean" [
-    --backups,
-    --hashes,
-    --dry-run,
-    --no-lock
+    --backups, # Clean only old backups
+    --hashes, # Clean only orphaned state hashes
+    --dry-run, # Show what would be removed without deleting
+    --no-lock # Do not take the host lock
 ] {
     let ygg_home = (get-ygg-home)
     if not $dry_run {
@@ -568,7 +572,9 @@ def "main clean" [
 }
 
 # Display module sync and git status table (--json: all columns as JSON, independent of terminal width)
-def "main status" [--json] {
+def "main status" [
+    --json # Print the table as JSON
+] {
     let ygg_home = (get-ygg-home)
     let rows = (modules-status $ygg_home)
     if $json {
@@ -580,10 +586,10 @@ def "main status" [--json] {
 
 # Host audit (RFC-017) & self-healing (RFC-038): prints findings and a summary; exit code 1 when any error remains
 def "main doctor" [
-    --json,
-    --fix,
-    --yes (-y),
-    --sandbox: string = ""
+    --json, # Print findings as JSON
+    --fix, # Repair fixable findings
+    --yes (-y), # Confirm fixes without prompting
+    --sandbox: string = "" # Use this directory as HOME instead of the real one
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
@@ -646,14 +652,87 @@ def "main doctor" [
     }
 }
 
-def generate-completions-nu [] {
-    '# Nushell completions for ygg (RFC-039)
+# SDK helper subcommands for setup.nu scripts: not part of the public CLI (absent from `ygg --help`)
+const SDK_SUBCOMMANDS = ["onchange", "merge-json", "export-secrets", "safe-link"]
+const DQ = '"'
+const COMPLETION_SHELLS = ["nu", "zsh", "bash", "fish", "ps1", "powershell"]
+
+# Flags of one `scope commands` signature: table<long, short, takes_value, description>
+def signature-flags [signatures: record]: nothing -> table {
+    $signatures
+    | values
+    | first
+    | where { |p| $p.parameter_type in ["switch", "named"] }
+    | each { |p|
+        {
+            long: $p.parameter_name
+            short: ($p.short_flag? | default "")
+            takes_value: ($p.parameter_type == "named")
+            description: ($p.description? | default "" | lines | first | default "" | str trim)
+        }
+    }
+}
+
+# Positional names of one signature; optional ones carry a trailing "?"
+def signature-positionals [signatures: record]: nothing -> list<string> {
+    $signatures
+    | values
+    | first
+    | where { |p| $p.parameter_type == "positional" }
+    | each { |p| if $p.is_optional { $p.parameter_name + "?" } else { $p.parameter_name } }
+}
+
+# One-line command description without internal RFC references
+def clean-description [text: string]: nothing -> string {
+    $text | lines | first | default "" | str replace --all --regex ' ?\(RFC-[0-9]+\)' '' | str trim
+}
+
+# RFC-052: the single source for all shell completions, built from the real `main *` signatures
+def cli-signature-table []: nothing -> table {
+    scope commands
+    | where { |c| $c.name | str starts-with "main " }
+    | each { |c|
+        {
+            command: ($c.name | str substring 5..)
+            description: (clean-description $c.description)
+            flags: (signature-flags $c.signatures)
+            positionals: (signature-positionals $c.signatures)
+        }
+    }
+    | where { |r| $r.command not-in $SDK_SUBCOMMANDS }
+}
+
+# Flags of the bare `ygg` command (--version)
+def cli-root-flags []: nothing -> table {
+    let root = (scope commands | where name == "main" | first)
+    signature-flags $root.signatures
+}
+
+# Completion source for a positional: modules (host.toml), shells (completions), path (add)
+def completion-kind [command: string, positional: string]: nothing -> string {
+    match ($command + " " + ($positional | str replace '?' '')) {
+        "remove name" => "modules"
+        "completions shell" => "shells"
+        "add source" => "path"
+        _ => ""
+    }
+}
+
+# Every spelling of a flag: [-s, --long] (short first when present)
+def flag-spellings [f: record]: nothing -> list<string> {
+    let long = ("--" + $f.long)
+    if ($f.short != "") { [("-" + $f.short), $long] } else { [$long] }
+}
+
+def generate-completions-nu []: nothing -> string {
+    let header = r#'
+# Nushell completions for ygg (generated from the CLI signatures)
 def "nu-complete ygg-modules" [] {
     let ygg_home = ($env.YGG_HOME? | default ($env.HOME? | default "~" | path join ".ygg"))
     let host_file = ($ygg_home | path join "host.toml")
     if ($host_file | path exists) {
         try {
-            open $host_file | get -o modules | default {} | columns
+            open $host_file | get -o modules | default [] | get -o name | default []
         } catch { [] }
     } else { [] }
 }
@@ -661,247 +740,117 @@ def "nu-complete ygg-modules" [] {
 def "nu-complete ygg-shells" [] {
     ["nu", "zsh", "bash", "fish", "ps1", "powershell"]
 }
-
-export extern ygg [
-    --version(-v) # Print version
-]
-
-export extern "ygg init" [
-    name?: string # Module name
-    --os: string  # Target OS (default: linux)
-]
-
-export extern "ygg add" [
-    source: string                           # Path or Git URL of module
-    --scope: string                          # Comma-separated scopes
-    --dry-run                                # Simulate actions without applying
-    --force                                  # Overwrite existing files/links
-    --no-lock                                # Bypass concurrency lock
-    --pkg: string                            # Filter packages to install
-    --pkg-timeout: int                       # Package manager timeout in seconds
-    --refresh-packages                       # Force package install even if hash matches
-    --skip-packages                          # Skip all package installations
-    --prune-packages                         # Remove unmanaged packages
-    --force-system-prune                     # Force prune system packages
-]
-
-export extern "ygg remove" [
-    name: string@"nu-complete ygg-modules"   # Module name to remove
-    --no-lock                                # Bypass concurrency lock
-]
-
-export extern "ygg apply" [
-    module?: string@"nu-complete ygg-modules" # Module name to apply
-    --dry-run                                 # Simulate actions without applying
-    --force                                   # Overwrite existing files/links
-    --all                                     # Apply all modules in host.toml
-    --pkg: string                             # Filter packages to install
-    --pkg-timeout: int                        # Package manager timeout in seconds
-    --refresh-packages                        # Force package install even if hash matches
-    --skip-packages                           # Skip all package installations
-    --prune-packages                          # Remove unmanaged packages
-    --force-system-prune                      # Force prune system packages
-    --no-lock                                 # Bypass concurrency lock
-    --locked                                  # Fail if lock exists rather than waiting
-]
-
-export extern "ygg diff" [
-    module?: string@"nu-complete ygg-modules" # Module name to diff
-    --all                                     # Compare all modules
-    --pkg: string                             # Filter packages to inspect
-]
-
-export extern "ygg update" [
-    --no-lock # Bypass concurrency lock
-]
-
-export extern "ygg save" [
-    module?: string@"nu-complete ygg-modules" # Module name to save back
-    --no-lock                                 # Bypass concurrency lock
-]
-
-export extern "ygg clean" [
-    --backups # Prune backups older than 7 days
-    --hashes  # Clean orphaned package and state hashes
-    --dry-run # Simulate cleanup without deleting
-    --no-lock # Bypass concurrency lock
-]
-
-export extern "ygg status" [
-    --json # Output status as JSON
-]
-
-export extern "ygg doctor" [
-    --json     # Output audit results as JSON
-    --fix      # Auto-heal detected issues
-    --yes(-y)  # Confirm fixes non-interactively
-]
-
-export extern "ygg version" []
-
-export extern "ygg completions" [
-    shell: string@"nu-complete ygg-shells" # Target shell
-]'
+'# | str trim --left
+    let flag_line = { |f|
+        let short = if ($f.short != "") { "(-" + $f.short + ")" } else { "" }
+        let typ = if $f.takes_value { ": string" } else { "" }
+        "    --" + $f.long + $short + $typ + " # " + $f.description
+    }
+    let root = ("export extern ygg [\n" + (cli-root-flags | each $flag_line | str join "\n") + "\n]")
+    let blocks = (cli-signature-table | each { |c|
+        let pos = ($c.positionals | each { |p|
+            let name = ($p | str replace '?' '')
+            let comp = match (completion-kind $c.command $p) {
+                "modules" => ("@" + $DQ + "nu-complete ygg-modules" + $DQ)
+                "shells" => ("@" + $DQ + "nu-complete ygg-shells" + $DQ)
+                _ => ""
+            }
+            "    " + $p + ": string" + $comp
+        })
+        let lines = ($pos | append ($c.flags | each $flag_line))
+        "# " + $c.description + "\nexport extern " + $DQ + "ygg " + $c.command  + $DQ + " [\n" + ($lines | str join "\n") + (if ($lines | is-empty) { "" } else { "\n" }) + "]"
+    })
+    $header + "\n" + $root + "\n\n" + ($blocks | str join "\n\n")
 }
 
-def generate-completions-zsh [] {
-    '#compdef ygg
-
-# Zsh completion for ygg (RFC-039)
-_ygg() {
-    local -a commands
-    commands=(
-        "init:Initialize a new module with ygg.toml and .gitignore"
-        "add:Add local directory or git repo and apply"
-        "remove:Remove a module and unlink its files"
-        "apply:Apply configurations, links, packages and setup"
-        "diff:Show planned changes without modifying anything"
-        "update:Update git modules via rebase and apply"
-        "save:Save reverse-copied GUI/app edits back to modules"
-        "clean:Clean old backups and orphaned state hashes"
-        "status:Display module sync and git status table"
-        "doctor:Host audit & self-healing"
-        "version:Print ygg version"
-        "completions:Generate shell completions"
-    )
-
-    _arguments -C \
-        "(-v --version)"{-v,--version}"[Print version]" \
-        "1: :->command" \
-        "*:: :->args"
-
-    case $state in
-        command)
-            _describe -t commands "ygg command" commands
-            ;;
-        args)
-            case $words[1] in
-                init)
-                    _arguments \
-                        "--os[Target OS]:os:" \
-                        "1:name:"
-                    ;;
-                add)
-                    _arguments \
-                        "--scope[Comma-separated scopes]:scopes:" \
-                        "--dry-run[Simulate actions without applying]" \
-                        "--force[Overwrite existing files/links]" \
-                        "--no-lock[Bypass concurrency lock]" \
-                        "--pkg[Filter packages]:packages:" \
-                        "--pkg-timeout[Package manager timeout]:seconds:" \
-                        "--refresh-packages[Force package install]" \
-                        "--skip-packages[Skip all package installations]" \
-                        "--prune-packages[Remove unmanaged packages]" \
-                        "--force-system-prune[Force prune system packages]" \
-                        "*:source:_files"
-                    ;;
-                apply)
-                    _arguments \
-                        "--dry-run[Simulate actions without applying]" \
-                        "--force[Overwrite existing files/links]" \
-                        "--all[Apply all modules]" \
-                        "--pkg[Filter packages]:packages:" \
-                        "--pkg-timeout[Package manager timeout]:seconds:" \
-                        "--refresh-packages[Force package install]" \
-                        "--skip-packages[Skip all package installations]" \
-                        "--prune-packages[Remove unmanaged packages]" \
-                        "--force-system-prune[Force prune system packages]" \
-                        "--no-lock[Bypass concurrency lock]" \
-                        "--locked[Fail if locked]" \
-                        "*:module:"
-                    ;;
-                diff)
-                    _arguments \
-                        "--all[Compare all modules]" \
-                        "--pkg[Filter packages]:packages:" \
-                        "*:module:"
-                    ;;
-                clean)
-                    _arguments \
-                        "--backups[Prune backups older than 7 days]" \
-                        "--hashes[Clean orphaned package hashes]" \
-                        "--dry-run[Simulate cleanup]" \
-                        "--no-lock[Bypass concurrency lock]"
-                    ;;
-                doctor)
-                    _arguments \
-                        "--json[Output audit results as JSON]" \
-                        "--fix[Auto-heal detected issues]" \
-                        "(-y --yes)"{-y,--yes}"[Confirm fixes non-interactively]"
-                    ;;
-                status)
-                    _arguments \
-                        "--json[Output status as JSON]"
-                    ;;
-                completions)
-                    _arguments \
-                        "1:shell:(nu zsh bash fish ps1 powershell)"
-                    ;;
-            esac
-            ;;
-    esac
+# Zsh: escape text for use inside "..." and [...] of an _arguments spec
+def zsh-escape [text: string]: nothing -> string {
+    $text
+    | str replace --all '\' '\\'
+    | str replace --all $DQ ("\\" + $DQ)
+    | str replace --all '$' '\$'
+    | str replace --all (char -u '60') ('\' + (char -u '60'))
+    | str replace --all '[' '\['
+    | str replace --all ']' '\]'
 }
 
-_ygg "$@"'
+def generate-completions-zsh []: nothing -> string {
+    let table = (cli-signature-table)
+    let commands = ($table | each { |c| "        " + $DQ  + $c.command + ":" + (zsh-escape $c.description)  + $DQ } | str join "\n")
+    let root_spec = (cli-root-flags | each { |f|
+        let d = (zsh-escape $f.description)
+        if ($f.short != "") {
+            "        " + $DQ + "(-" + $f.short + " --" + $f.long + ")" + $DQ + "{-" + $f.short + ",--" + $f.long + "}" + $DQ + "[" + $d + "]" + $DQ + " \\"
+        } else {
+            "        " + $DQ + "--" + $f.long + "[" + $d + "]" + $DQ + " \\"
+        }
+    } | str join "\n")
+    let branches = ($table | each { |c|
+        let flag_specs = ($c.flags | each { |f|
+            let d = (zsh-escape $f.description)
+            let val = if $f.takes_value { ":" + $f.long + ":" } else { "" }
+            if ($f.short != "") {
+                $DQ + "(-" + $f.short + " --" + $f.long + ")" + $DQ + "{-" + $f.short + ",--" + $f.long + "}" + $DQ + "[" + $d + "]" + $val  + $DQ
+            } else {
+                $DQ + "--" + $f.long + "[" + $d + "]" + $val  + $DQ
+            }
+        })
+        let pos_specs = ($c.positionals | each { |p|
+            let name = ($p | str replace '?' '')
+            let prefix = if ($p | str ends-with "?") { "::" } else { "1:" }
+            let action = match (completion-kind $c.command $p) {
+                "shells" => ("(" + ($COMPLETION_SHELLS | str join " ") + ")")
+                "path" => "_files"
+                _ => ""
+            }
+            $DQ  + $prefix + $name + ":" + $action  + $DQ
+        })
+        let specs = ($flag_specs | append $pos_specs)
+        let body = if ($specs | is-empty) {
+            "                    true"
+        } else {
+            "                    _arguments \\\n" + ($specs | each { |s| "                        " + $s } | str join " \\\n")
+        }
+        "                " + $c.command + ")\n" + $body + "\n                    ;;"
+    } | str join "\n")
+    let head = "#compdef ygg\n\n# Zsh completion for ygg (generated from the CLI signatures)\n_ygg() {\n    local -a commands\n    commands=(\n"
+    let mid = "\n    )\n\n    _arguments -C \\\n"
+    let after_root = "\n        " + $DQ + "1: :->command" + $DQ + " \\\n        " + $DQ + "*:: :->args" + $DQ + "\n\n    case $state in\n        command)\n            _describe -t commands " + $DQ + "ygg command" + $DQ + " commands\n            ;;\n        args)\n            case $words[1] in\n"
+    let tail = "\n            esac\n            ;;\n    esac\n}\n\n_ygg " + $DQ + "$@" + $DQ
+    $head + $commands + $mid + $root_spec + $after_root + $branches + $tail
 }
 
-def generate-completions-bash [] {
-    '# Bash completion for ygg (RFC-039)
-
-_ygg() {
-    local cur prev words cword
-    _init_completion -s || return
-
-    local commands="init add remove apply diff update save clean status doctor version completions"
-
-    if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$commands --version -v" -- "$cur"))
-        return 0
-    fi
-
-    case "${words[1]}" in
-        init)
-            local opts="--os"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        add)
-            local opts="--scope --dry-run --force --no-lock --pkg --pkg-timeout --refresh-packages --skip-packages --prune-packages --force-system-prune"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        apply)
-            local opts="--dry-run --force --all --pkg --pkg-timeout --refresh-packages --skip-packages --prune-packages --force-system-prune --no-lock --locked"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        diff)
-            local opts="--all --pkg"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        clean)
-            local opts="--backups --hashes --dry-run --no-lock"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        status)
-            local opts="--json"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        doctor)
-            local opts="--json --fix -y --yes"
-            COMPREPLY=($(compgen -W "$opts" -- "$cur"))
-            ;;
-        completions)
-            local shells="nu zsh bash fish ps1 powershell"
-            COMPREPLY=($(compgen -W "$shells" -- "$cur"))
-            ;;
-        *)
-            ;;
-    esac
+def generate-completions-bash []: nothing -> string {
+    let table = (cli-signature-table)
+    let names = ($table | get command | str join " ")
+    let root_opts = (cli-root-flags | each { |f| flag-spellings $f } | flatten | str join " ")
+    let branches = ($table | each { |c|
+        let opts = ($c.flags | each { |f| flag-spellings $f } | flatten | str join " ")
+        let kinds = ($c.positionals | each { |p| completion-kind $c.command $p })
+        let shells = ($COMPLETION_SHELLS | str join " ")
+        let body = if ("shells" in $kinds) {
+            "            COMPREPLY=($(compgen -W " + $DQ  + $shells  + $DQ + " -- " + $DQ + "$cur" + $DQ + "))"
+        } else if ("path" in $kinds) {
+            "            if [[ " + $DQ + "$cur" + $DQ + " == -* ]]; then\n                COMPREPLY=($(compgen -W " + $DQ  + $opts  + $DQ + " -- " + $DQ + "$cur" + $DQ + "))\n            else\n                _filedir\n            fi"
+        } else {
+            "            local opts=" + $DQ  + $opts  + $DQ + "\n            COMPREPLY=($(compgen -W " + $DQ + "$opts" + $DQ + " -- " + $DQ + "$cur" + $DQ + "))"
+        }
+        "        " + $c.command + ")\n" + $body + "\n            ;;"
+    } | str join "\n")
+    let head = "# Bash completion for ygg (generated from the CLI signatures)\n\n_ygg() {\n    local cur prev words cword\n    _init_completion -s || return\n\n    local commands=" + $DQ  + $names  + $DQ + "\n\n    if [[ $cword -eq 1 ]]; then\n        COMPREPLY=($(compgen -W " + $DQ + "$commands " + $root_opts  + $DQ + " -- " + $DQ + "$cur" + $DQ + "))\n        return 0\n    fi\n\n    case " + $DQ + "${words[1]}" + $DQ + " in\n"
+    let tail = "\n        *)\n            ;;\n    esac\n}\n\ncomplete -F _ygg ygg"
+    $head + $branches + $tail
 }
 
-complete -F _ygg ygg'
+# Fish: escape text for use inside '...'
+def fish-escape [text: string]: nothing -> string {
+    $text | str replace --all '\' '\\' | str replace --all "'" "\\'"
 }
 
-def generate-completions-fish [] {
-    '# Fish completion for ygg (RFC-039)
+def generate-completions-fish []: nothing -> string {
+    let table = (cli-signature-table)
+    let header = r#'
+# Fish completion for ygg (generated from the CLI signatures)
 
 function __fish_ygg_needs_command
     set -l cmd (commandline -opc)
@@ -922,114 +871,75 @@ function __fish_ygg_using_subcommand -a sub
 end
 
 complete -c ygg -f
-
-# General options
-complete -c ygg -s v -l version -d "Print version"
-
-# Subcommands
-complete -c ygg -n "__fish_ygg_needs_command" -a init -d "Initialize a new module with ygg.toml and .gitignore"
-complete -c ygg -n "__fish_ygg_needs_command" -a add -d "Add local directory or git repo and apply"
-complete -c ygg -n "__fish_ygg_needs_command" -a remove -d "Remove a module and unlink its files"
-complete -c ygg -n "__fish_ygg_needs_command" -a apply -d "Apply configurations, links, packages and setup"
-complete -c ygg -n "__fish_ygg_needs_command" -a diff -d "Show planned changes without modifying anything"
-complete -c ygg -n "__fish_ygg_needs_command" -a update -d "Update git modules via rebase and apply"
-complete -c ygg -n "__fish_ygg_needs_command" -a save -d "Save reverse-copied GUI/app edits back to modules"
-complete -c ygg -n "__fish_ygg_needs_command" -a clean -d "Clean old backups and orphaned state hashes"
-complete -c ygg -n "__fish_ygg_needs_command" -a status -d "Display module sync and git status table"
-complete -c ygg -n "__fish_ygg_needs_command" -a doctor -d "Host audit & self-healing"
-complete -c ygg -n "__fish_ygg_needs_command" -a version -d "Print version"
-complete -c ygg -n "__fish_ygg_needs_command" -a completions -d "Generate shell completions"
-
-# Completions command flags and args
-complete -c ygg -n "__fish_ygg_using_subcommand completions" -a "nu zsh bash fish ps1 powershell" -d "Shell"
-
-# Subcommand flags
-complete -c ygg -n "__fish_ygg_using_subcommand init" -l os -d "Target OS"
-
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l scope -d "Comma-separated scopes"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l dry-run -d "Simulate actions without applying"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l force -d "Overwrite existing files/links"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l no-lock -d "Bypass concurrency lock"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l pkg -d "Filter packages to install"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l pkg-timeout -d "Package manager timeout in seconds"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l refresh-packages -d "Force package install"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l skip-packages -d "Skip all package installations"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l prune-packages -d "Remove unmanaged packages"
-complete -c ygg -n "__fish_ygg_using_subcommand add" -l force-system-prune -d "Force prune system packages"
-
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l dry-run -d "Simulate actions without applying"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l force -d "Overwrite existing files/links"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l all -d "Apply all modules"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l pkg -d "Filter packages to install"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l pkg-timeout -d "Package manager timeout"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l refresh-packages -d "Force package install"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l skip-packages -d "Skip all package installations"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l prune-packages -d "Remove unmanaged packages"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l force-system-prune -d "Force prune system packages"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l no-lock -d "Bypass concurrency lock"
-complete -c ygg -n "__fish_ygg_using_subcommand apply" -l locked -d "Fail if locked"
-
-complete -c ygg -n "__fish_ygg_using_subcommand diff" -l all -d "Compare all modules"
-complete -c ygg -n "__fish_ygg_using_subcommand diff" -l pkg -d "Filter packages"
-
-complete -c ygg -n "__fish_ygg_using_subcommand clean" -l backups -d "Prune backups older than 7 days"
-complete -c ygg -n "__fish_ygg_using_subcommand clean" -l hashes -d "Clean orphaned hashes"
-complete -c ygg -n "__fish_ygg_using_subcommand clean" -l dry-run -d "Simulate cleanup"
-complete -c ygg -n "__fish_ygg_using_subcommand clean" -l no-lock -d "Bypass concurrency lock"
-
-complete -c ygg -n "__fish_ygg_using_subcommand status" -l json -d "Output status as JSON"
-
-complete -c ygg -n "__fish_ygg_using_subcommand doctor" -l json -d "Output audit results as JSON"
-complete -c ygg -n "__fish_ygg_using_subcommand doctor" -l fix -d "Auto-heal detected issues"
-complete -c ygg -n "__fish_ygg_using_subcommand doctor" -s y -l yes -d "Confirm fixes non-interactively"'
+'# | str trim --left
+    let flag_args = { |f|
+        let s = if ($f.short != "") { " -s " + $f.short } else { "" }
+        let r = if $f.takes_value { " -r" } else { "" }
+        " -l " + $f.long + $s + $r + " -d '" + (fish-escape $f.description) + "'"
+    }
+    let root = (cli-root-flags | each { |f| "complete -c ygg" + (do $flag_args $f) } | str join "\n")
+    let subs = ($table | each { |c| "complete -c ygg -n " + $DQ + "__fish_ygg_needs_command" + $DQ + " -a " + $c.command + " -d '" + (fish-escape $c.description) + "'" } | str join "\n")
+    let per_cmd = ($table | each { |c|
+        let cond = " -n " + $DQ + "__fish_ygg_using_subcommand " + $c.command  + $DQ
+        let flags = ($c.flags | each { |f| "complete -c ygg" + $cond + (do $flag_args $f) })
+        let pos = ($c.positionals | each { |p|
+            if (completion-kind $c.command $p) == "shells" {
+                [("complete -c ygg" + $cond + " -a " + $DQ  + ($COMPLETION_SHELLS | str join " ")  + $DQ + " -d " + $DQ + "Shell" + $DQ)]
+            } else { [] }
+        } | flatten)
+        $flags | append $pos | str join "\n"
+    } | where { |b| $b != "" } | str join "\n\n")
+    $header + "\n# General options\n" + $root + "\n\n# Subcommands\n" + $subs + "\n\n# Subcommand flags and arguments\n" + $per_cmd
 }
 
-def generate-completions-ps1 [] {
-    '# PowerShell completion for ygg (RFC-039)
+# PowerShell: escape text for use inside '...'
+def ps1-escape [text: string]: nothing -> string {
+    $text | str replace --all "'" "''"
+}
 
-Register-ArgumentCompleter -Native -CommandName "ygg" -ScriptBlock {
-    param($wordToComplete, $commandAst, $cursorPosition)
-
-    $subcommands = @{
-        "init" = "Initialize a new module with ygg.toml and .gitignore"
-        "add" = "Add local directory or git repo and apply"
-        "remove" = "Remove a module and unlink its files"
-        "apply" = "Apply configurations, links, packages and setup"
-        "diff" = "Show planned changes without modifying anything"
-        "update" = "Update git modules via rebase and apply"
-        "save" = "Save reverse-copied GUI/app edits back to modules"
-        "clean" = "Clean old backups and orphaned state hashes"
-        "status" = "Display module sync and git status table"
-        "doctor" = "Host audit & self-healing"
-        "version" = "Print ygg version"
-        "completions" = "Generate shell completions"
+def generate-completions-ps1 []: nothing -> string {
+    let table = (cli-signature-table)
+    let subs = ($table | each { |c| "        '" + $c.command + "' = '" + (ps1-escape $c.description) + "'" } | str join "\n")
+    let flags = ($table | each { |c|
+        let entries = ($c.flags | each { |f|
+            let d = (ps1-escape $f.description)
+            flag-spellings $f | each { |sp| "'" + $sp + "' = '" + $d + "'" }
+        } | flatten)
+        "        '" + $c.command + "' = @{ " + ($entries | str join "; ") + " }"
+    } | str join "\n")
+    let values = ($table | each { |c|
+        if ($c.positionals | any { |p| (completion-kind $c.command $p) == "shells" }) {
+            [("        '" + $c.command + "' = @(" + ($COMPLETION_SHELLS | each { |s| "'" + $s + "'" } | str join ", ") + ")")]
+        } else { [] }
+    } | flatten | str join "\n")
+    let head = "# PowerShell completion for ygg (generated from the CLI signatures)\n\nRegister-ArgumentCompleter -Native -CommandName 'ygg' -ScriptBlock {\n    param($wordToComplete, $commandAst, $cursorPosition)\n\n    $subcommands = [ordered]@{\n"
+    let mid1 = "\n    }\n\n    $flags = @{\n"
+    let mid2 = "\n    }\n\n    $values = @{\n"
+    let tail = r#'
     }
 
     $elements = $commandAst.CommandElements
     if ($elements.Count -le 2) {
         $subcommands.GetEnumerator() | Where-Object { $_.Key -like "$wordToComplete*" } | ForEach-Object {
-            [System.Management.Automation.CompletionResult]::new($_.Key, $_.Key, "Command", $_.Value)
+            [System.Management.Automation.CompletionResult]::new($_.Key, $_.Key, 'Command', $_.Value)
         }
         return
     }
 
     $subcmd = $elements[1].Value
-    $flags = switch ($subcmd) {
-        "init" { @("--os") }
-        "add" { @("--scope", "--dry-run", "--force", "--no-lock", "--pkg", "--pkg-timeout", "--refresh-packages", "--skip-packages", "--prune-packages", "--force-system-prune") }
-        "apply" { @("--dry-run", "--force", "--all", "--pkg", "--pkg-timeout", "--refresh-packages", "--skip-packages", "--prune-packages", "--force-system-prune", "--no-lock", "--locked") }
-        "diff" { @("--all", "--pkg") }
-        "clean" { @("--backups", "--hashes", "--dry-run", "--no-lock") }
-        "status" { @("--json") }
-        "doctor" { @("--json", "--fix", "-y", "--yes") }
-        "completions" { @("nu", "zsh", "bash", "fish", "ps1", "powershell") }
-        default { @() }
+    $candidates = [ordered]@{}
+    if ($flags.ContainsKey($subcmd)) {
+        foreach ($k in $flags[$subcmd].Keys) { $candidates[$k] = $flags[$subcmd][$k] }
+    }
+    if ($values.ContainsKey($subcmd)) {
+        foreach ($v in $values[$subcmd]) { $candidates[$v] = $v }
     }
 
-    $flags | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
-        [System.Management.Automation.CompletionResult]::new($_, $_, "ParameterName", $_)
+    $candidates.GetEnumerator() | Where-Object { $_.Key -like "$wordToComplete*" } | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_.Key, $_.Key, 'ParameterName', $_.Value)
     }
-}'
+}'#
+    $head + $subs + $mid1 + $flags + $mid2 + $values + $tail
 }
 
 # Generate shell completions (RFC-039)
