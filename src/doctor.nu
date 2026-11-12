@@ -103,9 +103,23 @@ def check-sync [state: record]: nothing -> list<record> {
     }
 }
 
-export def is-windows-acl-insecure [output: string]: nothing -> bool {
-    let re = '(?i)(BUILTIN\\Users|Everyone|NT AUTHORITY\\Authenticated Users):[^\r\n]*?\((R|F|M|RX)\)'
-    $output =~ $re
+# RFC-049: input is "SID|Rights|Type" lines; insecure = Allow entry for a broad SID
+export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool {
+    let broad = ["S-1-1-0" "S-1-5-11" "S-1-5-32-545" "S-1-5-32-546" "S-1-5-7"]
+    $acl_lines | lines | any { |l|
+        let parts = ($l | str trim | split row "|")
+        (($parts | length) >= 3) and (($parts | get 0 | str trim) in $broad) and (($parts | get 2 | str trim | str downcase) == "allow")
+    }
+}
+
+# Read ACL of a file as "SID|Rights|Type" lines via PowerShell (empty string when unavailable)
+def read-windows-acl [path: string]: nothing -> string {
+    let ps = (if (which powershell.exe | is-not-empty) { "powershell.exe" } else if (which pwsh | is-not-empty) { "pwsh" } else { "" })
+    if $ps == "" {
+        return ""
+    }
+    let script = "(Get-Acl -LiteralPath $args[0]).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value + '|' + $_.FileSystemRights + '|' + $_.AccessControlType }"
+    try { ^$ps -NoProfile -NonInteractive -Command $"& { ($script) }" (to-win32-path $path) | complete | get stdout } catch { "" }
 }
 
 # perm: private files must not be accessible by group/others (Unix) or Users/Everyone (Windows RFC-035)
@@ -116,10 +130,11 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
         to-list ($m.manifest?.doctor?.private_files? | default []) | each { |p| expand-target-path $p --sandbox $sb }
     } | flatten)
     let files = if $is_windows {
-        [
-            ($ygg_home | path join "secrets.toml")
-            ($ygg_home | path join ".state" "env" "env.ps1")
-        ]
+        let env_dir = ($ygg_home | path join ".state" "env")
+        let env_files = (try { ls -a $env_dir | where { |it| $it.type == "file" and (($it.name | path basename) | str starts-with "env.") } | get name } catch { [] })
+        [($ygg_home | path join "secrets.toml")]
+        | append $env_files
+        | append ($ygg_home | path join ".state" "journal.json")
         | append $private
         | uniq
     } else {
@@ -147,12 +162,8 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
                 true
             } else if ($mock_output != "") {
                 is-windows-acl-insecure $mock_output
-            } else if (which icacls.exe | is-not-empty) or (which icacls | is-not-empty) {
-                let cmd = if (which icacls.exe | is-not-empty) { "icacls.exe" } else { "icacls" }
-                let out = (try { ^$cmd (to-win32-path $real) | complete | get stdout } catch { "" })
-                is-windows-acl-insecure $out
             } else {
-                false
+                is-windows-acl-insecure (read-windows-acl $real)
             }
             if $is_insecure {
                 $rows = ($rows | append (finding "perm" "error" $f "insecure Windows ACL: readable by Users/Everyone" $"icacls '($f)' /inheritance:r /grant:r %USERNAME%:F"))

@@ -449,6 +449,15 @@ export def test_journal_transaction_lifecycle_and_doctor_detection [] {
     }
 }
 
+export def test_windows_acl_sid_parser [] {
+    assert (is-windows-acl-insecure "S-1-5-32-545|ReadAndExecute, Synchronize|Allow")
+    assert (is-windows-acl-insecure "S-1-5-21-1-2-3-1001|FullControl|Allow\r\nS-1-1-0|Read|Allow")
+    assert (is-windows-acl-insecure "S-1-5-11|Modify|Allow")
+    assert (not (is-windows-acl-insecure "S-1-5-21-1-2-3-1001|FullControl|Allow\nS-1-5-18|FullControl|Allow"))
+    assert (not (is-windows-acl-insecure "S-1-1-0|FullControl|Deny"))
+    assert (not (is-windows-acl-insecure ""))
+}
+
 export def test_doctor_windows_acl_audit_generates_perm_error [] {
     with-temp-ygg { |home|
         ensure-ygg-dirs $home
@@ -466,10 +475,10 @@ export def test_doctor_windows_acl_parser_detects_everyone [] {
         "" | save -f ($home | path join "secrets.toml")
         with-env {
             YGG_HOST_OS_OVERRIDE: "windows",
-            YGG_MOCK_WINDOWS_ICACLS_OUTPUT: "secrets.toml Everyone:(R)\nBUILTIN\\Administrators:(F)"
+            YGG_MOCK_WINDOWS_ICACLS_OUTPUT: "S-1-1-0|Read|Allow\nS-1-5-32-544|FullControl|Allow"
         } {
             let res = (check-perms $home { modules: [] } "")
-            assert ($res | any { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.detail | str contains "insecure Windows ACL") }) "Expected Windows ACL error from Everyone:(R)"
+            assert ($res | any { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.detail | str contains "insecure Windows ACL") }) "Expected Windows ACL error from Everyone SID"
         }
     }
 }
@@ -480,7 +489,7 @@ export def test_doctor_windows_acl_parser_passes_secure_acl [] {
         "" | save -f ($home | path join "secrets.toml")
         with-env {
             YGG_HOST_OS_OVERRIDE: "windows",
-            YGG_MOCK_WINDOWS_ICACLS_OUTPUT: "secrets.toml NT AUTHORITY\\SYSTEM:(F)\nMYPC\\User:(F)"
+            YGG_MOCK_WINDOWS_ICACLS_OUTPUT: "S-1-5-18|FullControl|Allow\nS-1-5-21-1-2-3-1001|FullControl|Allow"
         } {
             let res = (check-perms $home { modules: [] } "")
             assert ($res | is-empty) "Expected secure Windows ACL to produce no findings"
