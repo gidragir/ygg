@@ -1110,6 +1110,30 @@ export def preflight-check [
         }
     }
 
+    # 6. Environment variable and alias names (RFC-056)
+    let env_tree = ($plan.env? | default {})
+    if (($env_tree | describe) starts-with "record") {
+        for k in ($env_tree | columns) {
+            if not ($k =~ '^[A-Za-z_][A-Za-z0-9_]*$') {
+                $problems = ($problems | append {
+                    module: "env", key: "env", reason: "invalid_env_name",
+                    detail: $"Invalid environment variable name '($k)'"
+                })
+            }
+        }
+    }
+    let alias_tree = ($plan.aliases? | default {})
+    if (($alias_tree | describe) starts-with "record") {
+        for k in ($alias_tree | columns) {
+            if not ($k =~ '^[A-Za-z_][A-Za-z0-9_.-]*$') {
+                $problems = ($problems | append {
+                    module: "aliases", key: "aliases", reason: "invalid_alias_name",
+                    detail: $"Invalid alias name '($k)'"
+                })
+            }
+        }
+    }
+
     $problems
 }
 

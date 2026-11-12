@@ -487,3 +487,23 @@ export def test_external_secret_materialized_on_opt_in [] {
 
 
 
+
+export def test_path_entries_reach_all_shells [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb")
+        let m1 = ($home | path join "modules" "core")
+        mkdir $m1
+        "name = \"core\"\nos = [\"linux\"]\npath = [\"~/.local/bin\"]" | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"core\"" | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        compile-environment $home $plan --sandbox $sb
+        let env_dir = ($home | path join ".state" "env")
+        let p = ($sb | path join ".local" "bin")
+        assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g ($p)")
+        assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\(($p) $path\)")
+        assert (open --raw ($env_dir | path join "env.zsh") | str contains "typeset -U path")
+        assert equal ((^nu -c $"source '($env_dir | path join env.nu)'; $env.PATH | first" | complete).stdout | str trim) $p
+    }
+}

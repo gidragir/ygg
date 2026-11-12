@@ -1160,3 +1160,15 @@ export def test_preflight_rejects_service_name_starting_with_dash [] {
         assert equal ($p | where key == "services" | length) 1
     }
 }
+
+export def test_preflight_rejects_invalid_env_and_alias_names [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bad_env = (preflight-check $home { env: { "A; rm -rf ~": "x" } } --quiet)
+        assert equal ($bad_env | where key == "env" | length) 1
+        let bad_alias = (preflight-check $home { aliases: { "k x": "y" } } --quiet)
+        assert equal ($bad_alias | where key == "aliases" | length) 1
+        let ok = (preflight-check $home { env: { GOOD_1: "x" }, aliases: { "g.st-1": "y" } } --quiet)
+        assert equal ($ok | where { |p| $p.key in ["env", "aliases"] }) []
+    }
+}

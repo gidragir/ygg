@@ -65,6 +65,16 @@ def resolve-env-value [v: string, sb: string]: nothing -> string {
     }
 }
 
+# Quote a path for POSIX shells only when it has characters outside the safe set
+def quote-path-posix [v: string]: nothing -> string {
+    if ($v =~ '^[A-Za-z0-9_./@%+=:,-]+$') { $v } else { "'" + ($v | str replace --all "'" "'\\''") + "'" }
+}
+
+# Quote a path for fish only when it has characters outside the safe set
+def quote-path-fish [v: string]: nothing -> string {
+    if ($v =~ '^[A-Za-z0-9_./@%+=:,-]+$') { $v } else { "'" + ($v | str replace --all '\' '\\' | str replace --all "'" "\\'") + "'" }
+}
+
 # Read secret key/value record from a TOML file ([env] section or top-level keys)
 def secret-keys [p: string]: nothing -> record {
     if not ($p | path exists) {
@@ -373,6 +383,9 @@ export def compile-environment [
 
     let items = ($env_map | values)
 
+    # PATH entries (RFC-056): expanded like link targets, deduplicated, order preserved
+    let path_entries = ($plan.path? | default [] | each { |e| expand-target-path ($e | into string) --sandbox $sb } | uniq)
+
     # 3. Ensure target directory exists
     let env_dir = ($ygg_home | path join ".state" "env")
     if not ($env_dir | path exists) {
@@ -388,6 +401,9 @@ export def compile-environment [
         let cmd = (format-lazy-provider-cmd "nu" $it.value_or_argv)
         $nu_lines = ($nu_lines | append $"$env.($it.key) = \(($cmd))")
     }
+    if not ($path_entries | is-empty) {
+        $nu_lines = ($nu_lines | append $"$env.PATH = \($env.PATH | prepend \(($path_entries | to nuon)) | uniq)")
+    }
     let env_nu_content = ($nu_lines | str join "\n") + "\n"
     $env_nu_content | save -f $env_nu_path
 
@@ -402,6 +418,11 @@ export def compile-environment [
             let cmd = (format-lazy-provider-cmd "zsh" $it.value_or_argv)
             $zsh_lines = ($zsh_lines | append $"export ($it.key)=\"$\(($cmd))\"")
         }
+    }
+    if not ($path_entries | is-empty) {
+        let zp = ($path_entries | each { |e| quote-path-posix $e } | str join " ")
+        $zsh_lines = ($zsh_lines | append "typeset -U path")
+        $zsh_lines = ($zsh_lines | append $"path=\(($zp) $path\)")
     }
     let env_zsh_content = if ($zsh_lines | is-empty) { "" } else { ($zsh_lines | str join "\n") + "\n" }
     $env_zsh_content | save -f $env_zsh_path
@@ -433,6 +454,9 @@ export def compile-environment [
             $fish_lines = ($fish_lines | append $"set -gx ($it.key) \(($cmd))")
         }
     }
+    for e in $path_entries {
+        $fish_lines = ($fish_lines | append $"fish_add_path -g (quote-path-fish $e)")
+    }
     let env_fish_content = if ($fish_lines | is-empty) { "" } else { ($fish_lines | str join "\n") + "\n" }
     $env_fish_content | save -f $env_fish_path
 
@@ -440,7 +464,8 @@ export def compile-environment [
     let aliases_nu_path = ($env_dir | path join "aliases.nu")
     mut nu_alias_lines = []
     for k in ($merged_aliases | columns) {
-        let v = ($merged_aliases | get $k | into string)
+        # nu alias bodies are raw command text; a line break would start a new statement
+        let v = ($merged_aliases | get $k | into string | str replace --all --regex '\r?\n' ' ')
         $nu_alias_lines = ($nu_alias_lines | append $"alias ($k) = ($v)")
     }
     let aliases_nu_content = if ($nu_alias_lines | is-empty) { "" } else { ($nu_alias_lines | str join "\n") + "\n" }
