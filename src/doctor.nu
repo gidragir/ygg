@@ -449,7 +449,8 @@ export def doctor-fix [
                 if $in_links or $in_copies {
                     mut action = "pruned orphaned record from state"
                     if $in_links {
-                        let removed = if (try { is-link-or-junction $target } catch { false }) {
+                        let is_link = (try { is-link-or-junction $target } catch { false })
+                        let removed = if $is_link {
                             (try { remove-link-only $target; true } catch { false })
                         } else {
                             true
@@ -458,7 +459,7 @@ export def doctor-fix [
                             $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to remove link, record kept"))
                             continue
                         }
-                        $action = if (try { is-link-or-junction $target } catch { false }) { "link and record removed" } else { "record removed, file left in place" }
+                        $action = if $is_link { "link and record removed" } else { "record removed, file left in place" }
                     } else {
                         $action = "record removed, file left in place"
                     }

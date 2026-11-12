@@ -651,7 +651,8 @@ export def test_doctor_fix_state_orphan_removes_link_too [] {
         "modules = []\n" | save -f ($home | path join "host.toml")
         save-state $home { links: { ($dest): { module: "removed-mod", src: "x" } }, copies: {}, hashes: {}, packages: {} }
         let findings = [{ check: "state_orphan", severity: "warn", target: $dest, detail: "", fix: "" }]
-        doctor-fix $home $findings --sandbox $sb | ignore
+        let res = (doctor-fix $home $findings --sandbox $sb)
+        assert equal ($res | get 0.action) "link and record removed"
         assert (not ($dest | path exists -n))
         assert equal ((load-state $home).links | columns) []
     }
