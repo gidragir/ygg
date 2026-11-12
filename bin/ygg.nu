@@ -467,12 +467,13 @@ def "main update" [--no-lock] {
     let lock_file = (acquire-host-lock $ygg_home "update" --no-lock=$no_lock)
     try {
         let results = (update-modules $ygg_home)
-        let conflicts = ($results | where status == "conflict")
-        if ($conflicts | is-not-empty) {
-            let names = ($conflicts | get name | str join ", ")
-            print -e $"Update encountered conflicts in: ($names). Skipping apply."
+        let failed = ($results | where { |r| $r.status in ["conflict", "error"] })
+        if ($failed | is-not-empty) {
+            let names = ($failed | get name | str join ", ")
+            print -e $"Update failed in: ($names). Skipping apply."
+            print ($results | select name status message? | table)
             release-host-lock $lock_file
-            return $results
+            exit 1
         }
 
         apply-plan

@@ -1144,3 +1144,87 @@ export def test_prune_system_requires_sudo_for_apt [] {
         }
     }
 }
+
+def git-in [dir: string, args: list<string>]: nothing -> nothing {
+    ^git -C $dir -c user.email=t@t -c user.name=t ...$args | complete | ignore
+}
+
+def make-origin [root: string]: nothing -> record<origin: string, first: string, second: string> {
+    let origin = ($root | path join "origin"); mkdir $origin
+    git-in $origin [init -q -b main]
+    "name = \"m\"\nos = [\"linux\"]\n" | save -f ($origin | path join "ygg.toml")
+    git-in $origin [add -A]; git-in $origin [commit -q -m one]
+    let first = (^git -C $origin rev-parse HEAD | str trim)
+    "x" | save -f ($origin | path join "f"); git-in $origin [add -A]; git-in $origin [commit -q -m two]
+    git-in $origin [tag v1 $first]
+    { origin: $origin, first: $first, second: (^git -C $origin rev-parse HEAD | str trim) }
+}
+
+export def test_checkout_module_ref_rev_tag_and_dirty [] {
+    with-temp-ygg { |home|
+        let o = (make-origin $home)
+        let clone = ($home | path join "modules" "m")
+        mkdir ($home | path join "modules")
+        ^git clone -q $o.origin $clone | complete | ignore
+        assert equal (checkout-module-ref $clone "" "").status "skipped"
+        let r = (checkout-module-ref $clone "" $o.first)
+        assert equal $r.status "ok"; assert equal $r.head $o.first
+        assert equal (checkout-module-ref $clone "main" "").head $o.second
+        assert equal (checkout-module-ref $clone "v1" "").head $o.first
+        "dirty" | save -f ($clone | path join "f")
+        assert equal (checkout-module-ref $clone "main" "").status "error"
+    }
+}
+
+export def test_ygg_lock_is_deterministic_and_detects_dirty [] {
+    with-temp-ygg { |home|
+        let o = (make-origin $home)
+        let clone = ($home | path join "modules" "m")
+        mkdir ($home | path join "modules")
+        ^git clone -q $o.origin $clone | complete | ignore
+        let plan = { modules: [{ name: "m", dir: $clone }] }
+        generate-ygg-lock $home $plan | ignore
+        let lf = ($home | path join "ygg.lock")
+        let a = (open --raw $lf); let m1 = (ls $lf | get 0.modified)
+        sleep 1100ms
+        generate-ygg-lock $home $plan | ignore
+        assert equal (open --raw $lf) $a
+        assert equal (ls $lf | get 0.modified) $m1
+        assert equal (verify-ygg-lock $home $plan) []
+        "dirty" | save -f ($clone | path join "f")
+        assert ((verify-ygg-lock $home $plan) | any { |e| $e | str contains "uncommitted changes" })
+    }
+}
+
+export def test_update_honors_rev_pin_cli [] {
+    with-temp-ygg { |home|
+        let o = (make-origin $home)
+        let clone = ($home | path join "modules" "m")
+        mkdir ($home | path join "modules")
+        ^git clone -q $o.origin $clone | complete | ignore
+        $"[[modules]]\nname = \"m\"\nrev = \"($o.first)\"\n" | save -f ($home | path join "host.toml")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let res = (^nu $ygg_bin update | complete)
+            assert equal $res.exit_code 0 $res.stderr
+        }
+        assert equal (^git -C $clone rev-parse HEAD | str trim) $o.first
+    }
+}
+
+export def test_update_conflict_exits_1_cli [] {
+    with-temp-ygg { |home|
+        let o = (make-origin $home)
+        let clone = ($home | path join "modules" "m")
+        mkdir ($home | path join "modules")
+        ^git clone -q $o.origin $clone | complete | ignore
+        $"[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        "origin side" | save -f ($o.origin | path join "f"); git-in $o.origin [commit -q -am o]
+        "clone side" | save -f ($clone | path join "f"); git-in $clone [commit -q -am c]
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let res = (^nu $ygg_bin update | complete)
+            assert equal $res.exit_code 1 $res.stderr
+        }
+    }
+}

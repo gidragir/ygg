@@ -131,6 +131,12 @@ export def register-staged-module [ygg_home: string, prep: record, --force]: not
                 }
             } else {
                 mv $prep.tmp_clone $mod_dest
+                # RFC-050: honor ref/rev already pinned in host.toml for this module
+                let pin = (load-host-config $ygg_home | get -o modules | default [] | where name == $prep.name | get -o 0)
+                let r = (checkout-module-ref $mod_dest ($pin.ref? | default "") ($pin.rev? | default ""))
+                if $r.status == "error" {
+                    error make { msg: $"Failed to check out ref/rev of module '($prep.name)': ($r.message)" }
+                }
             }
         }
     } catch { |e|
@@ -140,7 +146,8 @@ export def register-staged-module [ygg_home: string, prep: record, --force]: not
 
     let host_cfg = (load-host-config $ygg_home)
     let cur_mods = ($host_cfg.modules? | default [])
-    mut mod_record = { name: $prep.name }
+    # Keep the pins (ref/rev/pin/path/config) of an existing entry of the same module
+    mut mod_record = ($cur_mods | where name == $prep.name | get -o 0 | default { name: $prep.name })
     if ($prep.scopes | is-not-empty) {
         $mod_record = ($mod_record | upsert scopes $prep.scopes)
     }
@@ -195,19 +202,60 @@ export def remove-module [ygg_home: string, name: string]: nothing -> nothing {
     }
 }
 
-# Update a single Git-managed module via rebase, respecting pin = true in host.toml
+# Check out the `rev` (commit, detached) or `ref` (branch or tag) pin of a module (RFC-050).
+# status: "ok" | "skipped" (no pin) | "error" (dirty tree or git failure; nothing is changed
+# for a dirty tree). `head` is the resulting HEAD commit.
+export def checkout-module-ref [mod_path: string, ref: string, rev: string]: nothing -> record<status: string, message: string, head: string> {
+    let rev = ($rev | str trim)
+    let ref = ($ref | str trim)
+    let head_of = { ^git -C $mod_path rev-parse HEAD | complete | get stdout | str trim }
+    if ($rev == "") and ($ref == "") {
+        return { status: "skipped", message: "no ref/rev pin", head: (do $head_of) }
+    }
+    let dirty = (^git -C $mod_path status --porcelain | complete)
+    if ($dirty.exit_code != 0) or ($dirty.stdout | str trim | is-not-empty) {
+        return { status: "error", message: $"module has uncommitted changes in '($mod_path)'", head: (do $head_of) }
+    }
+    let fetch = (^git -C $mod_path fetch --all --tags | complete)
+    if $fetch.exit_code != 0 {
+        return { status: "error", message: $"git fetch failed: ($fetch.stderr | str trim)", head: (do $head_of) }
+    }
+    let steps = if ($rev != "") {
+        [[checkout --detach $rev]]
+    } else if ((^git -C $mod_path show-ref --verify --quiet $"refs/remotes/origin/($ref)" | complete).exit_code == 0) {
+        [[checkout $ref] [pull --rebase]]
+    } else {
+        [[checkout --detach $ref]]
+    }
+    for step in $steps {
+        let res = (^git -C $mod_path ...$step | complete)
+        if $res.exit_code != 0 {
+            if ($step | first) == "pull" {
+                ^git -C $mod_path rebase --abort | complete | ignore
+            }
+            return { status: "error", message: $"git ($step | str join ' ') failed: ($res.stderr | str trim)", head: (do $head_of) }
+        }
+    }
+    { status: "ok", message: "", head: (do $head_of) }
+}
+
+# Update a single Git-managed module (RFC-050): honors pin = true (skip) and ref/rev pins from
+# host.toml (checkout-module-ref); otherwise `pull --rebase`.
 export def update-module [ygg_home: string, name: string]: nothing -> record {
-    let mod_path = ($ygg_home | path join "modules" $name)
+    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
+    let host_mods = ($host_cfg.modules? | default [])
+    let mod_cfg = ($host_mods | where name == $name | get -o 0)
+    let custom = ($mod_cfg.path? | default "")
+    let mod_path = if $custom != "" { $custom } else { ($ygg_home | path join "modules" $name) }
     if not ($mod_path | path exists) {
         return { name: $name, status: "skipped", message: "module directory not found" }
     }
 
-    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
-    let host_mods = ($host_cfg.modules? | default [])
-    let mod_cfg = ($host_mods | where name == $name | get -o 0)
     if (($mod_cfg.pin? | default false) == true) {
         return { name: $name, status: "skipped", message: "module pinned" }
     }
+    let pin_ref = ($mod_cfg.ref? | default "")
+    let pin_rev = ($mod_cfg.rev? | default "")
 
     let git_dir = ($mod_path | path join ".git")
     if not ($git_dir | path exists) {
@@ -220,6 +268,7 @@ export def update-module [ygg_home: string, name: string]: nothing -> record {
     }
 
     let head_before = (^git -C $mod_path rev-parse HEAD | complete).stdout | str trim
+    let branch_before = (^git -C $mod_path branch --show-current | complete).stdout | str trim
     let status_raw = (^git -C $mod_path status --porcelain | complete).stdout | str trim
     let is_dirty = ($status_raw != "")
 
@@ -231,15 +280,27 @@ export def update-module [ygg_home: string, name: string]: nothing -> record {
         }
     }
 
-    let pull_res = (^git -C $mod_path pull --rebase | complete)
-    if $pull_res.exit_code != 0 {
-        # Pull / rebase conflict
+    let pinned = ($pin_ref != "") or ($pin_rev != "")
+    let upd = if $pinned {
+        let r = (checkout-module-ref $mod_path $pin_ref $pin_rev)
+        { ok: ($r.status == "ok"), stderr: $r.message }
+    } else {
+        let r = (^git -C $mod_path pull --rebase | complete)
+        { ok: ($r.exit_code == 0), stderr: $r.stderr }
+    }
+    if not $upd.ok {
+        # Pull / rebase / checkout failure: restore the previous state
         ^git -C $mod_path rebase --abort | complete | ignore
+        if $branch_before != "" {
+            ^git -C $mod_path checkout $branch_before | complete | ignore
+        } else {
+            ^git -C $mod_path checkout --detach $head_before | complete | ignore
+        }
         ^git -C $mod_path reset --hard $head_before | complete | ignore
         if $stashed {
             ^git -C $mod_path stash pop | complete | ignore
         }
-        return { name: $name, status: "conflict", message: $pull_res.stderr }
+        return { name: $name, status: (if $pinned { "error" } else { "conflict" }), message: $upd.stderr }
     }
 
     if $stashed {
@@ -263,26 +324,21 @@ export def update-module [ygg_home: string, name: string]: nothing -> record {
     }
 }
 
-# Update all Git-managed modules in $YGG_HOME/modules/ via rebase, aborting cleanly on conflict
+# Update all Git modules listed in host.toml (including those with a custom `path`), aborting
+# cleanly on conflict (RFC-050)
 export def update-modules [ygg_home: string]: nothing -> list<record> {
-    let mods_dir = ($ygg_home | path join "modules")
-    if not ($mods_dir | path exists) {
-        return []
-    }
-
-    let entries = (try { ls $mods_dir } catch { [] })
-    let mod_dirs = ($entries | where type in ["dir", "symlink"])
+    let host_cfg = (try { load-host-config $ygg_home } catch { {} })
     mut results = []
 
-    for entry in $mod_dirs {
-        let mod_path = $entry.name
-        let mod_name = ($mod_path | path basename)
-
-        let git_dir = ($mod_path | path join ".git")
-        if not ($git_dir | path exists) {
+    for mod in ($host_cfg.modules? | default []) {
+        let mod_name = ($mod.name? | default "")
+        if $mod_name == "" {
             continue
         }
-
+        let mod_path = if (($mod.path? | default "") != "") { $mod.path } else { ($ygg_home | path join "modules" $mod_name) }
+        if not ($mod_path | path join ".git" | path exists) {
+            continue
+        }
         let res = (update-module $ygg_home $mod_name)
         $results = ($results | append $res)
     }
@@ -425,7 +481,9 @@ export def generate-ygg-lock [ygg_home: string, plan: record]: nothing -> record
             ""
         }
 
-        let timestamp = (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+        # Commit date keeps the lock byte-stable across applies (RFC-050)
+        let ts_res = (^git -C $mod_dir show -s --format=%cI HEAD | complete)
+        let timestamp = if $ts_res.exit_code == 0 { $ts_res.stdout | str trim } else { "" }
 
         $locked_mods = ($locked_mods | append {
             name: $mod_name,
@@ -437,11 +495,17 @@ export def generate-ygg-lock [ygg_home: string, plan: record]: nothing -> record
 
     let lock_data = {
         version: 1,
-        modules: $locked_mods
+        modules: ($locked_mods | sort-by name)
     }
 
     let lock_file = ($ygg_home | path join "ygg.lock")
-    $"# ygg.lock — generated automatically, do not edit\n\n($lock_data | to toml)" | save -f $lock_file
+    let content = $"# ygg.lock — generated automatically, do not edit\n\n($lock_data | to toml)"
+    let unchanged = ($lock_file | path exists) and ((open --raw $lock_file) == $content)
+    if not $unchanged {
+        let tmp_file = $"($lock_file).tmp"
+        $content | save -f $tmp_file
+        mv -f $tmp_file $lock_file
+    }
 
     $lock_data
 }
@@ -484,6 +548,11 @@ export def verify-ygg-lock [ygg_home: string, plan: record]: nothing -> list<str
             $errors = ($errors | append $"Module '($mod_name)' is not locked in '($lock_file)'")
         } else if ($locked.commit? | default "") != $current_commit {
             $errors = ($errors | append $"Module '($mod_name)' commit mismatch: expected ($locked.commit? | default ''), found ($current_commit)")
+        }
+
+        let dirty_res = (^git -C $mod_dir status --porcelain | complete)
+        if ($dirty_res.exit_code == 0) and ($dirty_res.stdout | str trim | is-not-empty) {
+            $errors = ($errors | append $"Module '($mod_name)' has uncommitted changes")
         }
     }
 
