@@ -846,8 +846,8 @@ export def test_cli_clean_subcommand [] {
             let state_file = ($home | path join ".state" "state.json")
             let current_state = (open $state_file)
             let updated_state = ($current_state | upsert hashes {
-                active_fake: "valid",
-                orphan_fake: "stale"
+                "pkg:active_fake": "valid",
+                "pkg:orphan_fake": "stale"
             })
             $updated_state | to json | save -f $state_file
 
@@ -858,7 +858,7 @@ export def test_cli_clean_subcommand [] {
             assert ($dry_res.stdout | str contains "Would purge")
             # Dry run must not remove anything
             assert equal (ls $bkp_root | where type == "dir" | length) 25
-            assert equal ((open $state_file).hashes.orphan_fake? | default "") "stale"
+            assert equal ((open $state_file).hashes."pkg:orphan_fake"? | default "") "stale"
 
             # 2. Test ygg clean --backups
             let bkp_res = (^nu $ygg_bin clean --backups | complete)
@@ -866,18 +866,18 @@ export def test_cli_clean_subcommand [] {
             assert ($bkp_res.stdout | str contains "Cleaned 5 old backup(s)")
             assert equal (ls $bkp_root | where type == "dir" | length) 20
             # Hashes still untouched
-            assert equal ((open $state_file).hashes.orphan_fake? | default "") "stale"
+            assert equal ((open $state_file).hashes."pkg:orphan_fake"? | default "") "stale"
 
             # 3. Test ygg clean --hashes
             let hash_res = (^nu $ygg_bin clean --hashes | complete)
             assert equal $hash_res.exit_code 0 $hash_res.stderr
             assert ($hash_res.stdout | str contains "Purged")
             let final_state = (open $state_file)
-            assert ("orphan_fake" not-in ($final_state.hashes | columns))
+            assert ("pkg:orphan_fake" not-in ($final_state.hashes | columns))
 
             # 4. Test that ygg apply automatically purges orphan hashes and rotates backups
             let state_with_orphan = ($final_state | upsert hashes {
-                orphan_during_apply: "stale"
+                "pkg:orphan_during_apply": "stale"
             })
             $state_with_orphan | to json | save -f $state_file
             for i in 1..25 {
@@ -886,7 +886,7 @@ export def test_cli_clean_subcommand [] {
             let apply_res = (^nu $ygg_bin apply | complete)
             assert equal $apply_res.exit_code 0 $apply_res.stderr
             let post_apply_state = (open $state_file)
-            assert ("orphan_during_apply" not-in ($post_apply_state.hashes | columns))
+            assert ("pkg:orphan_during_apply" not-in ($post_apply_state.hashes | columns))
             assert ((ls $bkp_root | where type == "dir" | length) <= 20)
         }
     }

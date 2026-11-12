@@ -43,16 +43,20 @@ export def load-state [ygg_home: string]: nothing -> record {
         return $default_state
     }
 
-    try {
-        let loaded = (open $state_file)
-        {
-            links: ($loaded.links? | default {}),
-            copies: ($loaded.copies? | default {}),
-            hashes: ($loaded.hashes? | default {}),
-            packages: ($loaded.packages? | default {})
+    let loaded = (try {
+        let val = (open $state_file)
+        if not (($val | describe) starts-with "record") {
+            error make { msg: "top-level value is not an object" }
         }
-    } catch {
-        $default_state
+        $val
+    } catch { |e|
+        error make { msg: $"Cannot parse ($state_file): ($e.msg). Refusing to continue; restore from .state/state.json.bak or delete the file." }
+    })
+    {
+        links: ($loaded.links? | default {}),
+        copies: ($loaded.copies? | default {}),
+        hashes: ($loaded.hashes? | default {}),
+        packages: ($loaded.packages? | default {})
     }
 }
 
@@ -67,6 +71,9 @@ export def save-state [ygg_home: string, state: record]: nothing -> nothing {
     let tmp_file = ($state_dir | path join $"state.json.tmp.($rand_id)")
 
     $state | to json --indent 2 | save -f $tmp_file
+    if ($state_file | path exists) {
+        cp -f $state_file ($state_dir | path join "state.json.bak")
+    }
     mv -f $tmp_file $state_file
 }
 
@@ -709,10 +716,13 @@ export def rotate-backups [
     $removed
 }
 
-# Garbage collect orphaned hashes from state.hashes (RFC-028)
+# Garbage collect orphaned hashes from state.hashes by key namespace (RFC-028, RFC-053)
+# pkg:/on_change:/svc: keys are removed unless active; setup:<module>:* only when the module
+# is no longer in host.toml; keys with an unknown prefix are never removed.
 export def gc-state-hashes [
     ygg_home: string,
     active_keys: list<string>,
+    active_modules: list<string>,
     --dry-run
 ]: nothing -> int {
     let st = (load-state $ygg_home)
@@ -721,8 +731,17 @@ export def gc-state-hashes [
         return 0
     }
 
-    let all_keys = ($hashes | columns)
-    let orphans = ($all_keys | where { |k| not ($k in $active_keys) })
+    let orphans = ($hashes | columns | where { |k|
+        if (($k | str starts-with "pkg:") or ($k | str starts-with "on_change:") or ($k | str starts-with "svc:")) {
+            $k not-in $active_keys
+        } else if ($k | str starts-with "setup:") {
+            let rest = ($k | str substring 6..)
+            let mod = (($rest | split row ":" | first) | default "")
+            $mod not-in $active_modules
+        } else {
+            false
+        }
+    })
     let count = ($orphans | length)
 
     if ($count == 0) {
@@ -737,7 +756,7 @@ export def gc-state-hashes [
     $count
 }
 
-# Collect all active hash keys from the effective plan (RFC-028)
+# Collect all active hash keys from the effective plan (RFC-028, RFC-053)
 export def collect-active-hash-keys [plan: record]: nothing -> list<string> {
     mut active = []
 
@@ -753,20 +772,43 @@ export def collect-active-hash-keys [plan: record]: nothing -> list<string> {
         }
     }
 
-    # 3. Module setup onchange hooks: static parse of setup.nu
-    for m in ($plan.modules? | default []) {
-        let setup_file = (($m.dir? | default "") | path join "setup.nu")
-        if ($setup_file != "") and ($setup_file | path exists) {
-            let content = (try { open --raw $setup_file } catch { "" })
-            let matches = ($content | parse -r `(?m)(?:ygg\s+)?onchange\s+["']?([A-Za-z0-9_-]+)["']?` | get capture0? | default [])
-            for k in $matches {
-                $active = ($active | append $k)
+    # 3. Services: svc:<manager>:<service>
+    let services = ($plan.services? | default {})
+    if (($services | describe) starts-with "record") {
+        let action_keys = ["enable", "reload_on_change", "restart_on_change"]
+        mut groups = []
+        for top_key in ($services | columns) {
+            let top_val = ($services | get $top_key)
+            if not (($top_val | describe) starts-with "record") { continue }
+            let sub_cols = ($top_val | columns)
+            if ($sub_cols | any { |c| $c in $action_keys }) {
+                let mgr = if $top_key == "systemd" { "systemd-user" } else { $top_key }
+                $groups = ($groups | append { manager: $mgr, data: $top_val })
+            } else {
+                for sub_key in $sub_cols {
+                    let sub_val = ($top_val | get $sub_key)
+                    if (($sub_val | describe) starts-with "record") {
+                        $groups = ($groups | append { manager: $"($top_key)-($sub_key)", data: $sub_val })
+                    }
+                }
+            }
+        }
+        for g in $groups {
+            let en = ($g.data.enable? | default [])
+            let en_list = if (($en | describe) starts-with "list") { $en } else { [$en] }
+            for svc in $en_list {
+                $active = ($active | append $"svc:($g.manager):($svc)")
+            }
+            for act in ["reload_on_change", "restart_on_change"] {
+                let m = ($g.data | get -o $act | default {})
+                if (($m | describe) starts-with "record") {
+                    for svc in ($m | columns) {
+                        $active = ($active | append $"svc:($g.manager):($svc)")
+                    }
+                }
             }
         }
     }
 
     $active | uniq
 }
-
-
-

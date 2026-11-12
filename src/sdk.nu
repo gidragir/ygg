@@ -88,7 +88,17 @@ export def onchange [
 
     # 3. Check current state and target
     let state = (load-state $ygg_home)
-    let prev_hash = ($state.hashes? | default {} | get -o $key | default "")
+    let mod_name = ($env.YGG_MODULE_NAME? | default ($mod_dir | path expand | path basename))
+    let state_key = $"setup:($mod_name):($key)"
+    let hashes_now = ($state.hashes? | default {})
+    let new_hash = ($hashes_now | get -o $state_key)
+    let legacy_hash = ($hashes_now | get -o $key)
+    let prev_hash = ($new_hash | default ($legacy_hash | default ""))
+    # Migrate legacy bare key to the namespaced key, preserving the cache (RFC-053)
+    if ($new_hash == null) and ($legacy_hash != null) and ((($env.YGG_DRY_RUN? | default "false") != "true")) {
+        let migrated = ($hashes_now | reject -o $key | upsert $state_key $legacy_hash)
+        save-state $ygg_home ($state | upsert hashes $migrated)
+    }
 
     let is_force = (($env.YGG_FORCE? | default "false") == "true")
     let target_exists = if ($target != "") {
@@ -113,7 +123,7 @@ export def onchange [
 
     # 5. On success: update hash in state.json
     let st = (load-state $ygg_home)
-    let updated_hashes = ($st.hashes? | default {} | upsert $key $current_hash)
+    let updated_hashes = ($st.hashes? | default {} | reject -o $key | upsert $state_key $current_hash)
     let updated_st = ($st | upsert hashes $updated_hashes)
     save-state $ygg_home $updated_st
 
@@ -330,6 +340,7 @@ export def run-module-setup [
     let env_vars = {
         YGG_HOME: $ygg_home,
         YGG_MODULE_DIR: $mod_dir,
+        YGG_MODULE_NAME: ($mod_plan.name? | default ($mod_dir | path basename)),
         YGG_SCOPES: $scopes_json,
         YGG_MOD_CONFIG: $config_json,
         YGG_DRY_RUN: $is_dry,

@@ -434,7 +434,8 @@ def apply-plan [
         rotate-backups $ygg_home --max-count=$max_count --max-age-days=$max_age_days | ignore
 
         let active_keys = (collect-active-hash-keys $plan)
-        gc-state-hashes $ygg_home $active_keys | ignore
+        let active_modules = ($plan.modules? | default [] | each { |m| $m.name })
+        gc-state-hashes $ygg_home $active_keys $active_modules | ignore
 
         # Generate or update ygg.lock (RFC-032)
         generate-ygg-lock $ygg_home $plan | ignore
@@ -542,7 +543,8 @@ def "main clean" [
         if $do_hashes {
             let plan = (resolve-effective-plan $ygg_home)
             let active_keys = (collect-active-hash-keys $plan)
-            let purged = (gc-state-hashes $ygg_home $active_keys --dry-run=$dry_run)
+            let active_modules = ($plan.modules? | default [] | each { |m| $m.name })
+            let purged = (gc-state-hashes $ygg_home $active_keys $active_modules --dry-run=$dry_run)
             if $dry_run {
                 print $"Would purge ($purged) orphan hash\(es\)."
             } else {

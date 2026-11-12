@@ -607,4 +607,20 @@ export def test_declarative_services_mock_execution_and_failure [] {
     }
 }
 
+export def test_onchange_namespaces_and_migrates_key [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let mod_dir = ($home | path join "modules" "m")
+        mkdir $mod_dir
+        "v1" | save -f ($mod_dir | path join "cfg.yaml")
+        with-env { YGG_HOME: $home, YGG_MODULE_DIR: $mod_dir, YGG_MODULE_NAME: "m", YGG_FORCE: "false" } {
+            let h = (hash-watch-set ["cfg.yaml"] $mod_dir)
+            save-state $home { links: {}, copies: {}, packages: {}, hashes: { build: $h } }
+            let ran = (onchange "build" ["cfg.yaml"] { error make { msg: "must not run" } })
+            assert equal $ran false
+            let hashes = (load-state $home).hashes
+            assert equal ($hashes | get -o "setup:m:build") $h
+        }
+    }
+}
 

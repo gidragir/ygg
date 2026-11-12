@@ -256,11 +256,11 @@ export def test_rotate_backups_and_gc_state_hashes [] {
         assert (($removed | length) == 5) "Expected 5 old backups rotated"
         
         # Проверяем GC хэшей
-        save-state $home { links: {}, copies: {}, hashes: { keep_me: "hash1", orphan_me: "hash2" } }
-        let purged = (gc-state-hashes $home ["keep_me"])
+        save-state $home { links: {}, copies: {}, hashes: { "pkg:keep": "hash1", "pkg:orphan": "hash2" } }
+        let purged = (gc-state-hashes $home ["pkg:keep"] [])
         assert ($purged == 1) "Expected 1 orphan hash removed"
         let st = (load-state $home)
-        assert ("orphan_me" not-in ($st.hashes | columns)) "Orphan hash must be purged"
+        assert ("pkg:orphan" not-in ($st.hashes | columns)) "Orphan hash must be purged"
     }
 }
 
@@ -274,5 +274,34 @@ export def test_tests_have_no_literal_tmp_paths [] {
     assert equal $hits []
 }
 
+export def test_load_state_refuses_corrupted_file [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sf = ($home | path join ".state" "state.json")
+        "{broken" | save -f $sf
+        let r = (try { load-state $home; "loaded" } catch { |e| $e.msg })
+        assert ($r | str contains "Cannot parse")
+        assert equal (open --raw $sf) "{broken"
+    }
+}
 
+export def test_save_state_keeps_bak [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        save-state $home { links: {}, copies: {}, hashes: { a: "1" }, packages: {} }
+        save-state $home { links: {}, copies: {}, hashes: { a: "2" }, packages: {} }
+        assert equal (open --raw ($home | path join ".state" "state.json.bak") | from json).hashes.a "1"
+    }
+}
 
+export def test_gc_hashes_by_prefix [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        save-state $home { links: {}, copies: {}, packages: {}, hashes: {
+            "pkg:cargo": "h", "pkg:pnpm": "h", "on_change:m:k": "h", "svc:systemd-user:x": "enabled",
+            "setup:m:build.v2:x": "h", "setup:gone:k": "h", "legacy-key": "h" } }
+        let n = (gc-state-hashes $home ["pkg:cargo"] ["m"])
+        assert equal $n 4
+        assert equal ((load-state $home).hashes | columns | sort) ["legacy-key", "pkg:cargo", "setup:m:build.v2:x"]
+    }
+}
