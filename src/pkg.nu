@@ -9,8 +9,14 @@ const WINGET_OK_CODES = [0, -1978335135, -1978335189]
 # Managers whose package-set hash is never cached (RFC-014): fast `pacman -T` precheck instead
 const UNCACHED_MGRS = ["pacman", "paru"]
 
-# Managers checked with `pacman -T` before installing (RFC-022)
-const NATIVE_MGRS = ["pacman", "paru"]
+# RFC-048: environment forcing non-interactive behaviour of a manager
+export def pkg-env [mgr: string]: nothing -> record {
+    match $mgr {
+        "apt" => { DEBIAN_FRONTEND: "noninteractive" },
+        "brew" => { HOMEBREW_NO_AUTO_UPDATE: "1", NONINTERACTIVE: "1" },
+        _ => ({})
+    }
+}
 
 # Safe managers whose packages can be cleanly uninstalled without impacting system stability (RFC-030, RFC-044)
 const SAFE_PRUNE_MGRS = ["uv", "mise", "pnpm", "cargo", "scoop"]
@@ -48,7 +54,8 @@ def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> 
 # RFC-013: default per-invocation timeout in seconds (0 = no timeout)
 def default-pkg-timeout [mgr: string]: nothing -> int {
     match $mgr {
-        "winget" | "scoop" | "uv" | "mise" | "pnpm" | "brew" | "apt" | "dnf" | "zypper" => 300,
+        "winget" | "scoop" | "uv" | "mise" | "pnpm" => 300,
+        "brew" | "apt" | "dnf" | "zypper" => 1800,
         "cargo" | "paru" | "pacman" => 0,
         _ => 0
     }
@@ -124,7 +131,8 @@ export def allowed-package-managers [host_os: record]: nothing -> list<string> {
         } else if $is_suse {
             ["zypper"]
         } else {
-            ["apt", "dnf", "zypper", "pacman", "paru"]
+            # RFC-048 п.5: unrecognized distro - only managers found on PATH (mock mode: all)
+            ["apt", "dnf", "zypper", "pacman", "paru"] | where { |m| (is-mock-mode) or (which $m | is-not-empty) }
         }
 
         let has_brew = (which brew | is-not-empty) or (($env.YGG_HOST_BREW? | default false) in [true, "true", 1, "1"]) or ($env.YGG_MOCK_PKG_ALLOWED? | default "" | split row "," | any { |m| $m == "brew" })
@@ -165,18 +173,43 @@ def csv-env [name: string]: nothing -> list<string> {
     $env | get -o $name | default "" | split row "," | each { |s| $s | str trim } | where { |it| $it != "" }
 }
 
-# RFC-022: packages not installed yet, determined with a single `pacman -T`
-# (mock: installed packages come from YGG_MOCK_PKG_INSTALLED, pacman is never run)
-def missing-native-pkgs [pkgs: list<string>]: nothing -> list<string> {
+# RFC-022 / RFC-048: packages not installed yet (mock: installed packages come from
+# YGG_MOCK_PKG_INSTALLED, no manager is run). Managers without a precheck return `pkgs`.
+export def missing-pkgs [mgr: string, pkgs: list<string>]: nothing -> list<string> {
+    if not ($mgr in ["pacman", "paru", "brew", "apt", "dnf", "zypper"]) {
+        return $pkgs
+    }
     if (is-mock-mode) {
         let installed = (csv-env "YGG_MOCK_PKG_INSTALLED")
         return ($pkgs | where { |p| not ($p in $installed) })
     }
-    let res = (try { ^pacman -T ...$pkgs | complete } catch { { exit_code: -1, stdout: "", stderr: "" } })
-    match $res.exit_code {
-        0 => [],
-        127 => ($res.stdout | lines | each { |l| $l | str trim } | where { |l| $l != "" }),
-        _ => $pkgs
+    match $mgr {
+        "pacman" | "paru" => {
+            let res = (try { ^pacman -T ...$pkgs | complete } catch { { exit_code: -1, stdout: "", stderr: "" } })
+            match $res.exit_code {
+                0 => [],
+                127 => ($res.stdout | lines | each { |l| $l | str trim } | where { |l| $l != "" }),
+                _ => $pkgs
+            }
+        },
+        "brew" => {
+            let formulae = (try { ^brew list --formula -1 | complete } catch { { exit_code: -1, stdout: "" } })
+            let casks = (try { ^brew list --cask -1 | complete } catch { { exit_code: -1, stdout: "" } })
+            let installed = ([$formulae $casks] | where { |r| $r.exit_code == 0 } | each { |r| $r.stdout | lines | each { |l| $l | str trim } } | flatten)
+            $pkgs | where { |p| not ($p in $installed) }
+        },
+        "apt" => {
+            $pkgs | where { |p|
+                let r = (try { ^dpkg-query -W -f='${Status}' $p | complete } catch { { exit_code: -1, stdout: "" } })
+                not (($r.exit_code == 0) and ($r.stdout | str contains "install ok installed"))
+            }
+        },
+        _ => {
+            $pkgs | where { |p|
+                let r = (try { ^rpm -q $p | complete } catch { { exit_code: -1 } })
+                $r.exit_code != 0
+            }
+        }
     }
 }
 
@@ -223,7 +256,7 @@ def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: n
         if (is-mock-mode) {
             $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
         } else {
-            let r = (run-with-timeout (expand-argv $argv) $timeout)
+            let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout })
             if ($r.exit_code != 0) {
                 print -e $"[ygg] Warning: '($cmd_str)' failed: ($r.stderr | str trim)"
             }
@@ -247,7 +280,7 @@ def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, t
         $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
         return { ok: true, reason: "", stderr: "" }
     }
-    let r = (run-with-timeout (expand-argv $argv) $timeout)
+    let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout })
     if $r.timed_out {
         return { ok: false, reason: "timeout", stderr: $r.stderr }
     }
@@ -357,8 +390,8 @@ export def install-packages [
             continue
         }
 
-        # RFC-022: only packages that are not installed yet reach pacman / paru
-        let todo = if ($mgr in $NATIVE_MGRS) { missing-native-pkgs $pkgs } else { $pkgs }
+        # RFC-022 / RFC-048: only packages that are not installed yet reach the manager
+        let todo = (missing-pkgs $mgr $pkgs)
         if ($todo | is-empty) {
             $new_packages = ($new_packages | upsert $mgr $union_pkgs)
             continue
@@ -373,8 +406,8 @@ export def install-packages [
             continue
         }
 
-        if ($mgr in $NATIVE_MGRS) and not (sudo-available) {
-            let msg = $"Package manager '($mgr)' requires sudo, which is not available non-interactively. Run 'sudo -v' first or install manually: ($todo | str join ' ')"
+        if ($mgr in $SUDO_MGRS) and not (sudo-available) {
+            let msg = "sudo requires a password; run 'sudo -v' first or use --skip-packages"
             print -e $"[ygg] Error: ($msg)"
             $failed = ($failed | append { mgr: $mgr, pkg: ($todo | str join " "), reason: "sudo_required", stderr: $msg })
             continue
@@ -551,12 +584,12 @@ export def prune-unused-packages [
                 $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
             } else {
                 let timeout = (default-pkg-timeout $mgr)
-                let r = (run-with-timeout (expand-argv $argv) $timeout)
+                let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout })
                 if ($r.exit_code == 0) {
                     $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
                     $executed = ($executed | append $cmd_str)
                     if ($unuse_argv | is-not-empty) {
-                        let r_unuse = (run-with-timeout (expand-argv $unuse_argv) $timeout)
+                        let r_unuse = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $unuse_argv) $timeout })
                         if ($r_unuse.exit_code == 0) {
                             $executed = ($executed | append ($unuse_argv | str join " "))
                         } else {

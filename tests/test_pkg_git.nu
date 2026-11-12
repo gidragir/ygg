@@ -1103,3 +1103,44 @@ export def test_pkg_uninstall_argv_keeps_spaces_intact [] {
 }
 
 
+
+export def test_apt_requires_passwordless_sudo [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "ubuntu", YGG_MOCK_SUDO_DENIED: "1" } {
+            let res = (install-packages $home { packages: { apt: ["curl"] }, modules: [] })
+            assert ($res.failed | any { |f| $f.mgr == "apt" })
+            assert equal ($res.failed | first | get reason) "sudo_required"
+            assert (($res.failed | first).stderr | str contains "sudo requires a password; run 'sudo -v' first or use --skip-packages")
+            assert (not ($log | path exists))
+        }
+    }
+}
+
+export def test_noninteractive_env_and_timeouts [] {
+    assert equal (pkg-env "apt").DEBIAN_FRONTEND "noninteractive"
+    assert equal (pkg-env "brew").HOMEBREW_NO_AUTO_UPDATE "1"
+    assert equal (pkg-env "brew").NONINTERACTIVE "1"
+    assert equal (pkg-env "cargo") {}
+}
+
+export def test_missing_pkgs_mock_and_passthrough [] {
+    with-env { YGG_MOCK_PKG_LOG: "mock.log", YGG_MOCK_PKG_INSTALLED: "curl" } {
+        assert equal (missing-pkgs "apt" ["curl", "git"]) ["git"]
+        assert equal (missing-pkgs "dnf" ["curl", "git"]) ["git"]
+        assert equal (missing-pkgs "cargo" ["curl", "git"]) ["curl", "git"]
+    }
+}
+
+export def test_prune_system_requires_sudo_for_apt [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_HOST_OS_OVERRIDE: "ubuntu", YGG_MOCK_SUDO_DENIED: "1" } {
+            save-state $home { packages: { apt: ["curl"] } }
+            let res = (prune-unused-packages $home { packages: {}, modules: [] } --force-system-prune)
+            assert (not ($log | path exists))
+        }
+    }
+}
