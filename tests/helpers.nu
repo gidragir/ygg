@@ -31,3 +31,19 @@ export def with-temp-ygg [action: closure]: nothing -> nothing {
         error make { msg: $e.msg }
     }
 }
+
+export def stat-inode [p: string]: nothing -> string {
+    if ($nu.os-info.name == "macos") {
+        ^stat -f "%i" $p | str trim
+    } else {
+        ^stat -c "%i" $p | str trim
+    }
+}
+
+export def stat-mode [p: string]: nothing -> string {
+    if ($nu.os-info.name == "macos") {
+        ^stat -f "%Lp" $p | str trim
+    } else {
+        ^stat -c "%a" $p | str trim
+    }
+}

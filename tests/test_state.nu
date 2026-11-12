@@ -27,7 +27,7 @@ export def test_state_roundtrip_and_dirs [] {
         assert (($host_info.auto_scopes | length) > 0)
 
         # Check get-ygg-home under YGG_HOME
-        assert equal (get-ygg-home) $home
+        assert equal (get-ygg-home) ($home | path expand)
     }
 }
 

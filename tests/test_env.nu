@@ -3,7 +3,7 @@ use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/env.nu *
 use ../src/sdk.nu [export-secrets]
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, stat-mode]
 
 export def test_env_special_chars_escaping [] {
     with-temp-ygg { |home|
@@ -52,8 +52,8 @@ export def test_env_special_chars_escaping [] {
 
         # Verify 0600 permissions on Unix
         if ($nu.os-info.family != "windows") {
-            assert equal (^stat -c "%a" $env_nu | str trim) "600"
-            assert equal (^stat -c "%a" $conf_file | str trim) "600"
+            assert equal (stat-mode $env_nu) "600"
+            assert equal (stat-mode $conf_file) "600"
         }
     }
 }
@@ -377,8 +377,8 @@ export def test_env_compiles_fish_shell_files [] {
 
         # Check permissions on Unix
         if ($nu.os-info.family != "windows") {
-            assert equal (^stat -c "%a" $env_fish | str trim) "600"
-            assert equal (^stat -c "%a" $alias_fish | str trim) "600"
+            assert equal (stat-mode $env_fish) "600"
+            assert equal (stat-mode $alias_fish) "600"
         }
     }
 }

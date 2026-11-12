@@ -5,7 +5,7 @@ use std/assert
 use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/link.nu *
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, stat-inode]
 
 export def test_glob_shared_dir_and_ownership_conflict [] {
     with-temp-ygg { |home|
@@ -698,9 +698,9 @@ name = "late"
         assert equal (open --raw $app_b) "late-cfg-b\n"
         assert equal (open --raw $y_a) "early-scoped\n"
         assert equal (open --raw $abs_same) "late-same\n"
-        let ino1 = (^stat -c "%i" $app_a | str trim)
+        let ino1 = (stat-inode $app_a)
         let res2 = (apply-links $home $plan --sandbox $sb)
-        assert equal (^stat -c "%i" $app_a | str trim) $ino1
+        assert equal (stat-inode $app_a) $ino1
         assert ($res2.applied | is-empty)
     }
 
@@ -765,19 +765,19 @@ export def test_link_target_matches_and_idempotent_inode [] {
         # 1. Repeated apply is a no-op: same inode, empty applied
         let r1 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
         assert equal ($r1.applied | length) 2
-        let ino_conf = (^stat -c "%i" $conf | str trim)
-        let ino_dir = (^stat -c "%i" $thedir | str trim)
+        let ino_conf = (stat-inode $conf)
+        let ino_dir = (stat-inode $thedir)
         let r2 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
         assert ($r2.applied | is-empty)
-        assert equal (^stat -c "%i" $conf | str trim) $ino_conf
-        assert equal (^stat -c "%i" $thedir | str trim) $ino_dir
+        assert equal (stat-inode $conf) $ino_conf
+        assert equal (stat-inode $thedir) $ino_dir
 
         # 2. Retarget module symlink to another worktree with the same files: still a match, inode kept
         ^ln -sfn $wt2 $mod_link
         assert (link-target-matches $conf ($mod_link | path join "conf.toml"))
         let r3 = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
         assert ($r3.applied | is-empty)
-        assert equal (^stat -c "%i" $conf | str trim) $ino_conf
+        assert equal (stat-inode $conf) $ino_conf
         assert equal (open --raw $conf) "v2\n"
 
         # 3. Source change -> atomic swap; no .ygg-tmp-* next to dest nor inside old dir
