@@ -1169,7 +1169,10 @@ export def test_completions_flags_equal_scope_commands [] {
     let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
     let text = (^nu $ygg_bin completions nu)
     let real = (^nu -I ($ygg_bin | path dirname | path dirname | path join "src") -c $"source '($ygg_bin)'; scope commands | where { |c| $c.name | str starts-with 'main ' } | each { |c| { name: \($c.name | str replace 'main ' ''\), flags: \($c.signatures | values | first | where parameter_type in [switch named] | get parameter_name\) } } | to json" | from json)
-    let sdk = ["onchange", "merge-json", "export-secrets", "safe-link"]
+    # SDK subcommands = those `ygg` (no args) lists under "SDK Subcommands", not a copy of the generator literal
+    let sdk = (^nu $ygg_bin | lines | skip until { |l| $l | str starts-with "SDK Subcommands" } | skip 1 | each { |l| $l | parse --regex '^\s+ygg ([a-z-]+)' | get -o capture0.0 } | compact)
+    assert (($sdk | length) >= 4) "SDK subcommands not found in help"
+    assert (("onchange" in $sdk) and ("safe-link" in $sdk))
     for r in ($real | where { |r| $r.name not-in $sdk }) {
         assert equal (extern-flags $text $r.name | sort) ($r.flags | sort) $r.name
     }
@@ -1213,6 +1216,47 @@ export def test_completions_nu_complete_modules_reads_names [] {
         let names = (^nu -c $"source '($out)'; nu-complete ygg-modules | to json" | from json)
         assert equal $names ["m1", "m2"]
         "modules = []\n" | save -f ($home | path join "host.toml")
+        assert equal (^nu -c $"source '($out)'; nu-complete ygg-modules | to json" | from json) []
+    }
+}
+
+export def test_completions_ps1_has_no_case_colliding_keys [] {
+    # pwsh is not available in CI here: the generated ps1 text is checked structurally instead.
+    let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+    let txt = (^nu $ygg_bin completions ps1)
+    # flags are pair objects, never `'-x' = '...'` hashtable entries (PowerShell keys are case-insensitive)
+    assert (not ($txt | str contains "'-s' = ")) "flag emitted as hashtable key"
+    assert (not ($txt | lines | any { |l| $l =~ "^\\s*'--?[A-Za-z]" and ($l | str contains "' = '") })) "flag hashtable key"
+    assert ($txt | str contains "[pscustomobject]@{ N = '-s'")
+    assert ($txt | str contains "[pscustomobject]@{ N = '-S'")
+    # within one command, hashtable literal keys must be unique case-insensitively
+    let blocks = ($txt | split row "$flags = @{" | get 1 | split row "$values = @{" | get 0)
+    let keys = ($blocks | lines | each { |l| $l | parse --regex "^        '([a-z-]+)' = @" | get -o capture0.0 } | compact)
+    assert equal ($keys | str downcase | uniq | length) ($keys | length)
+    # the `-s` / `-S` pair exists in `add`, proving the collision case is exercised
+    let add_block = ($blocks | split row "'apply' = @(" | get 0)
+    let names = ($add_block | lines | each { |l| $l | parse --regex "N = '([^']+)'" | get -o capture0.0 } | compact)
+    assert (("-s" in $names) and ("-S" in $names))
+}
+
+export def test_completions_zsh_escape_covers_specials [] {
+    let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+    let src = ($ygg_bin | path dirname | path dirname | path join "src")
+    let bt = (char -u '60')
+    let input = ("a" + $bt + "b$c[d]\"e")
+    let script = ("source '" + $ygg_bin + "'; zsh-escape ($env.IN) | to json")
+    let out = (with-env { IN: $input } { ^nu -I $src -c $script } | from json)
+    assert ($out | str contains ("\\" + $bt)) "backtick not escaped"
+    assert ($out | str contains "\\$c") "dollar not escaped"
+    assert ($out | str contains "\\[d\\]") "brackets not escaped"
+}
+
+export def test_completions_nu_complete_modules_record_is_empty [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let out = ($home | path join "c.nu")
+        ^nu $ygg_bin completions nu | save -f $out
+        "[modules.a]\npath = \"x\"\n" | save -f ($home | path join "host.toml")
         assert equal (^nu -c $"source '($out)'; nu-complete ygg-modules | to json" | from json) []
     }
 }

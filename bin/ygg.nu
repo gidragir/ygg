@@ -900,12 +900,18 @@ def ps1-escape [text: string]: nothing -> string {
 def generate-completions-ps1 []: nothing -> string {
     let table = (cli-signature-table)
     let subs = ($table | each { |c| "        '" + $c.command + "' = '" + (ps1-escape $c.description) + "'" } | str join "\n")
+    # Flags are pair arrays, not hashtable keys: PowerShell hashtable keys are case-insensitive and
+    # `-s` / `-S` (add: --scope / --skip-packages) would collide.
     let flags = ($table | each { |c|
         let entries = ($c.flags | each { |f|
             let d = (ps1-escape $f.description)
-            flag-spellings $f | each { |sp| "'" + $sp + "' = '" + $d + "'" }
+            flag-spellings $f | each { |sp| "            [pscustomobject]@{ N = '" + $sp + "'; D = '" + $d + "' }" }
         } | flatten)
-        "        '" + $c.command + "' = @{ " + ($entries | str join "; ") + " }"
+        if ($entries | is-empty) {
+            "        '" + $c.command + "' = @()"
+        } else {
+            "        '" + $c.command + "' = @(\n" + ($entries | str join ",\n") + "\n        )"
+        }
     } | str join "\n")
     let values = ($table | each { |c|
         if ($c.positionals | any { |p| (completion-kind $c.command $p) == "shells" }) {
@@ -927,16 +933,16 @@ def generate-completions-ps1 []: nothing -> string {
     }
 
     $subcmd = $elements[1].Value
-    $candidates = [ordered]@{}
+    $candidates = @()
     if ($flags.ContainsKey($subcmd)) {
-        foreach ($k in $flags[$subcmd].Keys) { $candidates[$k] = $flags[$subcmd][$k] }
+        $candidates += $flags[$subcmd]
     }
     if ($values.ContainsKey($subcmd)) {
-        foreach ($v in $values[$subcmd]) { $candidates[$v] = $v }
+        foreach ($v in $values[$subcmd]) { $candidates += [pscustomobject]@{ N = $v; D = $v } }
     }
 
-    $candidates.GetEnumerator() | Where-Object { $_.Key -like "$wordToComplete*" } | ForEach-Object {
-        [System.Management.Automation.CompletionResult]::new($_.Key, $_.Key, 'ParameterName', $_.Value)
+    $candidates | Where-Object { $_.N -like "$wordToComplete*" } | ForEach-Object {
+        [System.Management.Automation.CompletionResult]::new($_.N, $_.N, 'ParameterName', $_.D)
     }
 }'#
     $head + $subs + $mid1 + $flags + $mid2 + $values + $tail
