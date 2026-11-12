@@ -1,9 +1,11 @@
 # src/doctor.nu
 # Yggdrasil configuration manager — read-only host audit `ygg doctor` (RFC-017)
 #
-# Every check only reads the filesystem, host.toml and state.json: no directories are created,
-# nothing is written, nothing is fixed automatically. Module-specific private files are declared
-# by modules themselves in `[doctor] private_files` of their manifest.
+# Audit checks only read the filesystem, host.toml and state.json: no directories are created and
+# nothing is written. `doctor-fix` (RFC-038, RFC-047) is the only mutating entry point; the CLI runs it
+# under the host lock, and it touches only objects owned by ygg (state records, links into YGG_HOME or
+# module directories, private files). Module-specific private files are declared by modules themselves
+# in `[doctor] private_files` of their manifest.
 
 use state.nu [load-state, save-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path, restrict-file-access]
 use manifest.nu [load-host-config, resolve-effective-plan]
@@ -53,9 +55,27 @@ def check-links [ops: table]: nothing -> list<record> {
     $rows
 }
 
+# a dangling link is owned by ygg when it is recorded in state or its literal target lies inside YGG_HOME or a module directory
+def is-owned-link [p: string, state: record, roots: list<string>]: nothing -> bool {
+    if ((normalize-case $p) in ($state.links | columns | append ($state.copies | columns) | each { |x| normalize-case $x })) {
+        return true
+    }
+    let t = (link-literal-target $p)
+    if ($t == "") {
+        return false
+    }
+    let abs = if (($t | str starts-with "/") or ($t | str starts-with "\\") or ($t =~ "^[A-Za-z]:")) { $t } else { ($p | path dirname | path join $t) }
+    let tn = (normalize-case ($abs | path expand -n))
+    $roots | any { |r|
+        let rn = (normalize-case ($r | path expand -n))
+        let prefix = (($rn | str trim --right --char "/" | str trim --right --char "\\") + (char path_sep))
+        ($tn == $rn) or ($tn | str starts-with $prefix)
+    }
+}
+
 # orphan_link: dangling symlinks without a state record, depth 1, in ~, ~/.config, ~/.local/bin
-# and the parent directories of managed paths
-def check-orphan-links [state: record, targets: table, sb: string]: nothing -> list<record> {
+# and the parent directories of managed paths. `owned` rows (warn) are removable by --fix; the rest are info (RFC-047)
+def check-orphan-links [state: record, targets: table, sb: string, roots: list<string>]: nothing -> list<record> {
     let managed = ($state.links | columns | append ($state.copies | columns) | append ($targets | get -o dest | default []))
     let managed_norm = ($managed | each { |p| normalize-case $p })
     let base_dirs = (["~", "~/.config", "~/.local/bin"] | each { |d| expand-target-path $d --sandbox $sb })
@@ -71,7 +91,13 @@ def check-orphan-links [state: record, targets: table, sb: string]: nothing -> l
             if (not $is_link) or ($p | path exists) or ((normalize-case $p) in $managed_norm) {
                 continue
             }
-            $rows = ($rows | append (finding "orphan_link" "warn" $p $"dangling symlink -> '(link-literal-target $p)' is not managed by ygg" "remove the link manually if it is no longer needed"))
+            let owned = (is-owned-link $p $state $roots)
+            let row = if $owned {
+                (finding "orphan_link" "warn" $p $"dangling symlink -> '(link-literal-target $p)' left by ygg" "ygg doctor --fix removes the link")
+            } else {
+                (finding "orphan_link" "info" $p $"dangling symlink -> '(link-literal-target $p)' does not belong to ygg" "remove the link manually if it is no longer needed")
+            }
+            $rows = ($rows | append ($row | insert owned $owned))
         }
     }
     $rows | uniq-by target
@@ -328,7 +354,7 @@ def check-journal [ygg_home: string]: nothing -> list<record> {
 export def run-doctor [
     ygg_home: string,
     --sandbox: string = ""
-]: nothing -> table<check: string, severity: string, target: string, detail: string, fix: string> {
+]: nothing -> list<record> {
     let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     let state = (load-state $ygg_home)
     let empty_plan = { modules: [], links: [], save: [], packages: {} }
@@ -354,7 +380,7 @@ export def run-doctor [
     [
         $plan_rows
         (check-links $ops)
-        (check-orphan-links $state $targets $sb)
+        (check-orphan-links $state $targets $sb ([$ygg_home] | append ($plan.modules | each { |m| $m.dir? | default "" } | where { |d| $d != "" }) | append ($loaded.host_modules | each { |n| $ygg_home | path join "modules" $n })))
         (check-state-orphans $state $loaded.host_modules)
         (check-sync $state)
         (check-perms $ygg_home $plan $sb)
@@ -370,13 +396,15 @@ export def run-doctor [
 # Automatically resolve deterministic safe findings (RFC-038).
 # Safe checks handled:
 #   - perm: chmod 600 (Unix) or icacls reset inheritance & grant owner:F (Windows)
-#   - orphan_link: safely remove dangling symlink via remove-link-only
-#   - state_orphan: remove orphaned record from state.links or state.copies
+#   - orphan_link: only `owned = true` rows; dangling symlink removed via remove-link-only (foreign links are left)
+#   - state_orphan: link on disk (if it is a symlink) removed via remove-link-only, then the record is dropped from
+#     state.links / state.copies; a copy stays on disk (`record removed, file left in place`)
 # Unsafe checks (sync, shadow, etc.): skipped.
 # Returns list of records describing fixed findings with status: "fixed" or "failed".
 export def doctor-fix [
     ygg_home: string,
-    findings: list<record>
+    findings: list<record>,
+    --sandbox: string = ""
 ]: nothing -> list<record> {
     let host_os = (detect-host-os)
     let is_windows = ($host_os.os == "windows")
@@ -392,12 +420,17 @@ export def doctor-fix [
             "perm" => {
                 let ok = (restrict-file-access $target)
                 if $ok {
-                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action "permissions set to 0600"))
+                    let done = if $is_windows { "icacls /inheritance:r /grant:r owner:F" } else { "chmod 0600" }
+                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action $done))
                 } else {
                     $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to update permissions"))
                 }
             }
             "orphan_link" => {
+                if (not ($f.owned? | default false)) {
+                    $fixed_list = ($fixed_list | append ($f | insert status "skipped" | insert action "link does not belong to ygg, left in place"))
+                    continue
+                }
                 let ok = (try {
                     remove-link-only $target
                     true
@@ -414,6 +447,17 @@ export def doctor-fix [
                 let in_links = ($target in ($state.links | columns))
                 let in_copies = ($target in ($state.copies | columns))
                 if $in_links or $in_copies {
+                    mut action = "pruned orphaned record from state"
+                    if $in_links {
+                        let removed = (try { remove-link-only $target; true } catch { false })
+                        if not $removed {
+                            $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to remove link, record kept"))
+                            continue
+                        }
+                        $action = "link and record removed"
+                    } else {
+                        $action = "record removed, file left in place"
+                    }
                     if $in_links {
                         $state.links = ($state.links | reject $target)
                     }
@@ -421,7 +465,7 @@ export def doctor-fix [
                         $state.copies = ($state.copies | reject $target)
                     }
                     $state_changed = true
-                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action "pruned orphaned record from state"))
+                    $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action $action))
                 } else {
                     $fixed_list = ($fixed_list | append ($f | insert status "skipped" | insert action "target not found in state"))
                 }

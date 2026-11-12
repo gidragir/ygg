@@ -1110,3 +1110,27 @@ cargo = ["x"]
 
 
 
+
+export def test_cli_doctor_fix_refuses_when_host_locked [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            ensure-ygg-dirs $home
+            let sec = ($home | path join "secrets.toml")
+            "val = 1" | save -f $sec
+            ^chmod 644 $sec | complete | ignore
+            {
+                pid: 1,
+                host: (sys host | get hostname),
+                timestamp: "2026-11-08T00:00:00Z",
+                command: "apply"
+            } | to json | save -f ($home | path join ".state" "host.lock")
+            let res = (^nu $ygg_bin doctor --fix -y --sandbox $sb | complete)
+            assert equal $res.exit_code 1
+            assert ($res.stderr | str contains "Host is locked")
+            let mode = (ls -lD $sec | get -o 0.mode | default "")
+            assert (not ($mode =~ 'rw-------')) "locked host must not be mutated"
+        }
+    }
+}

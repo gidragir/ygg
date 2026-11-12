@@ -581,7 +581,7 @@ def "main doctor" [
 
     mut fixed_findings = []
     if $fix {
-        let fixable = ($report | where { |r| $r.check in ["perm", "orphan_link", "state_orphan"] })
+        let fixable = ($report | where { |r| ($r.check in ["perm", "state_orphan"]) or (($r.check == "orphan_link") and ($r.owned? | default false)) })
         if ($fixable | is-not-empty) {
             let confirmed = if $yes {
                 true
@@ -593,9 +593,17 @@ def "main doctor" [
                 ($answer | str trim | str lowercase) in ["y", "yes"]
             }
             if $confirmed {
-                $fixed_findings = (doctor-fix $ygg_home $fixable)
-                # Re-run audit after fix to report updated remaining findings
-                $report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+                let lock_file = (acquire-host-lock $ygg_home "doctor-fix")
+                try {
+                    # Re-audit under the lock so that the fix sees the current state
+                    let fresh = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+                    $fixed_findings = (doctor-fix $ygg_home ($fresh | where { |r| ($r.check in ["perm", "state_orphan"]) or (($r.check == "orphan_link") and ($r.owned? | default false)) }) --sandbox=$effective_sandbox)
+                    $report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+                } catch { |e|
+                    release-host-lock $lock_file
+                    error make $e
+                }
+                release-host-lock $lock_file
             } else if not $json {
                 print "Doctor --fix aborted by user."
             }

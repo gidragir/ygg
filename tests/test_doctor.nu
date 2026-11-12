@@ -551,7 +551,7 @@ export def test_doctor_fix_resolves_perms_and_orphan_links [] {
 
             let findings = [
                 { check: "perm", severity: "error", target: $sec, detail: "mode rw-r--r--, expected rw-------", fix: $"chmod 600 '($sec)'" }
-                { check: "orphan_link", severity: "warn", target: $dead_link, detail: "dangling symlink", fix: "remove the link" }
+                { check: "orphan_link", severity: "warn", target: $dead_link, detail: "dangling symlink", fix: "remove the link", owned: true }
                 { check: "state_orphan", severity: "warn", target: $ghost_dest, detail: "state.links ghost", fix: "ygg apply" }
                 { check: "state_orphan", severity: "warn", target: $ghost_copy, detail: "state.copies ghost", fix: "ygg apply" }
                 { check: "sync", severity: "warn", target: "/dummy/sync", detail: "conflict", fix: "ygg apply --force" }
@@ -614,4 +614,45 @@ export def test_doctor_windows_acl_unreadable_warns [] {
 
 export def test_windows_acl_sid_parser_case_and_bom [] {
     assert (is-windows-acl-insecure "\u{feff}s-1-1-0|Read|allow")
+}
+
+export def test_doctor_fix_leaves_foreign_dangling_links [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb"); mkdir ($sb | path join ".config")
+        let m = ($home | path join "modules" "m"); mkdir $m
+        "name = \"m\"\nos = [\"linux\"]\n" | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+        let foreign = ($sb | path join ".config" "foreign")
+        let owned = ($sb | path join ".config" "owned")
+        ^ln -s ($home | path dirname | path join "unmounted" "x") $foreign
+        ^ln -s ($m | path join "gone.conf") $owned
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let findings = (run-doctor $home --sandbox $sb)
+            let f = ($findings | where check == "orphan_link")
+            assert equal ($f | where target == $foreign | get 0.owned) false
+            assert equal ($f | where target == $foreign | get 0.severity) "info"
+            assert equal ($f | where target == $owned | get 0.owned) true
+            doctor-fix $home $findings --sandbox $sb | ignore
+        }
+        assert (($foreign | path type) == "symlink")
+        assert (not ($owned | path exists -n))
+    }
+}
+
+export def test_doctor_fix_state_orphan_removes_link_too [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb"); mkdir $sb
+        let dest = ($sb | path join "old-link")
+        ^ln -s ($home | path join "host.toml") $dest
+        "modules = []\n" | save -f ($home | path join "host.toml")
+        save-state $home { links: { ($dest): { module: "removed-mod", src: "x" } }, copies: {}, hashes: {}, packages: {} }
+        let findings = [{ check: "state_orphan", severity: "warn", target: $dest, detail: "", fix: "" }]
+        doctor-fix $home $findings --sandbox $sb | ignore
+        assert (not ($dest | path exists -n))
+        assert equal ((load-state $home).links | columns) []
+    }
 }
