@@ -9,7 +9,7 @@ def clean-ygg-env []: nothing -> record {
 
 def main [--filter: string = ""] {
     let tests_dir = $env.FILE_PWD
-    let test_files = (glob ($tests_dir | path join "test_*.nu") | sort)
+    let test_files = (glob (($tests_dir | path join "test_*.nu") | str replace --all '\' '/') | sort)
 
     if ($test_files | is-empty) {
         print $"No test files found in ($tests_dir)"

@@ -32,11 +32,13 @@ export def test_env_special_chars_escaping [] {
         # Verify Nushell and Zsh actually parse and evaluate exact secret string without expansion
         let nu_cmd = ("source " + $env_nu + "; print --raw $env.WEIRD_SECRET")
         let nu_val = (^nu -c $nu_cmd)
-        let zsh_cmd = ("source " + $env_zsh + "; printf '%s' \"$WEIRD_SECRET\"")
-        let zsh_val = (^zsh -c $zsh_cmd)
         let expected_secret = ("pa$$w0rd=\"foo\" & 'bar'=1")
         assert equal $nu_val $expected_secret
-        assert equal $zsh_val $expected_secret
+        if (which zsh | is-not-empty) {
+            let zsh_cmd = ("source " + $env_zsh + "; printf '%s' \"$WEIRD_SECRET\"")
+            let zsh_val = (^zsh -c $zsh_cmd)
+            assert equal $zsh_val $expected_secret
+        }
 
         # Verify PowerShell escaping in env.ps1 (single quotes doubled)
         let ps1_content = (open --raw $env_ps1)
@@ -105,8 +107,10 @@ export def test_env_aliases_nushell_and_zsh [] {
         assert equal ($nu_run | str trim) "test_ok"
 
         # Zsh test
-        let zsh_run = (^zsh -c $"setopt aliases; source ($aliases_zsh); eval ll")
-        assert equal ($zsh_run | str trim) "test_ok"
+        if (which zsh | is-not-empty) {
+            let zsh_run = (^zsh -c $"setopt aliases; source ($aliases_zsh); eval ll")
+            assert equal ($zsh_run | str trim) "test_ok"
+        }
     }
 }
 
@@ -153,9 +157,11 @@ export def test_env_without_secrets [] {
         let nu_val = (^nu -c $nu_cmd)
         assert equal $nu_val "hello_world"
 
-        let zsh_cmd = ("source " + $env_zsh + "; printf '%s' \"$PUB_VAR\"")
-        let zsh_val = (^zsh -c $zsh_cmd)
-        assert equal $zsh_val "hello_world"
+        if (which zsh | is-not-empty) {
+            let zsh_cmd = ("source " + $env_zsh + "; printf '%s' \"$PUB_VAR\"")
+            let zsh_val = (^zsh -c $zsh_cmd)
+            assert equal $zsh_val "hello_world"
+        }
     }
 }
 
@@ -461,8 +467,10 @@ export def test_external_secret_is_lazy_by_default [] {
             assert ($zsh | str contains "export K=\"$(op read 'op://v/i/f')\"")
             assert ($zsh | str contains "export P='plain'")
             # Review Focus 1: кавычка и $( ) в ссылке не ломают файл и не исполняются
-            let chk = (^zsh -n ($home | path join ".state" "env" "env.zsh") | complete)
-            if (which zsh | is-not-empty) { assert equal $chk.exit_code 0 }
+            if (which zsh | is-not-empty) {
+                let chk = (^zsh -n ($home | path join ".state" "env" "env.zsh") | complete)
+                assert equal $chk.exit_code 0
+            }
             assert (not ($zsh | str contains "$(id)\"")) "ref must stay inside single quotes"
             let env_nu = ($home | path join ".state" "env" "env.nu")
             assert equal (^nu -c $"source '($env_nu)'; $env.K" | complete | get stdout | str trim) "S3CRET"

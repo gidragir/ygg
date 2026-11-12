@@ -903,8 +903,10 @@ export def test_prune_unused_packages_isolated_providers [] {
         ensure-ygg-dirs $home
         save-state $home { links: {}, copies: {}, hashes: {}, packages: { uv: ["ruff", "black"] } }
         let plan = { packages: { uv: ["ruff"] } }
-        let cmds = (prune-unused-packages $home $plan --dry-run).executed
-        assert ($cmds | any { |c| $c =~ "uv tool uninstall black" }) "Expected black uninstallation"
+        with-env { YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            let cmds = (prune-unused-packages $home $plan --dry-run).executed
+            assert ($cmds | any { |c| $c =~ "uv tool uninstall black" }) "Expected black uninstallation"
+        }
         # Verify dry-run does not mutate state.packages
         let st = (load-state $home)
         assert equal ($st.packages.uv | sort) (["black", "ruff"] | sort)
