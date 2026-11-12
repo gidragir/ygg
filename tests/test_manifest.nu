@@ -522,3 +522,14 @@ name = "svcmod"
 
 
 
+
+export def test_dag_sort_is_stable_to_host_order [] {
+    let mods = [{ name: "a" }, { name: "b", depends_on: ["c"] }, { name: "c" }, { name: "d" }]
+    assert equal (sort-modules-dag $mods | get name) ["a", "c", "b", "d"]
+    let plain = [{ name: "z" }, { name: "y" }, { name: "x" }]
+    assert equal (sort-modules-dag $plain | get name) ["z", "y", "x"]
+    let cyc = [{ name: "a" }, { name: "p", depends_on: ["q"] }, { name: "q", depends_on: ["p"] }]
+    let msg = (try { sort-modules-dag $cyc; "" } catch { |e| $e.msg })
+    assert ($msg | str contains "p"); assert ($msg | str contains "q")
+    assert (not ($msg =~ '\ba\b'))
+}

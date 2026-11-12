@@ -366,7 +366,29 @@ def entries-with-rank [section: any, origin_rank: int]: nothing -> table {
     $section | transpose key value | each { |e| { key: $e.key, value: $e.value, origin_rank: $origin_rank } }
 }
 
-# Topologically sort modules by their declared dependencies using Kahn's algorithm (RFC-031)
+# Names (in original order) of pending nodes that lie on a dependency cycle (RFC-054)
+def find-cycle-members [pending: list<record>]: nothing -> list<string> {
+    $pending | where { |node|
+        mut frontier = $node.deps
+        mut seen = []
+        mut found = false
+        while ($frontier | is-not-empty) and (not $found) {
+            let cur = ($frontier | first)
+            $frontier = ($frontier | skip 1)
+            if $cur == $node.name {
+                $found = true
+            } else if $cur not-in $seen {
+                $seen = ($seen | append $cur)
+                let nxt = ($pending | where { |p| $p.name == $cur } | get -o 0.deps | default [])
+                $frontier = ($frontier | append $nxt)
+            }
+        }
+        $found
+    } | get name
+}
+
+# Topologically sort modules by their declared dependencies using Kahn's algorithm (RFC-031);
+# stable: each step takes the ready module with the lowest host.toml index (RFC-054)
 export def sort-modules-dag [modules: list<record>]: nothing -> list<record> {
     if ($modules | length) <= 1 {
         return $modules
@@ -394,20 +416,17 @@ export def sort-modules-dag [modules: list<record>]: nothing -> list<record> {
     mut sorted = []
 
     while ($pending | is-not-empty) {
-        let ready = ($pending | where { |node| ($node.deps | is-empty) })
-        if ($ready | is-empty) {
-            let cycle_mods = ($pending | get name | str join ", ")
+        # RFC-054: pick the single ready node with the lowest original index
+        let idx = ($pending | enumerate | where { |e| ($e.item.deps | is-empty) } | get -o 0.index)
+        if $idx == null {
+            let cycle_mods = (find-cycle-members $pending | str join ", ")
             error make { msg: $"Cyclic module dependency detected among: ($cycle_mods)" }
         }
 
-        for r in $ready {
-            $sorted = ($sorted | append $r.item)
-        }
-
-        let resolved_names = ($ready | get name)
-        $pending = ($pending | where { |node| $node.name not-in $resolved_names })
-        $pending = ($pending | each { |node|
-            $node | upsert deps ($node.deps | where { |d| $d not-in $resolved_names })
+        let picked = ($pending | get $idx)
+        $sorted = ($sorted | append $picked.item)
+        $pending = ($pending | enumerate | where { |e| $e.index != $idx } | each { |e|
+            $e.item | upsert deps ($e.item.deps | where { |d| $d != $picked.name })
         })
     }
 
