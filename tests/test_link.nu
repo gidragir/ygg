@@ -1172,3 +1172,13 @@ export def test_preflight_rejects_invalid_env_and_alias_names [] {
         assert equal ($ok | where { |p| $p.key in ["env", "aliases"] }) []
     }
 }
+
+export def test_preflight_rejects_invalid_secrets_key [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "[env]\n\"A; rm\" = \"x\"\nGOOD = \"y\"" | save -f ($home | path join "secrets.toml")
+        let p = (preflight-check $home {} --quiet)
+        assert equal ($p | where key == "env" | length) 1
+        assert ((($p | where key == "env").0.detail) | str contains "secrets.toml")
+    }
+}

@@ -507,3 +507,39 @@ export def test_path_entries_reach_all_shells [] {
         assert equal ((^nu -c $"source '($env_dir | path join env.nu)'; $env.PATH | first" | complete).stdout | str trim) $p
     }
 }
+
+def compile-with-paths [home: string, paths: list<string>]: nothing -> string {
+    ensure-ygg-dirs $home
+    let sb = ($home | path join "sb")
+    compile-environment $home { modules: [], env: {}, aliases: {}, path: $paths } --sandbox $sb
+    $home | path join ".state" "env"
+}
+
+export def test_path_order_is_same_in_all_shells [] {
+    with-temp-ygg { |home|
+        let a = ($home | path join "pa")
+        let b = ($home | path join "pb")
+        mkdir $a $b
+        let env_dir = (compile-with-paths $home [$a, $b])
+        assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g ($a) ($b)")
+        assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\(($a) ($b) $path\)")
+        if (which fish | is-not-empty) {
+            let out = (^fish -c $"set -gx PATH /usr/bin; source '($env_dir | path join env.fish)'; printf '%s\\n' $PATH[1] $PATH[2]" | lines)
+            assert equal $out [$a, $b]
+        }
+    }
+}
+
+export def test_path_quoting_and_empty [] {
+    with-temp-ygg { |home|
+        let env_dir = (compile-with-paths $home ["/opt/my dir/it's$x"])
+        assert (open --raw ($env_dir | path join "env.zsh") | str contains "path=('/opt/my dir/it'\\''s$x' $path)")
+        assert (open --raw ($env_dir | path join "env.fish") | str contains "fish_add_path -g '/opt/my dir/it\\'s$x'")
+    }
+    with-temp-ygg { |home|
+        let env_dir = (compile-with-paths $home [])
+        assert (not (open --raw ($env_dir | path join "env.zsh") | str contains "path="))
+        assert (not (open --raw ($env_dir | path join "env.fish") | str contains "fish_add_path"))
+        assert (not (open --raw ($env_dir | path join "env.nu") | str contains "PATH"))
+    }
+}

@@ -454,8 +454,10 @@ export def compile-environment [
             $fish_lines = ($fish_lines | append $"set -gx ($it.key) \(($cmd))")
         }
     }
-    for e in $path_entries {
-        $fish_lines = ($fish_lines | append $"fish_add_path -g (quote-path-fish $e)")
+    if not ($path_entries | is-empty) {
+        # single call keeps the argument order at the front of PATH (A before B), matching nu and zsh
+        let fp = ($path_entries | each { |e| quote-path-fish $e } | str join " ")
+        $fish_lines = ($fish_lines | append $"fish_add_path -g ($fp)")
     }
     let env_fish_content = if ($fish_lines | is-empty) { "" } else { ($fish_lines | str join "\n") + "\n" }
     $env_fish_content | save -f $env_fish_path

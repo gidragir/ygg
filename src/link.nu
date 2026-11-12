@@ -2,7 +2,7 @@
 # Yggdrasil configuration manager — File linker, unfolding, 3-way sync & safe pruning
 
 use state.nu [load-state, save-state, expand-target-path, backup-existing, detect-host-os, to-win32-path]
-use env.nu [validate-secret-providers]
+use env.nu [validate-secret-providers, load-secrets-env]
 
 # Make a file executable (owner) if it is not already; chmod stderr is suppressed.
 # In nu 0.116 `ls -lD` mode is a 9-char string ("rwxr-xr-x") without a type char.
@@ -1120,6 +1120,14 @@ export def preflight-check [
                     detail: $"Invalid environment variable name '($k)'"
                 })
             }
+        }
+    }
+    for k in (load-secrets-env $ygg_home | columns) {
+        if not ($k =~ '^[A-Za-z_][A-Za-z0-9_]*$') {
+            $problems = ($problems | append {
+                module: "secrets", key: "env", reason: "invalid_env_name",
+                detail: $"Invalid environment variable name '($k)' in secrets.toml"
+            })
         }
     }
     let alias_tree = ($plan.aliases? | default {})
