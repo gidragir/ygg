@@ -141,7 +141,7 @@ export def test_host_lock_prevents_concurrent_runs_and_cleans_stale [] {
         assert (not ($lock_file | path exists)) "Lock file must be removed after release"
 
         # 4. Stale lock recovery: non-existent PID allows new acquire
-        let stale_file = ($home | path join ".state" "ygg.lock")
+        let stale_file = ($home | path join ".state" "host.lock")
         {
             pid: 99999999,
             timestamp: "2026-11-08T00:00:00Z",
@@ -160,13 +160,54 @@ export def test_host_lock_prevents_concurrent_runs_and_cleans_stale [] {
         # 5. --no-lock and YGG_NO_LOCK=1 bypass lock creation
         let no_lock_res = (acquire-host-lock $home "apply" --no-lock)
         assert equal $no_lock_res ""
-        assert (not ($home | path join ".state" "ygg.lock" | path exists))
+        assert (not ($home | path join ".state" "host.lock" | path exists))
 
         with-env { YGG_NO_LOCK: "1" } {
             let env_no_lock = (acquire-host-lock $home "apply")
             assert equal $env_no_lock ""
-            assert (not ($home | path join ".state" "ygg.lock" | path exists))
+            assert (not ($home | path join ".state" "host.lock" | path exists))
         }
+    }
+}
+
+export def test_host_lock_is_exclusive_under_race [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let tests_dir = if ($env.FILE_PWD? != null) { $env.FILE_PWD } else if (($env.PWD | path join "tests") | path exists) { $env.PWD | path join "tests" } else { $env.PWD }
+        let src = ($tests_dir | path join "../src" | path expand)
+        let script = $"use state.nu *; try { acquire-host-lock '($home)' 'apply' | ignore; sleep 2sec; print WON } catch { print LOST }"
+        let outs = (1..8 | par-each { |_| ^nu -I $src -c $script | complete | get stdout | str trim })
+        assert equal ($outs | where { |o| $o == "WON" } | length) 1
+    }
+}
+
+export def test_host_lock_foreign_live_pid_and_foreign_host [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let lf = ($home | path join ".state" "host.lock")
+        let me = (sys host | get hostname)
+        { pid: 1, timestamp: "x", command: "apply", user: "root", host: $me } | to json | save -f $lf
+        let r1 = (try { acquire-host-lock $home "apply"; "taken" } catch { "refused" })
+        assert equal $r1 "refused"
+        { pid: 2147483646, timestamp: "x", command: "apply", user: "u", host: "other-host" } | to json | save -f $lf
+        let r2 = (try { acquire-host-lock $home "apply"; "taken" } catch { |e| $e.msg })
+        assert ($r2 | str contains "other-host")
+        { pid: 2147483646, timestamp: "x", command: "apply", user: "u", host: $me } | to json | save -f $lf
+        let l3 = (acquire-host-lock $home "apply")
+        assert equal (open $lf | from json | get pid) $nu.pid
+        release-host-lock $l3
+        assert (not ($lf | path exists))
+    }
+}
+
+export def test_release_host_lock_ignores_foreign_owner [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let lf = ($home | path join ".state" "host.lock")
+        { pid: 1, host: (sys host | get hostname) } | to json | save -f $lf
+        release-host-lock $lf
+        assert ($lf | path exists)
     }
 }
 

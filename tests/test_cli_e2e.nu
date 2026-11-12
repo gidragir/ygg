@@ -682,7 +682,7 @@ os = ["linux", "cachyos"]
             # 1. Normal apply creates and cleans lock file
             let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
             assert equal $ap.exit_code 0 $ap.stderr
-            assert (not ($home | path join ".state" "ygg.lock" | path exists))
+            assert (not ($home | path join ".state" "host.lock" | path exists))
 
             # 2. Simulate concurrent run with active PID
             mkdir ($home | path join ".state")
@@ -690,7 +690,7 @@ os = ["linux", "cachyos"]
                 pid: $nu.pid,
                 timestamp: "2026-11-08T00:00:00Z",
                 command: "apply"
-            } | to json | save -f ($home | path join ".state" "ygg.lock")
+            } | to json | save -f ($home | path join ".state" "host.lock")
 
             let locked_res = (^nu $ygg_bin apply --sandbox $sb | complete)
             assert equal $locked_res.exit_code 1
@@ -1084,6 +1084,10 @@ cargo = ["x"]
         "[[modules]]\nname = \"mod-a\"\n" | save -f ($home | path join "host.toml")
         "K = \"op://v/i/f\"\n" | save -f ($home | path join "secrets.toml")
 
+        # host lock needs `ln` (hard link) on PATH; expose only it, not op/bw/pass
+        let ln_dir = ($home | path join "ln-bin")
+        mkdir $ln_dir
+        ^ln -s (which ln | get 0.path) ($ln_dir | path join "ln")
         let nu_dir = ($nu.current-exe | path dirname)
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         let res = (with-env {
@@ -1091,7 +1095,7 @@ cargo = ["x"]
             YGG_SANDBOX: $sb,
             YGG_HOST_OS_OVERRIDE: "cachyos",
             YGG_MOCK_PKG_LOG: $pkg_log,
-            PATH: [$nu_dir]
+            PATH: [$nu_dir, $ln_dir]
         } { ^nu $ygg_bin apply --force --sandbox $sb | complete })
 
         assert ($res.exit_code != 0)

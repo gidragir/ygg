@@ -279,66 +279,126 @@ export def restrict-file-access [path: string]: nothing -> bool {
 }
 
 
-# Check if a process with given PID is still running
+# Check if a process with given PID is still running (EPERM on Unix counts as alive, RFC-046)
 export def check-process-alive [pid: int]: nothing -> bool {
     if $pid <= 0 {
         return false
     }
     if $nu.os-info.family == "windows" {
         let res = (try {
-            ^tasklist /FI $"PID eq ($pid)" /FO CSV | complete
+            ^tasklist /FI $"PID eq ($pid)" /FO CSV /NH | complete
         } catch {
             { exit_code: 1, stdout: "" }
         })
-        if $res.exit_code == 0 {
-            ($res.stdout | str contains $"\"($pid)\"") or ($res.stdout | str contains ($pid | into string))
-        } else {
-            false
+        if $res.exit_code != 0 {
+            return false
         }
+        let pids = ($res.stdout | lines | where { |l| $l | str trim | is-not-empty } | each { |l|
+            let cols = (try { $l | from csv --noheaders } catch { [] })
+            if ($cols | is-empty) { "" } else { $cols | first | get -o column1 | default "" | into string | str trim }
+        })
+        $pids | any { |c| $c == ($pid | into string) }
     } else {
         let res = (try {
             ^kill -0 $pid | complete
         } catch {
-            { exit_code: 1 }
+            { exit_code: 1, stderr: "" }
         })
-        $res.exit_code == 0
+        ($res.exit_code == 0) or ($res.stderr? | default "" | str contains "Operation not permitted")
     }
 }
 
-# Acquire exclusive advisory host lock in $YGG_HOME/.state/ygg.lock (RFC-026)
+# Create hard link $link -> $target; true on success (fails if $link exists)
+def hard-link-file [target: string, link: string]: nothing -> bool {
+    let res = (try {
+        if $nu.os-info.family == "windows" {
+            ^cmd /c mklink /H (to-win32-path $link) (to-win32-path $target) | complete
+        } else {
+            ^ln $target $link | complete
+        }
+    } catch { { exit_code: 1 } })
+    $res.exit_code == 0
+}
+
+# Acquire exclusive advisory host lock in $YGG_HOME/.state/host.lock (RFC-026, RFC-046)
 export def acquire-host-lock [ygg_home: string, command: string, --no-lock]: nothing -> string {
     if $no_lock or (($env.YGG_NO_LOCK? | default "") == "1") {
         return ""
     }
-    let lock_file = ($ygg_home | path join ".state" "ygg.lock")
     ensure-ygg-dirs $ygg_home
+    let state_dir = ($ygg_home | path join ".state")
+    let lock_file = ($state_dir | path join "host.lock")
+    let my_host = (try { sys host | get hostname } catch { "" })
 
-    if ($lock_file | path exists) {
-        let lock_data = (try { open $lock_file | from json } catch { {} })
-        let lock_pid = ($lock_data.pid? | default 0)
-        let is_alive = (check-process-alive $lock_pid)
-        if $is_alive {
-            error make { msg: $"Host is locked by another ygg instance \(PID: ($lock_pid), Command: '($lock_data.command? | default "unknown")', Started: ($lock_data.timestamp? | default "")\). Aborting." }
-        } else {
-            print -e $"[ygg] Warning: Removing stale lock from terminated process \(PID ($lock_pid)\)."
-            try { rm -f $lock_file } catch { }
+    # Legacy lock name: live PID refuses, otherwise removed (RFC-046 p.6)
+    let legacy = ($state_dir | path join "ygg.lock")
+    if ($legacy | path exists) {
+        let ld = (try { open $legacy | from json } catch { {} })
+        let lpid = ($ld.pid? | default 0)
+        if (check-process-alive $lpid) {
+            error make { msg: $"Host is locked by another ygg instance \(PID: ($lpid), legacy lock '($legacy)'\). Aborting." }
         }
+        try { rm -f $legacy } catch { }
     }
 
     let payload = {
         pid: $nu.pid,
         timestamp: (date now | format date "%Y-%m-%dT%H:%M:%SZ"),
         command: $command,
-        user: ($env.USER? | default ($env.USERNAME? | default ""))
+        user: ($env.USER? | default ($env.USERNAME? | default "")),
+        host: $my_host
     }
-    $payload | to json | save -f $lock_file
+    let tmp = ($state_dir | path join $"host.lock.($nu.pid).(random int 0..2147483646)")
+    $payload | to json | save -f $tmp
+
+    let result = (try {
+        mut taken = (hard-link-file $tmp $lock_file)
+        if not $taken {
+            let lock_data = (try { open $lock_file | from json } catch { {} })
+            let lock_pid = ($lock_data.pid? | default 0)
+            let lock_host = ($lock_data.host? | default $my_host)
+            if $lock_host != $my_host {
+                error make { msg: $"Host lock '($lock_file)' is held by another machine '($lock_host)' \(PID: ($lock_pid)\). Remove the file manually if it is stale." }
+            }
+            if (check-process-alive $lock_pid) {
+                error make { msg: $"Host is locked by another ygg instance \(PID: ($lock_pid), Command: '($lock_data.command? | default "unknown")', Started: ($lock_data.timestamp? | default "")\). Aborting." }
+            }
+            print -e $"[ygg] Warning: Removing stale lock from terminated process \(PID ($lock_pid)\)."
+            let stale = ($state_dir | path join $"host.lock.stale.(random int 0..2147483646)")
+            let moved = (try { mv $lock_file $stale; true } catch { false })
+            if $moved {
+                let moved_pid = (try { open $stale | from json | get -o pid | default 0 } catch { 0 })
+                if $moved_pid != $lock_pid {
+                    # Took over a lock that was acquired meanwhile: put it back
+                    hard-link-file $stale $lock_file | ignore
+                    try { rm -f $stale } catch { }
+                    error make { msg: "Host lock changed during stale takeover. Aborting." }
+                }
+                try { rm -f $stale } catch { }
+                $taken = (hard-link-file $tmp $lock_file)
+            }
+            if not $taken {
+                error make { msg: "Host is locked by another ygg instance (lost stale takeover race). Aborting." }
+            }
+        }
+        { ok: true }
+    } catch { |e|
+        { ok: false, msg: ($e.msg? | default "lock failed") }
+    })
+    try { rm -f $tmp } catch { }
+    if not $result.ok {
+        error make { msg: $result.msg }
+    }
     $lock_file
 }
 
-# Release advisory host lock (RFC-026)
+# Release advisory host lock; only if owned by the current process (RFC-026, RFC-046)
 export def release-host-lock [lock_file: string]: nothing -> nothing {
     if ($lock_file != "") and ($lock_file | path exists) {
-        try { rm -f $lock_file } catch { }
+        let owner = (try { open $lock_file | from json | get -o pid | default 0 } catch { 0 })
+        if $owner == $nu.pid {
+            try { rm -f $lock_file } catch { }
+        }
     }
 }
 
