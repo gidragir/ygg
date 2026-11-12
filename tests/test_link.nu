@@ -1140,3 +1140,15 @@ export def test_forget_prune_children_use_normal_link_table [] {
         assert equal ((load-state $home).links | get ($x | path join "sub") | get type) "symlink"
     }
 }
+
+export def test_preflight_rejects_bad_service_manager_and_name [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bad_mgr = (preflight-check $home { services: { rm: { enable: ["x"] } } } --quiet)
+        assert equal ($bad_mgr | where key == "services" | length) 1
+        let bad_name = (preflight-check $home { services: { systemd: { user: { enable: ["a; b"] } } } } --quiet)
+        assert equal ($bad_name | where key == "services" | length) 1
+        let ok = (preflight-check $home { services: { systemd: { user: { enable: ["a@b.service"], restart_on_change: { "c-d_e:f.service": ["k"] } } } } } --quiet)
+        assert equal ($ok | where key == "services") []
+    }
+}

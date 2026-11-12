@@ -400,8 +400,13 @@ def apply-plan [
 
         # 6. Declarative services management (RFC-037 / RFC-043)
         record-journal-step $ygg_home "services" "IN_PROGRESS"
-        run-service-actions $ygg_home $plan $ops --sandbox=$effective_sandbox | ignore
-        record-journal-step $ygg_home "services" "COMMITTED"
+        let svc_res = (run-service-actions $ygg_home $plan $ops --force=$force --sandbox=$effective_sandbox)
+        let svc_failed = ($svc_res | where status == "failed")
+        if ($svc_failed | is-not-empty) {
+            record-journal-step $ygg_home "services" "FAILED"
+        } else {
+            record-journal-step $ygg_home "services" "COMMITTED"
+        }
 
         print $"Applied ($mod_count) module\(s\)."
 
@@ -420,6 +425,9 @@ def apply-plan [
         }
         if ($link_res.failed | is-not-empty) {
             $errors = ($errors | append $"($link_res.failed | length) link\(s\) failed: ($link_res.failed | get dest | str join ', ')")
+        }
+        if ($svc_failed | is-not-empty) {
+            $errors = ($errors | append ("Service actions failed: " + ($svc_failed | each { |f| $f.manager + ": " + $f.action + " " + $f.service + " (" + $f.stderr + ")" } | str join ", ")))
         }
         if ($errors | is-not-empty) {
             error make { msg: ($errors | str join "; ") }

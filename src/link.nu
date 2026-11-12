@@ -925,6 +925,34 @@ export def shadowed-files [dest: string, src: string]: nothing -> list<string> {
     relative-files $dest | where { |f| $f not-in $tracked }
 }
 
+# RFC-055: whitelist of service managers
+export const SERVICE_MANAGERS = ["systemd-user", "systemd-system", "launchd", "windows"]
+
+# Flatten `[services]` into [{manager, data}] (`systemd` with action keys = systemd-user; `<top>.<sub>` = `<top>-<sub>`)
+export def parse-services-tree [services: record]: nothing -> list<record> {
+    mut configs = []
+    for top_key in ($services | columns) {
+        let top_val = ($services | get $top_key)
+        if not (($top_val | describe) starts-with "record") {
+            continue
+        }
+        let sub_cols = ($top_val | columns)
+        let has_action_keys = ($sub_cols | any { |c| $c in ["enable", "reload_on_change", "restart_on_change"] })
+        if $has_action_keys {
+            let mgr = if $top_key == "systemd" { "systemd-user" } else { $top_key }
+            $configs = ($configs | append { manager: $mgr, data: $top_val })
+        } else {
+            for sub_key in $sub_cols {
+                let sub_val = ($top_val | get $sub_key)
+                if (($sub_val | describe) starts-with "record") {
+                    $configs = ($configs | append { manager: $"($top_key)-($sub_key)", data: $sub_val })
+                }
+            }
+        }
+    }
+    $configs
+}
+
 # Pre-flight validation of the plan before any host mutation (RFC-020). Read-only.
 # Reasons: missing_source, invalid_mode_source, nesting_conflict, ownership_conflict, shadowed_files.
 # --force only lifts shadowed_files (RFC-021, with a warning); --quiet suppresses that warning.
@@ -1048,6 +1076,37 @@ export def preflight-check [
             })
         } else if not $quiet {
             print -e ($"[ygg] Warning: directory '($dest)' will be replaced by a link; ($extra | length) host file\(s\) not in the module move to .state/backups/:\n" + $shown + $more)
+        }
+    }
+
+    # 5. [services] (RFC-055): manager whitelist and service-name charset
+    let svc_tree = ($plan.services? | default {})
+    if (($svc_tree | describe) starts-with "record") {
+        for cfg in (parse-services-tree $svc_tree) {
+            if $cfg.manager not-in $SERVICE_MANAGERS {
+                $problems = ($problems | append {
+                    module: "services", key: "services", reason: "invalid_service_manager",
+                    detail: $"Unsupported service manager '($cfg.manager)' \(allowed: ($SERVICE_MANAGERS | str join ', ')\)"
+                })
+                continue
+            }
+            let en = ($cfg.data.enable? | default [])
+            let en_list = if (($en | describe) starts-with "list") { $en } else { [$en] }
+            mut names = $en_list
+            for a in ["reload_on_change", "restart_on_change"] {
+                let m = ($cfg.data | get -o $a | default {})
+                if (($m | describe) starts-with "record") {
+                    $names = ($names | append ($m | columns))
+                }
+            }
+            for n in $names {
+                if not (($n | into string) =~ '^[A-Za-z0-9@._:-]+$') {
+                    $problems = ($problems | append {
+                        module: "services", key: "services", reason: "invalid_service_name",
+                        detail: $"Invalid service name '($n)' for manager '($cfg.manager)'"
+                    })
+                }
+            }
         }
     }
 

@@ -215,7 +215,7 @@ export def missing-pkgs [mgr: string, pkgs: list<string>]: nothing -> list<strin
 
 # RFC-022: without a TTY (or with YGG_NONINTERACTIVE=1) sudo must work without a password
 # (mock: YGG_MOCK_SUDO_DENIED=1 simulates missing rights, sudo is never run)
-def sudo-available []: nothing -> bool {
+export def sudo-available []: nothing -> bool {
     if (is-mock-mode) {
         return (($env.YGG_MOCK_SUDO_DENIED? | default "") != "1")
     }

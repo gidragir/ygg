@@ -598,7 +598,7 @@ export def test_declarative_services_mock_execution_and_failure [] {
 
             let glazewm = ($actions | where service == "glazewm" | first)
             assert equal $glazewm.status "ok"
-            assert ($glazewm.cmd | str contains "Restart-Service -Name glazewm")
+            assert ($glazewm.cmd | str contains "Restart-Service -Name $args[0] glazewm")
 
             let log_content = (open --raw $mock_log)
             assert ($log_content | str contains "service: systemctl --user reload waybar.service")
@@ -624,3 +624,64 @@ export def test_onchange_namespaces_and_migrates_key [] {
     }
 }
 
+
+export def test_service_enable_runs_once_and_triggers_are_exact [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let log = ($home | path join "svc.log")
+        let plan = { services: { systemd: { user: {
+            enable: ["a.service"], restart_on_change: { "b.service": ["waybar/config"] } } } } }
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            run-service-actions $home $plan [] | ignore
+            run-service-actions $home $plan [] | ignore
+            assert equal (open --raw $log | lines | where { |l| $l | str contains "enable a.service" } | length) 1
+            let other = [{ op: "LINK", key: "foot/config", dest: ($home | path join "sb/.config/foot/config"), src: "x" }]
+            assert equal (run-service-actions $home $plan $other | where action == "restart") []
+            let hit = [{ op: "RELINK", key: "waybar/config", dest: "d", src: "s" }]
+            assert equal (run-service-actions $home $plan $hit | where action == "restart" | length) 1
+            assert equal (run-service-actions $home $plan [] --force | where action == "enable" | length) 1
+            # basename / suffix matching is gone
+            let base = [{ op: "LINK", key: "x/y", dest: "/h/.config/waybar/config", src: "s" }]
+            assert equal (run-service-actions $home $plan $base | where action == "restart") []
+            # raw destination of the plan link matches
+            let plan2 = ($plan | merge { links: [{ module: "m", key: "wb", dest_raw: "~/.config/waybar/config" }], services: { systemd: { user: { restart_on_change: { "w.service": ["~/.config/waybar/config"] } } } } })
+            let rawop = [{ op: "LINK", module: "m", key: "wb", dest: "/h/.config/waybar/config", src: "s" }]
+            assert equal (run-service-actions $home $plan2 $rawop | where action == "restart" | length) 1
+        }
+    }
+}
+
+export def test_service_enable_cache_key_survives_gc [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let plan = { services: { systemd: { system: { enable: ["a.service"] } }, launchd: { enable: ["l"] } } }
+        with-env { YGG_MOCK_PKG_LOG: ($home | path join "svc.log") } {
+            run-service-actions $home $plan [] | ignore
+            let keys = ((load-state $home).hashes | columns)
+            assert ("svc:systemd-system:a.service" in $keys)
+            assert ("svc:launchd:l" in $keys)
+            gc-state-hashes $home (collect-active-hash-keys $plan) [] | ignore
+            let after = ((load-state $home).hashes | columns)
+            assert ("svc:systemd-system:a.service" in $after)
+            assert ("svc:launchd:l" in $after)
+            assert (open --raw ($home | path join "svc.log") | str contains "service: sudo systemctl enable a.service")
+        }
+    }
+}
+
+export def test_service_systemd_system_requires_sudo [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let log = ($home | path join "svc.log")
+        let plan = { services: { systemd: { system: { enable: ["a.service"] } } } }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_SUDO_DENIED: "1" } {
+            let res = (run-service-actions $home $plan [])
+            assert equal ($res | first | get status) "failed"
+            assert (not ($log | path exists)) "no service command may run without sudo"
+            assert equal ((load-state $home).hashes | columns | where { |k| $k starts-with "svc:" }) []
+        }
+    }
+}

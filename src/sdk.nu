@@ -2,8 +2,8 @@
 # Yggdrasil configuration manager — Reactive SDK & setup.nu runner
 
 use state.nu [get-ygg-home, load-state, save-state, expand-target-path]
-use pkg.nu [run-with-timeout]
-use link.nu [is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
+use pkg.nu [run-with-timeout, sudo-available]
+use link.nu [parse-services-tree, is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
 use env.nu [resolve-secret-value]
 
 const YGG_SRC_DIR = (path self | path dirname)
@@ -519,6 +519,7 @@ export def run-link-hooks [
     $results
 }
 
+
 def to-str-list [value: any]: nothing -> list<string> {
     if $value == null {
         []
@@ -529,30 +530,34 @@ def to-str-list [value: any]: nothing -> list<string> {
     }
 }
 
+# RFC-055 p.1/p.2 + RFC-057 p.4: managers are whitelisted (SERVICE_MANAGERS); the service name is
+# validated in preflight-check, on Windows it is passed as an argument (never interpolated).
 def build-service-cmd [manager: string, action: string, service: string]: nothing -> list<string> {
     if $manager == "systemd-user" {
         ["systemctl", "--user", $action, $service]
-    } else if ($manager == "systemd-system") or ($manager == "systemd") {
-        ["systemctl", $action, $service]
+    } else if $manager == "systemd-system" {
+        ["sudo", "systemctl", $action, $service]
     } else if $manager == "windows" {
         if $action == "enable" {
-            ["powershell", "-NoProfile", "-Command", $"Set-Service -Name ($service) -StartupType Automatic"]
+            ["powershell", "-NoProfile", "-Command", "Set-Service -Name $args[0] -StartupType Automatic", $service]
         } else {
-            ["powershell", "-NoProfile", "-Command", $"Restart-Service -Name ($service)"]
+            ["powershell", "-NoProfile", "-Command", "Restart-Service -Name $args[0]", $service]
         }
-    } else if ($manager starts-with "launchd") {
+    } else if $manager == "launchd" {
         if $action == "enable" {
             ["launchctl", "load", "-w", $service]
         } else {
             ["launchctl", "kickstart", "-k", $service]
         }
     } else {
-        [$manager, $action, $service]
+        error make { msg: $"unsupported service manager '($manager)'" }
     }
 }
 
-def service-trigger-matches [changed_ops: any, triggers: any]: nothing -> bool {
-    let trig_list = (to-str-list $triggers)
+# RFC-055 p.4: a trigger matches when it equals the link key, its raw destination or the expanded destination.
+# No basename / suffix matching.
+def service-trigger-matches [changed_ops: any, triggers: any, raw_by_link: record = {}]: nothing -> bool {
+    let trig_list = (to-str-list $triggers | each { |t| $t | into string })
     let ops_list = ($changed_ops | default [])
     if ($trig_list | is-empty) or ($ops_list | is-empty) {
         return false
@@ -561,54 +566,11 @@ def service-trigger-matches [changed_ops: any, triggers: any]: nothing -> bool {
     $ops_list | any { |op|
         let key = ($op.key? | default "")
         let dest = ($op.dest? | default "")
-        let src = ($op.src? | default "")
-
-        $trig_list | any { |t|
-            let trig = ($t | into string)
-            if ($key == $trig) or ($dest == $trig) or ($src == $trig) {
-                true
-            } else if ($key != "") and (($key | path basename) == $trig) {
-                true
-            } else if ($dest != "") and (($dest | path basename) == $trig) {
-                true
-            } else if ($src != "") and (($src | path basename) == $trig) {
-                true
-            } else if ($key != "") and (($key | str ends-with $"/\($trig\)") or ($key | str ends-with $"\\($trig)")) {
-                true
-            } else if ($dest != "") and (($dest | str ends-with $"/\($trig\)") or ($dest | str ends-with $"\\($trig)")) {
-                true
-            } else if ($key != "") and ($trig | str ends-with $key) {
-                true
-            } else {
-                false
-            }
+        let raws = ([($op.dest_raw? | default "")] | append ($raw_by_link | get -o $"($op.module? | default "")\u{1f}($key)" | default []) | where { |r| $r != "" })
+        $trig_list | any { |trig|
+            ($key == $trig) or ($dest == $trig) or ($trig in $raws)
         }
     }
-}
-
-def parse-services-tree [services: record]: nothing -> list<record> {
-    mut configs = []
-    for top_key in ($services | columns) {
-        let top_val = ($services | get $top_key)
-        if not (($top_val | describe) starts-with "record") {
-            continue
-        }
-        let sub_cols = ($top_val | columns)
-        let has_action_keys = ($sub_cols | any { |c| $c in ["enable", "reload_on_change", "restart_on_change"] })
-        if $has_action_keys {
-            let mgr = if $top_key == "systemd" { "systemd-user" } else { $top_key }
-            $configs = ($configs | append { manager: $mgr, data: $top_val })
-        } else {
-            for sub_key in $sub_cols {
-                let sub_val = ($top_val | get $sub_key)
-                if (($sub_val | describe) starts-with "record") {
-                    let mgr = $"($top_key)-($sub_key)"
-                    $configs = ($configs | append { manager: $mgr, data: $sub_val })
-                }
-            }
-        }
-    }
-    $configs
 }
 
 # RFC-037: Declarative management of system daemons and services
@@ -617,6 +579,7 @@ export def run-service-actions [
     plan: record,
     ops: any,
     --dry-run,
+    --force,
     --sandbox: string = ""
 ]: nothing -> list<record> {
     let services = ($plan.services? | default {})
@@ -639,6 +602,13 @@ export def run-service-actions [
     let mock_fail = ($env.YGG_MOCK_SERVICE_FAIL? | default "" | split row "," | each { |c| $c | str trim } | where { |c| $c != "" })
     let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
 
+    let hashes = ((load-state $ygg_home).hashes? | default {})
+    mut raw_by_link = {}
+    for l in ($plan.links? | default []) {
+        let k = $"($l.module? | default "")\u{1f}($l.key? | default "")"
+        $raw_by_link = ($raw_by_link | upsert $k (($raw_by_link | get -o $k | default []) | append ($l.dest_raw? | default "")))
+    }
+
     mut scheduled = []
 
     for cfg in $configs {
@@ -648,6 +618,8 @@ export def run-service-actions [
         # 1. enable
         let enable_list = (to-str-list ($data.enable? | default []))
         for svc in $enable_list {
+            # RFC-055 p.3: enable runs once (svc:<mgr>:<svc> in state.hashes); --force resets the cache
+            if (not $force) and (($hashes | get -o $"svc:($mgr):($svc)") != null) { continue }
             $scheduled = ($scheduled | append { service: $svc, action: "enable", manager: $mgr })
         }
 
@@ -656,7 +628,7 @@ export def run-service-actions [
         if (($reload_map | describe) starts-with "record") {
             for svc in ($reload_map | columns) {
                 let triggers = ($reload_map | get $svc)
-                if (service-trigger-matches $changed_ops $triggers) {
+                if (service-trigger-matches $changed_ops $triggers $raw_by_link) {
                     $scheduled = ($scheduled | append { service: $svc, action: "reload", manager: $mgr })
                 }
             }
@@ -667,7 +639,7 @@ export def run-service-actions [
         if (($restart_map | describe) starts-with "record") {
             for svc in ($restart_map | columns) {
                 let triggers = ($restart_map | get $svc)
-                if (service-trigger-matches $changed_ops $triggers) {
+                if (service-trigger-matches $changed_ops $triggers $raw_by_link) {
                     $scheduled = ($scheduled | append { service: $svc, action: "restart", manager: $mgr })
                 }
             }
@@ -692,6 +664,8 @@ export def run-service-actions [
         let outcome = if $dry_run {
             print $"[ygg] \(dry-run\) SERVICE ($svc) \(($action) ($mgr)\)"
             { status: "dry_run", stderr: "" }
+        } else if ($mgr == "systemd-system") and not (sudo-available) {
+            { status: "failed", stderr: "sudo is not available without a password (non-interactive)" }
         } else if ($mock_log != "") {
             $"service: ($cmd_str)\n" | save --append $mock_log
             if ($svc in $mock_fail) or ($cmd_str in $mock_fail) {
@@ -713,6 +687,11 @@ export def run-service-actions [
             } catch { |e|
                 { status: "failed", stderr: $e.msg }
             }
+        }
+
+        if ($outcome.status == "ok") and ($action == "enable") {
+            let st = (load-state $ygg_home)
+            save-state $ygg_home ($st | upsert hashes (($st.hashes? | default {}) | upsert $"svc:($mgr):($svc)" "enabled"))
         }
 
         if ($outcome.status == "failed") {
