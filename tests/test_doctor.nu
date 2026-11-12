@@ -523,7 +523,7 @@ export def test_doctor_windows_acl_checks_env_ps1_and_private_files [] {
             let targets = ($res | get target)
             assert ($targets | any { |t| $t == $env_ps1 }) "Expected env.ps1 in targets"
             assert ($targets | any { |t| $t == $priv }) "Expected private file in targets"
-            assert ($res | all { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.fix | str contains "icacls") }) "All must have icacls fix"
+            assert ($res | all { |f| ($f.check == "perm") and ($f.severity == "error") and ($f.fix | str contains "icacls") and ($f.fix | str contains "${env:USERNAME}:F") and (not ($f.fix | str contains "%USERNAME%")) }) "All must have PowerShell icacls fix"
         }
     }
 }
@@ -654,5 +654,23 @@ export def test_doctor_fix_state_orphan_removes_link_too [] {
         doctor-fix $home $findings --sandbox $sb | ignore
         assert (not ($dest | path exists -n))
         assert equal ((load-state $home).links | columns) []
+    }
+}
+
+export def test_doctor_fix_state_orphan_keeps_regular_file [] {
+    if $nu.os-info.family == "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = ($home | path join "sb"); mkdir $sb
+        let dest = ($sb | path join "user-file")
+        "precious" | save -f $dest
+        "modules = []\n" | save -f ($home | path join "host.toml")
+        save-state $home { links: { ($dest): { module: "removed-mod", src: "x" } }, copies: {}, hashes: {}, packages: {} }
+        let findings = [{ check: "state_orphan", severity: "warn", target: $dest, detail: "", fix: "" }]
+        let res = (doctor-fix $home $findings --sandbox $sb)
+        assert (($dest | path type) == "file")
+        assert equal (open --raw $dest) "precious"
+        assert equal ((load-state $home).links | columns) []
+        assert equal ($res | get 0.action) "record removed, file left in place"
     }
 }

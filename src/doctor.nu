@@ -207,7 +207,7 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
                 $rows = ($rows | append (finding "acl_unreadable" "warn" $f "cannot read Windows ACL (PowerShell failed or unavailable)" "check PowerShell availability and execution policy, then re-run ygg doctor"))
             }
             if $is_insecure {
-                $rows = ($rows | append (finding "perm" "error" $f "insecure Windows ACL: readable by Users/Everyone" $"icacls '($f)' /inheritance:r /grant:r %USERNAME%:F"))
+                $rows = ($rows | append (finding "perm" "error" $f "insecure Windows ACL: readable by Users/Everyone" $"icacls '($f)' /inheritance:r /grant:r \"${env:USERNAME}:F\""))
             }
             continue
         }
@@ -420,7 +420,7 @@ export def doctor-fix [
             "perm" => {
                 let ok = (restrict-file-access $target)
                 if $ok {
-                    let done = if $is_windows { "icacls /inheritance:r /grant:r owner:F" } else { "chmod 0600" }
+                    let done = if $is_windows { $"icacls ($target) /inheritance:r /grant:r \"${env:USERNAME}:F\"" } else { "chmod 0600" }
                     $fixed_list = ($fixed_list | append ($f | insert status "fixed" | insert action $done))
                 } else {
                     $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to update permissions"))
@@ -449,12 +449,16 @@ export def doctor-fix [
                 if $in_links or $in_copies {
                     mut action = "pruned orphaned record from state"
                     if $in_links {
-                        let removed = (try { remove-link-only $target; true } catch { false })
+                        let removed = if (try { is-link-or-junction $target } catch { false }) {
+                            (try { remove-link-only $target; true } catch { false })
+                        } else {
+                            true
+                        }
                         if not $removed {
                             $fixed_list = ($fixed_list | append ($f | insert status "failed" | insert action "failed to remove link, record kept"))
                             continue
                         }
-                        $action = "link and record removed"
+                        $action = if (try { is-link-or-junction $target } catch { false }) { "link and record removed" } else { "record removed, file left in place" }
                     } else {
                         $action = "record removed, file left in place"
                     }

@@ -601,7 +601,7 @@ def "main doctor" [
                     $report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
                 } catch { |e|
                     release-host-lock $lock_file
-                    error make $e
+                    error make { msg: $e.msg }
                 }
                 release-host-lock $lock_file
             } else if not $json {
