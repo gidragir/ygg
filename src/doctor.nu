@@ -108,18 +108,27 @@ export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool {
     let broad = ["S-1-1-0" "S-1-5-11" "S-1-5-32-545" "S-1-5-32-546" "S-1-5-7"]
     $acl_lines | lines | any { |l|
         let parts = ($l | str trim | split row "|")
-        (($parts | length) >= 3) and (($parts | get 0 | str trim) in $broad) and (($parts | get 2 | str trim | str downcase) == "allow")
+        (($parts | length) >= 3) and (($parts | get 0 | str trim | str replace -a "\u{feff}" "" | str uppercase) in $broad) and (($parts | get 2 | str trim | str downcase) == "allow")
     }
 }
 
-# Read ACL of a file as "SID|Rights|Type" lines via PowerShell (empty string when unavailable)
-def read-windows-acl [path: string]: nothing -> string {
+# Read ACL of a file as "SID|Rights|Type" lines via PowerShell; ok=false when it cannot be read
+def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string> {
+    if (($env.YGG_MOCK_WINDOWS_ACL_FAIL? | default "") == "1") {
+        return { ok: false, out: "" }
+    }
     let ps = (if (which powershell.exe | is-not-empty) { "powershell.exe" } else if (which pwsh | is-not-empty) { "pwsh" } else { "" })
     if $ps == "" {
-        return ""
+        return { ok: false, out: "" }
     }
-    let script = "(Get-Acl -LiteralPath $args[0]).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value + '|' + $_.FileSystemRights + '|' + $_.AccessControlType }"
-    try { ^$ps -NoProfile -NonInteractive -Command $"& { ($script) }" (to-win32-path $path) | complete | get stdout } catch { "" }
+    let script = "$p = $env:YGG_ACL_PATH; (Get-Acl -LiteralPath $p).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value + '|' + $_.FileSystemRights + '|' + $_.AccessControlType }"
+    let win = (to-win32-path $path)
+    let r = (try { with-env { YGG_ACL_PATH: $win } { ^$ps -NoProfile -NonInteractive -Command $script | complete } } catch { null })
+    if ($r == null) or ($r.exit_code != 0) {
+        { ok: false, out: "" }
+    } else {
+        { ok: true, out: $r.stdout }
+    }
 }
 
 # perm: private files must not be accessible by group/others (Unix) or Users/Everyone (Windows RFC-035)
@@ -158,12 +167,18 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
         if $is_windows {
             let mock_insecure = (($env.YGG_MOCK_WINDOWS_INSECURE_ACL? | default "") == "1")
             let mock_output = ($env.YGG_MOCK_WINDOWS_ICACLS_OUTPUT? | default "")
+            mut unreadable = false
             let is_insecure = if $mock_insecure {
                 true
             } else if ($mock_output != "") {
                 is-windows-acl-insecure $mock_output
             } else {
-                is-windows-acl-insecure (read-windows-acl $real)
+                let acl = (read-windows-acl $real)
+                $unreadable = (not $acl.ok)
+                is-windows-acl-insecure $acl.out
+            }
+            if $unreadable {
+                $rows = ($rows | append (finding "acl_unreadable" "warn" $f "cannot read Windows ACL (PowerShell failed or unavailable)" "check PowerShell availability and execution policy, then re-run ygg doctor"))
             }
             if $is_insecure {
                 $rows = ($rows | append (finding "perm" "error" $f "insecure Windows ACL: readable by Users/Everyone" $"icacls '($f)' /inheritance:r /grant:r %USERNAME%:F"))

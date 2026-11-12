@@ -600,3 +600,18 @@ export def test_doctor_secrets_materialized_warning [] {
 
 
 
+
+export def test_doctor_windows_acl_unreadable_warns [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "" | save -f ($home | path join "secrets.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_WINDOWS_ACL_FAIL: "1" } {
+            let res = (check-perms $home { modules: [] } "")
+            assert ($res | any { |f| ($f.check == "acl_unreadable") and ($f.severity == "warn") }) "Expected acl_unreadable warn"
+        }
+    }
+}
+
+export def test_windows_acl_sid_parser_case_and_bom [] {
+    assert (is-windows-acl-insecure "\u{feff}s-1-1-0|Read|allow")
+}
