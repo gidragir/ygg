@@ -77,7 +77,7 @@ ygg <command> [options]
 | **`remove`** | `<name> [--force]` | Safely unlink managed files and remove module configuration, guarding against uncommitted work. |
 | **`apply`** | `[-n, --dry-run] [-f, --force] [--sandbox <path>]` | Execute the full pipeline: install packages, deploy links, export environment, and run `setup.nu` hooks. |
 | **`diff`** | `[--sandbox <path>]` | Dry-run preview of planned symlink and copy operations without modifying the filesystem. |
-| **`doctor`** | `[-v, --verbose]` | Read-only host audit: checks broken links, orphan files, collisions, permission leaks, and uncommitted edits. Exits with code `1` on error. |
+| **`doctor`** | `[--json] [--fix] [-y] [--ack-shadow]` | Read-only host audit: checks broken links, orphan files, collisions, permission leaks, and uncommitted edits. Exits with code `1` on error. `--fix` repairs safe findings; `--ack-shadow` marks reviewed backup-shadow warnings as `info` until a newer backup of the same path appears. |
 | **`update`** | | Fetch and rebase all Git modules. Safely aborts on conflict; auto-applies on success. |
 | **`save`** | `[--sandbox <path>]` | Synchronize modified host files defined in `[save]` back to their source module repos. |
 | **`status`** | `[--json]` | Display module status table (Git branch, dirty state, links, packages). Use `--json` for machine-readable output. |
