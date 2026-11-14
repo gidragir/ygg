@@ -267,7 +267,7 @@ export def test_cli_version_flag_and_subcommand [] {
     let v2 = (^nu $ygg_bin -v | complete)
     let v3 = (^nu $ygg_bin version | complete)
     assert equal $v1.exit_code 0
-    assert ($v1.stdout | str starts-with "ygg 0.1.0")
+    assert ($v1.stdout | str starts-with "ygg 0.1.1")
     assert equal ($v1.stdout | str trim) ($v2.stdout | str trim)
     assert equal ($v1.stdout | str trim) ($v3.stdout | str trim)
 }
