@@ -5,7 +5,7 @@ use std/assert
 use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/link.nu *
-use helpers.nu [with-temp-ygg, stat-inode, safe-glob]
+use helpers.nu [with-temp-ygg, stat-inode, safe-glob, test-link-dir, test-dangling-link]
 
 export def test_glob_shared_dir_and_ownership_conflict [] {
     with-temp-ygg { |home|
@@ -33,7 +33,7 @@ export def test_glob_shared_dir_ownership_conflict_error [] {
         mkdir ($sb | path join "target_dir")
         let link_dest = ($sb | path join ".zsh/scripts")
         mkdir ($link_dest | path dirname)
-        ^ln -s ($sb | path join "target_dir") $link_dest
+        test-link-dir ($sb | path join "target_dir") $link_dest
 
         let m = ($home | path join "modules" "m1")
         mkdir ($m | path join "scripts")
@@ -57,7 +57,7 @@ export def test_replaces_dangling_symlink_without_backup [] {
         let sb = ($home | path join "sb")
         mkdir ($sb | path join ".config")
         let dest = ($sb | path join ".config" "starship.toml")
-        ^ln -s "/nonexistent/dead/target" $dest
+        test-dangling-link ($home | path join "nonexistent-dead-target") $dest
 
         let m1 = ($home | path join "modules" "core")
         mkdir $m1
@@ -140,8 +140,12 @@ export def test_is_link_or_junction [] {
 
         let valid_link = ($home | path join "valid_link")
         let dead_link = ($home | path join "dead_link")
-        ^ln -s $real_file $valid_link
-        ^ln -s ($home | path join "nonexistent") $dead_link
+        if $nu.os-info.family == "windows" {
+            test-link-dir $real_dir $valid_link
+        } else {
+            ^ln -s $real_file $valid_link
+        }
+        test-dangling-link ($home | path join "nonexistent") $dead_link
 
         assert (is-link-or-junction $valid_link)
         assert (is-link-or-junction $dead_link)
@@ -158,7 +162,7 @@ export def test_remove_link_only_safety [] {
         "content\n" | save -f ($real_dir | path join "file.txt")
 
         let dir_link = ($home | path join "dir_link")
-        ^ln -s $real_dir $dir_link
+        test-link-dir $real_dir $dir_link
 
         # Removing link removes ONLY the link
         remove-link-only $dir_link
@@ -581,6 +585,7 @@ os = ["windows"]
 }
 
 export def test_ensure_executable_sets_mode_and_suppresses_stderr [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         let sb = ($home | path join "sb")
         let m = ($home | path join "modules" "m")
@@ -741,6 +746,7 @@ name = "late"
 }
 
 export def test_link_target_matches_and_idempotent_inode [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         let sb = ($home | path join "sb")
         let wt1 = ($home | path join "wt1")
@@ -1046,6 +1052,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
 }
 
 export def test_ensure_executable_follows_symlinked_source [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         let sb = ($home | path join "sb")
         let m = ($home | path join "modules" "m")

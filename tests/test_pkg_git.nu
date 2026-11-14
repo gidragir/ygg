@@ -234,7 +234,7 @@ export def test_update_aborts_cleanly_on_conflict [] {
         ^git clone $upstream $work_up
         ^git -C $work_up config user.email "t@t.local"
         ^git -C $work_up config user.name "Tester"
-        $"name = \"demo\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
+        $"name = \"demo\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
         "line = 1\n" | save -f ($work_up | path join "app.conf")
         ^git -C $work_up add .
         ^git -C $work_up commit -m "init"
@@ -317,7 +317,7 @@ export def test_update_modules_clean_success [] {
         ^git clone $upstream $work_up
         ^git -C $work_up config user.email "t@t.local"
         ^git -C $work_up config user.name "Tester"
-        $"name = \"demo\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
+        $"name = \"demo\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
         "v1\n" | save -f ($work_up | path join "app.conf")
         ^git -C $work_up add .
         ^git -C $work_up commit -m "init"
@@ -584,35 +584,37 @@ export def test_pkg_filter_mise_trust_and_timeout_kills_child_tree [] {
     }
 
     # Timeout kills the whole process tree (nu -c -> sleep) and leaves no stale message behind
-    let marker = "30.0713"
-    let t0 = (date now)
-    let r1 = (run-with-timeout ["nu", "-c", ("^sleep " + $marker)] 1)
-    let elapsed = ((date now) - $t0)
-    sleep 300ms
-    let alive = ((^pgrep -f ("sleep " + $marker) | complete).exit_code == 0)
-    if $alive {
-        ^pkill -KILL -f ("sleep " + $marker) | complete | ignore
-    }
-    assert equal $r1.timed_out true
-    assert equal $r1.exit_code 124
-    assert ($elapsed < 10sec) $"run-with-timeout took ($elapsed)"
-    assert (not $alive) "child sleep process survived the timeout"
+    if $nu.os-info.family != "windows" {
+        let marker = "30.0713"
+        let t0 = (date now)
+        let r1 = (run-with-timeout ["nu", "-c", ("^sleep " + $marker)] 1)
+        let elapsed = ((date now) - $t0)
+        sleep 300ms
+        let alive = ((^pgrep -f ("sleep " + $marker) | complete).exit_code == 0)
+        if $alive {
+            ^pkill -KILL -f ("sleep " + $marker) | complete | ignore
+        }
+        assert equal $r1.timed_out true
+        assert equal $r1.exit_code 124
+        assert ($elapsed < 10sec) $"run-with-timeout took ($elapsed)"
+        assert (not $alive) "child sleep process survived the timeout"
 
-    let r2 = (run-with-timeout ["nu", "-c", "print ok"] 5)
-    assert equal $r2.timed_out false
-    assert equal $r2.exit_code 0
-    assert equal ($r2.stdout | str trim) "ok"
+        let r2 = (run-with-timeout ["nu", "-c", "print ok"] 5)
+        assert equal $r2.timed_out false
+        assert equal $r2.exit_code 0
+        assert equal ($r2.stdout | str trim) "ok"
 
-    # Direct external process is killed too
-    let marker2 = "30.0714"
-    let r3 = (run-with-timeout ["sleep", $marker2] 1)
-    sleep 300ms
-    let alive2 = ((^pgrep -f ("sleep " + $marker2) | complete).exit_code == 0)
-    if $alive2 {
-        ^pkill -KILL -f ("sleep " + $marker2) | complete | ignore
+        # Direct external process is killed too
+        let marker2 = "30.0714"
+        let r3 = (run-with-timeout ["sleep", $marker2] 1)
+        sleep 300ms
+        let alive2 = ((^pgrep -f ("sleep " + $marker2) | complete).exit_code == 0)
+        if $alive2 {
+            ^pkill -KILL -f ("sleep " + $marker2) | complete | ignore
+        }
+        assert equal $r3.timed_out true
+        assert (not $alive2) "direct sleep process survived the timeout"
     }
-    assert equal $r3.timed_out true
-    assert (not $alive2) "direct sleep process survived the timeout"
 
     # Timeout 0 runs inline without a job
     let r4 = (run-with-timeout ["nu", "-c", "print inline"] 0)
@@ -687,6 +689,7 @@ export def test_package_set_hash_cache_and_refresh [] {
 }
 
 export def test_modules_status_columns_and_accurate_links_ok [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         ensure-ygg-dirs $home
         let sb = $env.YGG_SANDBOX
@@ -1239,7 +1242,7 @@ def make-upstream-module [home: string]: nothing -> record {
     ^git clone $upstream $work_up
     ^git -C $work_up config user.email "t@t.local"
     ^git -C $work_up config user.name "Tester"
-    $"name = \"demo\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
+    $"name = \"demo\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($work_up | path join "ygg.toml")
     "base\n" | save -f ($work_up | path join "notes.txt")
     "base\n" | save -f ($work_up | path join "other.txt")
     ^git -C $work_up add .

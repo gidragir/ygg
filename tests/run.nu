@@ -16,9 +16,8 @@ def main [--filter: string = ""] {
         exit 0
     }
 
-    mut total_passed = 0
-    mut total_failed = 0
-    mut failures = []
+    mut all_tests = []
+    mut compile_failures = []
 
     print $"Running ygg test suite...\n"
 
@@ -37,8 +36,7 @@ def main [--filter: string = ""] {
         if $disc.exit_code != 0 {
             print $"❌ FAIL: ($file_name) \(failed to compile or import\)"
             print $disc.stderr
-            $total_failed = $total_failed + 1
-            $failures = ($failures | append { file: $file_name, test: "<compile>", error: $disc.stderr })
+            $compile_failures = ($compile_failures | append { file: $file_name, test: "<compile>", error: $disc.stderr })
             continue
         }
 
@@ -48,21 +46,34 @@ def main [--filter: string = ""] {
             if ($filter != "") and not ($test_fn | str contains $filter) {
                 continue
             }
-
-            let run_res = (with-env (clean-ygg-env) {
-                ^nu -I $tests_dir -c $"use ($file_name) *; ($test_fn)" | complete
-            })
-            if $run_res.exit_code == 0 {
-                print $"  ✅ PASS: ($test_fn)"
-                $total_passed = $total_passed + 1
-            } else {
-                print $"  ❌ FAIL: ($test_fn)"
-                print $run_res.stderr
-                $total_failed = $total_failed + 1
-                $failures = ($failures | append { file: $file_name, test: $test_fn, error: $run_res.stderr })
-            }
+            $all_tests = ($all_tests | append { file: $file_name, test: $test_fn })
         }
     }
+
+    cd $tests_dir
+    let results = ($all_tests | par-each { |entry|
+        let run_res = (with-env (clean-ygg-env) {
+            ^nu -I $tests_dir -c $"use ($entry.file) *; ($entry.test)" | complete
+        })
+        {
+            file: $entry.file,
+            test: $entry.test,
+            ok: ($run_res.exit_code == 0),
+            stderr: $run_res.stderr
+        }
+    })
+
+    for r in $results {
+        if $r.ok {
+            print $"  ✅ PASS: ($r.test)"
+        } else {
+            print $"  ❌ FAIL: ($r.test)"
+            print $r.stderr
+        }
+    }
+
+    let total_passed = ($results | where ok | length)
+    let total_failed = (($results | where { |r| not $r.ok } | length) + ($compile_failures | length))
 
     print $"\n----------------------------------------"
     if $total_failed == 0 {

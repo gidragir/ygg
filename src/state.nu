@@ -171,7 +171,7 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
     }
 
     if ($norm | str starts-with "~/") or ($norm | str starts-with "~\\") {
-        let rel = ($norm | str substring 2..)
+        let rel = ($norm | str substring 2.. | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep))
         if ($sb != "") {
             return ($sb | path join $rel)
         } else {
@@ -180,7 +180,7 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
     }
 
     if ($norm == "$APPDATA") or ($norm | str starts-with "$APPDATA/") or ($norm | str starts-with "$APPDATA\\") {
-        let rel = if ($norm == "$APPDATA") { "" } else { ($norm | str substring 9..) }
+        let rel = if ($norm == "$APPDATA") { "" } else { ($norm | str substring 9.. | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep)) }
         let base = if ($sb != "") {
             ($sb | path join "AppData" "Roaming")
         } else if ($nu.os-info.family == "windows") {
@@ -192,7 +192,7 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
     }
 
     if ($norm == "$LOCALAPPDATA") or ($norm | str starts-with "$LOCALAPPDATA/") or ($norm | str starts-with "$LOCALAPPDATA\\") {
-        let rel = if ($norm == "$LOCALAPPDATA") { "" } else { ($norm | str substring 14..) }
+        let rel = if ($norm == "$LOCALAPPDATA") { "" } else { ($norm | str substring 14.. | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep)) }
         let base = if ($sb != "") {
             ($sb | path join "AppData" "Local")
         } else if ($nu.os-info.family == "windows") {
@@ -204,7 +204,7 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
     }
 
     if ($norm == "$DOCUMENTS") or ($norm | str starts-with "$DOCUMENTS/") or ($norm | str starts-with "$DOCUMENTS\\") {
-        let rel = if ($norm == "$DOCUMENTS") { "" } else { ($norm | str substring 11..) }
+        let rel = if ($norm == "$DOCUMENTS") { "" } else { ($norm | str substring 11.. | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep)) }
         let base = if ($sb != "") {
             ($sb | path join "Documents")
         } else if ($nu.os-info.family == "windows") {

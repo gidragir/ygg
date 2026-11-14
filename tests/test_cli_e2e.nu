@@ -1,6 +1,6 @@
 use std/assert
 use ../src/state.nu [ensure-ygg-dirs]
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, test-link-dir, test-dangling-link]
 
 export def test_full_cli_lifecycle [] {
     with-temp-ygg { |home|
@@ -13,7 +13,7 @@ export def test_full_cli_lifecycle [] {
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
             # 1. Init module
             cd $mod_src
-            ^nu $ygg_bin init "my-dotfiles" --os "linux,cachyos"
+            ^nu $ygg_bin init "my-dotfiles" --os "linux,windows,macos,cachyos"
             "[links]\nniri = \"~/.config/niri\"\n" | save --append ($mod_src | path join "ygg.toml")
 
             # 2. Add local module (auto-applies strictly inside YGG_SANDBOX)
@@ -42,7 +42,7 @@ export def test_cli_add_with_scope_and_save [] {
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
             cd $mod_src
-            ^nu $ygg_bin init "scoped-mod" --os "linux"
+            ^nu $ygg_bin init "scoped-mod" --os "linux,windows,macos,cachyos"
             "[save]\n\"app.conf\" = \"~/.config/app/app.conf\"\n" | save --append ($mod_src | path join "ygg.toml")
 
             # Add module with scope
@@ -112,7 +112,7 @@ export def test_apply_refuses_prune_all_without_force [] {
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
             cd $mod_src
-            ^nu $ygg_bin init "my-mod" --os "linux,cachyos"
+            ^nu $ygg_bin init "my-mod" --os "linux,windows,macos,cachyos"
             "[links]\nconf = \"~/.config/conf\"\n" | save --append ($mod_src | path join "ygg.toml")
             ^nu $ygg_bin add $mod_src
 
@@ -158,7 +158,7 @@ export def test_add_does_not_overwrite_broken_host_toml [] {
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
             cd $mod_src
-            ^nu $ygg_bin init "another-mod" --os "linux,cachyos"
+            ^nu $ygg_bin init "another-mod" --os "linux,windows,macos,cachyos"
 
             let host_file = ($home | path join "host.toml")
             let broken_content = "[[modules\nname = bad_syntax\n"
@@ -202,12 +202,12 @@ export def test_apply_fails_after_completing_when_package_manager_fails [] {
             YGG_MOCK_PKG_FAIL: "pacman"
         } {
             cd $mod_src
-            ^nu $ygg_bin init "pkg-fail-mod" --os "linux,cachyos"
+            ^nu $ygg_bin init "pkg-fail-mod" --os "linux,windows,macos,cachyos"
             "[packages]\npacman = [\"curl\"]\n\n[links]\nconf = \"~/.config/conf\"\n" | save --append ($mod_src | path join "ygg.toml")
 
             let mod_target = ($home | path join "modules" "pkg-fail-mod")
             mkdir ($home | path join "modules")
-            ^ln -s $mod_src $mod_target
+            test-link-dir $mod_src $mod_target
             "[[modules]]\nname = \"pkg-fail-mod\"\n" | save -f ($home | path join "host.toml")
 
             let res = (^nu $ygg_bin apply --sandbox $sb | complete)
@@ -232,7 +232,7 @@ export def test_preflight_blocks_missing_link_source_before_packages [] {
         "host_model_state" | save -f ($sb | path join ".config" "ollama" "models.txt")
 
         'name = "bad-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 pacman = ["curl"]
 [links]
@@ -241,7 +241,7 @@ pacman = ["curl"]
 ' | save -f ($mod_src | path join "ygg.toml")
 
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "bad-mod")
+        test-link-dir $mod_src ($home | path join "modules" "bad-mod")
         "[[modules]]\nname = \"bad-mod\"\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -298,10 +298,10 @@ def snapshot-tree [root: string]: nothing -> list<string> {
         if ($it.type == "symlink") {
             $out = ($out | append $"L ($rel) -> ($it.target)")
         } else if ($it.type == "dir") {
-            $out = ($out | append $"D ($rel) ($it.mode)")
+            $out = ($out | append $"D ($rel) ($it.mode? | default '')")
             $out = ($out | append (snapshot-tree $it.name | each { |l| $l | str replace --regex '^(\w) ' ('$1 ' + $rel + '/') }))
         } else {
-            $out = ($out | append $"F ($rel) ($it.mode) (open --raw $it.name | hash sha256)")
+            $out = ($out | append $"F ($rel) ($it.mode? | default '') (open --raw $it.name | hash sha256)")
         }
     }
     $out
@@ -325,13 +325,13 @@ export def test_ygg_diff_and_dry_run_plan_output [] {
         "add_newline = false\n" | save -f ($mod_src | path join "starship.toml")
         "host-version\n" | save -f ($sb | path join ".config" "starship.toml")
         'name = "plan-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [links]
 niri = "~/.config/niri"
 "starship.toml" = "~/.config/starship.toml"
 ' | save -f ($mod_src | path join "ygg.toml")
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "plan-mod")
+        test-link-dir $mod_src ($home | path join "modules" "plan-mod")
         "[[modules]]\nname = \"plan-mod\"\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -377,7 +377,7 @@ niri = "~/.config/niri"
 }
 
 export def test_apply_exits_1_when_a_link_fails [] {
-    if ((^id -u | str trim) == "0") {
+    if ($nu.os-info.family == "windows") or ((^id -u | str trim) == "0") {
         return
     }
     with-temp-ygg { |home|
@@ -388,7 +388,7 @@ export def test_apply_exits_1_when_a_link_fails [] {
         "a\n" | save -f ($mod_src | path join "a.txt")
         "b\n" | save -f ($mod_src | path join "b.txt")
         'name = "fail-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [links]
 "a.txt" = "~/.config/locked/a.txt"
 "b.txt" = "~/.config/b.txt"
@@ -449,7 +449,7 @@ export def test_cli_add_dry_run_and_preflight_rollback [] {
         mkdir $keep_src ($home | path join "modules") ($home | path join ".state" "backups") ($home | path join ".state" "env")
         mkdir ($sb | path join ".config")
         "name = \"keep\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($keep_src | path join "ygg.toml")
-        ^ln -s $keep_src ($home | path join "modules" "keep")
+        test-link-dir $keep_src ($home | path join "modules" "keep")
         "[[modules]]\nname = \"keep\"\n" | save -f ($home | path join "host.toml")
 
         # Local module with a valid directory link and a package
@@ -457,7 +457,7 @@ export def test_cli_add_dry_run_and_preflight_rollback [] {
         mkdir ($good | path join "app")
         "x = 1\n" | save -f ($good | path join "app" "app.conf")
         'name = "good"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 pacman = ["curl"]
 [links]
@@ -468,7 +468,7 @@ app = "~/.config/app"
         let bad = ($home | path join "bad-mod")
         mkdir $bad
         'name = "bad"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 pacman = ["curl"]
 [links]
@@ -539,13 +539,13 @@ export def test_cli_pkg_selection_cache_and_failed_package_names [] {
         let mod_src = ($home | path join "pkg-mod")
         mkdir $mod_src ($home | path join "modules") $sb
         'name = "pkg-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 pacman = ["curl"]
 cargo = ["bat"]
 mise = ["ripgrep"]
 ' | save -f ($mod_src | path join "ygg.toml")
-        ^ln -s $mod_src ($home | path join "modules" "pkg-mod")
+        test-link-dir $mod_src ($home | path join "modules" "pkg-mod")
         "[[modules]]\nname = \"pkg-mod\"\n" | save -f ($home | path join "host.toml")
         let log_lines = { || if ($pkg_log | path exists) { open --raw $pkg_log | lines | where { |l| $l != "" } } else { [] } }
 
@@ -601,10 +601,10 @@ export def test_status_json_output_in_pipe [] {
         let mod_src = ($home | path join "json-mod")
         mkdir $mod_src
         'name = "json-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 ' | save -f ($mod_src | path join "ygg.toml")
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "json-mod")
+        test-link-dir $mod_src ($home | path join "modules" "json-mod")
         "[[modules]]\nname = \"json-mod\"\nscopes = [\"pc\"]\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -632,13 +632,13 @@ export def test_apply_runs_on_change_hooks_and_dry_run_plans_them [] {
         mkdir $mod_src
         "k = 1\n" | save -f ($mod_src | path join "app.toml")
         'name = "hook-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [links."app.toml"]
 target = "~/.config/app/app.toml"
 on_change = "app msg reload"
 ' | save -f ($mod_src | path join "ygg.toml")
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "hook-mod")
+        test-link-dir $mod_src ($home | path join "modules" "hook-mod")
         "[[modules]]\nname = \"hook-mod\"\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -671,10 +671,10 @@ export def test_cli_host_lock_and_no_lock [] {
         let mod_src = ($home | path join "lock-mod")
         mkdir $mod_src
         'name = "lock-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 ' | save -f ($mod_src | path join "ygg.toml")
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "lock-mod")
+        test-link-dir $mod_src ($home | path join "modules" "lock-mod")
         "[[modules]]\nname = \"lock-mod\"\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -713,13 +713,13 @@ export def test_journal_transaction_apply_lifecycle_and_warning [] {
         let mod_src = ($home | path join "wal-mod")
         mkdir $mod_src
         'name = "wal-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [links]
 "test.conf" = "~/.config/test.conf"
 ' | save -f ($mod_src | path join "ygg.toml")
         "wal-content\n" | save -f ($mod_src | path join "test.conf")
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "wal-mod")
+        test-link-dir $mod_src ($home | path join "modules" "wal-mod")
         "[[modules]]\nname = \"wal-mod\"\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -769,14 +769,14 @@ export def test_apply_failure_marks_journal_failed_and_recovers [] {
         let mod_src = ($home | path join "fail-setup-mod")
         mkdir $mod_src
         'name = "fail-setup-mod"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [links]
 "test.conf" = "~/.config/test.conf"
 ' | save -f ($mod_src | path join "ygg.toml")
         "test-content\n" | save -f ($mod_src | path join "test.conf")
         "exit 3\n" | save -f ($mod_src | path join "setup.nu")
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "fail-setup-mod")
+        test-link-dir $mod_src ($home | path join "modules" "fail-setup-mod")
         "[[modules]]\nname = \"fail-setup-mod\"\n" | save -f ($home | path join "host.toml")
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
@@ -832,7 +832,7 @@ export def test_cli_clean_subcommand [] {
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
             cd $mod_src
-            ^nu $ygg_bin init "clean-mod" --os "linux"
+            ^nu $ygg_bin init "clean-mod" --os "linux,windows,macos,cachyos"
             "[links]\n\"app.txt\" = \"~/.config/clean/app.txt\"\n" | save --append ($mod_src | path join "ygg.toml")
             ^nu $ygg_bin add $mod_src
 
@@ -953,30 +953,42 @@ export def test_cli_doctor_fix [] {
             ensure-ygg-dirs $home
             let sec = ($home | path join "secrets.toml")
             "val = 1" | save -f $sec
-            ^chmod 644 $sec | complete | ignore
+            if $nu.os-info.family != "windows" {
+                ^chmod 644 $sec | complete | ignore
+            }
+            let cfg = ($sb | path join ".config")
+            mkdir $cfg
+            let dead_link = ($cfg | path join "locked-orphan.conf")
+            test-dangling-link ($home | path join "gone-target") $dead_link
 
             let cfg = ($sb | path join ".config")
             mkdir $cfg
             let dead_link = ($cfg | path join "broken.conf")
-            ^ln -s ($home | path join "not-existing-target") $dead_link
+            test-dangling-link ($home | path join "not-existing-target") $dead_link
 
             # Check doctor without --fix reports errors/warnings and does not mutate
             let res_audit = (^nu $ygg_bin doctor --sandbox $sb | complete)
-            assert equal $res_audit.exit_code 1
-            assert ($res_audit.stdout | str contains "perm")
+            if $nu.os-info.family != "windows" {
+                assert equal $res_audit.exit_code 1
+                assert ($res_audit.stdout | str contains "perm")
+            }
             assert ($res_audit.stdout | str contains "orphan_link")
 
             # Check doctor --fix -y fixes perm and orphan_link
             let res_fix = (^nu $ygg_bin doctor --fix -y --sandbox $sb | complete)
             assert equal $res_fix.exit_code 0 $res_fix.stderr
             assert ($res_fix.stdout | str contains "Fixed findings:")
-            assert ($res_fix.stdout | str contains "perm")
+            if $nu.os-info.family != "windows" {
+                assert ($res_fix.stdout | str contains "perm")
+            }
             assert ($res_fix.stdout | str contains "orphan_link")
 
             # Verify on filesystem
-            let mode = (ls -lD $sec | get -o 0.mode | default "")
-            assert ($mode =~ 'rw-------') "Expected 0600 mode after fix"
-            assert (try { ($dead_link | path type) != "symlink" } catch { true }) "Expected orphan link removed"
+            if $nu.os-info.family != "windows" {
+                let mode = (ls -lD $sec | get -o 0.mode | default "")
+                assert ($mode =~ 'rw-------') "Expected 0600 mode after fix"
+            }
+            assert (try { ($dead_link | path type) != "symlink" } catch { true }) $"Expected orphan link removed. stdout:\n($res_fix.stdout)"
 
             # Check doctor --fix --json output structure
             let res_json = (^nu $ygg_bin doctor --fix -y --json --sandbox $sb | complete)
@@ -1085,13 +1097,13 @@ export def test_cli_apply_blocks_missing_secret_provider_before_packages [] {
         mkdir $mod_src
 
         'name = "mod-a"
-os = ["linux", "cachyos"]
+os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 cargo = ["x"]
 ' | save -f ($mod_src | path join "ygg.toml")
 
         mkdir ($home | path join "modules")
-        ^ln -s $mod_src ($home | path join "modules" "mod-a")
+        test-link-dir $mod_src ($home | path join "modules" "mod-a")
         "[[modules]]\nname = \"mod-a\"\n" | save -f ($home | path join "host.toml")
         "K = \"op://v/i/f\"\n" | save -f ($home | path join "secrets.toml")
 
@@ -1130,7 +1142,13 @@ export def test_cli_doctor_fix_refuses_when_host_locked [] {
             ensure-ygg-dirs $home
             let sec = ($home | path join "secrets.toml")
             "val = 1" | save -f $sec
-            ^chmod 644 $sec | complete | ignore
+            if $nu.os-info.family != "windows" {
+                ^chmod 644 $sec | complete | ignore
+            }
+            let cfg = ($sb | path join ".config")
+            mkdir $cfg
+            let dead_link = ($cfg | path join "locked-orphan.conf")
+            test-dangling-link ($home | path join "gone-target") $dead_link
             {
                 pid: 1,
                 host: (sys host | get hostname),
@@ -1243,7 +1261,7 @@ export def test_completions_ps1_has_no_case_colliding_keys [] {
     # within one command, hashtable literal keys must be unique case-insensitively
     let blocks = ($txt | split row "$flags = @{" | get 1 | split row "$values = @{" | get 0)
     let keys = ($blocks | lines | each { |l| $l | parse --regex "^        '([a-z-]+)' = @" | get -o capture0.0 } | compact)
-    assert equal ($keys | str downcase | uniq | length) ($keys | length)
+    assert equal ($keys | str lowercase | uniq | length) ($keys | length)
     # the `-s` / `-S` pair exists in `add`, proving the collision case is exercised
     let add_block = ($blocks | split row "'apply' = @(" | get 0)
     let names = ($add_block | lines | each { |l| $l | parse --regex "N = '([^']+)'" | get -o capture0.0 } | compact)

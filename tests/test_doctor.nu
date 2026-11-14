@@ -7,7 +7,7 @@ use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/link.nu *
 use ../src/doctor.nu *
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, test-link-dir, test-dangling-link]
 
 # Module source directory outside YGG_HOME, linked into modules/<name>
 def make-module [home: string, name: string, toml: string]: nothing -> string {
@@ -15,7 +15,7 @@ def make-module [home: string, name: string, toml: string]: nothing -> string {
     mkdir $src
     $toml | save -f ($src | path join "ygg.toml")
     mkdir ($home | path join "modules")
-    ^ln -s $src ($home | path join "modules" $name)
+    test-link-dir $src ($home | path join "modules" $name)
     $src
 }
 
@@ -44,10 +44,10 @@ def snapshot-tree [root: string]: nothing -> list<string> {
         if ($it.type == "symlink") {
             $out = ($out | append $"L ($rel) -> ($it.target)")
         } else if ($it.type == "dir") {
-            $out = ($out | append $"D ($rel) ($it.mode)")
+            $out = ($out | append $"D ($rel) ($it.mode? | default '')")
             $out = ($out | append (snapshot-tree $it.name | each { |l| $l | str replace --regex '^(\w) ' ('$1 ' + $rel + '/') }))
         } else {
-            $out = ($out | append $"F ($rel) ($it.mode) (open --raw $it.name | hash sha256)")
+            $out = ($out | append $"F ($rel) ($it.mode? | default '') (open --raw $it.name | hash sha256)")
         }
     }
     $out
@@ -81,7 +81,7 @@ export def test_doctor_link_and_link_pending [] {
 
             # Broken managed link (points to a missing path) and a real file in place of a link
             rm ($cfg | path join "a.conf")
-            ^ln -s ($home | path join "nowhere") ($cfg | path join "a.conf")
+            test-dangling-link ($home | path join "nowhere") ($cfg | path join "a.conf")
             rm ($cfg | path join "b.conf")
             "host\n" | save -f ($cfg | path join "b.conf")
             # A link added to the manifest but not applied yet
@@ -113,14 +113,14 @@ export def test_doctor_orphan_link_and_state_orphan [] {
             setup-links-module $home | ignore
             let cfg = ($sb | path join ".config")
             mkdir ($sb | path join ".local" "bin")
-            ^ln -s ($home | path join "gone-1") ($cfg | path join "stale.conf")
-            ^ln -s ($home | path join "gone-2") ($sb | path join ".local" "bin" "old-tool")
-            ^ln -s ($home | path join "gone-3") ($sb | path join ".stale-rc")
+            test-dangling-link ($home | path join "gone-1") ($cfg | path join "stale.conf")
+            test-dangling-link ($home | path join "gone-2") ($sb | path join ".local" "bin" "old-tool")
+            test-dangling-link ($home | path join "gone-3") ($sb | path join ".stale-rc")
             # A valid unmanaged symlink is not an orphan
             ^ln -s ($cfg | path join "a.conf") ($cfg | path join "alias.conf")
             # Depth 1 only: a dangling link two levels below ~/.config is not scanned
             mkdir ($cfg | path join "deep" "er")
-            ^ln -s ($home | path join "gone-4") ($cfg | path join "deep" "er" "x")
+            test-dangling-link ($home | path join "gone-4") ($cfg | path join "deep" "er" "x")
 
             # State records of a module that is not in host.toml
             mut st = (load-state $home)
@@ -182,6 +182,7 @@ os = ["linux", "windows", "macos"]
 }
 
 export def test_doctor_perm_on_private_files [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
@@ -355,10 +356,12 @@ export def test_doctor_is_read_only_and_cli_exits_1_on_error [] {
             setup-links-module $home | ignore
             let cfg = ($sb | path join ".config")
             rm ($cfg | path join "a.conf")
-            ^ln -s ($home | path join "nowhere") ($cfg | path join "a.conf")
-            ^ln -s ($home | path join "gone") ($cfg | path join "stale.conf")
+            test-dangling-link ($home | path join "nowhere") ($cfg | path join "a.conf")
+            test-dangling-link ($home | path join "gone") ($cfg | path join "stale.conf")
             "[env]\nK = \"v\"\n" | save -f ($home | path join "secrets.toml")
-            ^chmod 0644 ($home | path join "secrets.toml")
+            if $nu.os-info.family != "windows" {
+                ^chmod 0644 ($home | path join "secrets.toml")
+            }
 
             let before = (snapshot-tree $root)
             let state_before = (open --raw ($home | path join ".state" "state.json"))
@@ -371,7 +374,9 @@ export def test_doctor_is_read_only_and_cli_exits_1_on_error [] {
             assert equal $js.exit_code 1
             let parsed = ($js.stdout | from json)
             assert ($parsed | any { |r| ($r.check == "link") and ($r.severity == "error") })
-            assert ($parsed | any { |r| ($r.check == "perm") and ($r.severity == "error") })
+            if $nu.os-info.family != "windows" {
+                assert ($parsed | any { |r| ($r.check == "perm") and ($r.severity == "error") })
+            }
             assert equal (snapshot-tree $root) $before
             assert equal (open --raw ($home | path join ".state" "state.json")) $state_before
         }
@@ -540,7 +545,7 @@ export def test_doctor_fix_resolves_perms_and_orphan_links [] {
             let cfg = ($sb | path join ".config")
             mkdir $cfg
             let dead_link = ($cfg | path join "dead.conf")
-            ^ln -s ($home | path join "nonexistent") $dead_link
+            test-dangling-link ($home | path join "nonexistent") $dead_link
 
             mut st = (load-state $home)
             let ghost_dest = ($cfg | path join "ghost.conf")
@@ -560,9 +565,11 @@ export def test_doctor_fix_resolves_perms_and_orphan_links [] {
             let fixed = (doctor-fix $home $findings)
             assert equal ($fixed | length) 4 "Expected 4 fixed findings (perm, orphan_link, 2 state_orphans; sync skipped)"
 
-            # Verify perm fixed to 0600
-            let mode = (ls -lD $sec | get -o 0.mode | default "")
-            assert ($mode =~ 'rw-------') "Expected 0600 mode after fix"
+            # Verify perm fixed to 0600 (Unix only; Windows uses NTFS ACLs tested separately)
+            if $nu.os-info.family != "windows" {
+                let mode = (ls -lD $sec | get -o 0.mode | default "")
+                assert ($mode =~ 'rw-------') "Expected 0600 mode after fix"
+            }
 
             # Verify orphan_link removed
             assert (not ($dead_link | path exists)) "Expected dead symlink to be removed"

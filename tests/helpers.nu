@@ -7,7 +7,7 @@ export def with-temp-ygg [action: closure]: nothing -> nothing {
         let rand_suffix = (random chars --length 8)
         let dir = ($base | path join $"ygg-test-($rand_suffix)")
         mkdir $dir
-        $dir
+        $dir | path expand
     } else {
         ^mktemp -d -t ygg-test.XXXXXX | str trim | path expand
     }
@@ -45,6 +45,29 @@ export def stat-mode [p: string]: nothing -> string {
         ^stat -f "%Lp" $p | str trim
     } else {
         ^stat -c "%a" $p | str trim
+    }
+}
+
+export def test-link-dir [src: string, dest: string]: nothing -> nothing {
+    if ($nu.os-info.family == "windows") {
+        let win_dest = ($dest | path expand -n | str replace --all "/" "\\")
+        let win_src = ($src | path expand -n | str replace --all "/" "\\")
+        let res = (^cmd /c mklink /J $win_dest $win_src | complete)
+        if $res.exit_code != 0 {
+            error make { msg: $"mklink /J failed: ($res.stdout) ($res.stderr)" }
+        }
+    } else {
+        ^ln -s $src $dest
+    }
+}
+
+export def test-dangling-link [target: string, dest: string]: nothing -> nothing {
+    if ($nu.os-info.family == "windows") {
+        mkdir $target
+        test-link-dir $target $dest
+        rm -rf $target
+    } else {
+        ^ln -s $target $dest
     }
 }
 

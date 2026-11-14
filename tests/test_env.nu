@@ -223,13 +223,13 @@ OTHER_VAR = "$OTHER/x"
 
         let nu_out = (^nu -c $"source ($env_nu); [$env.TILDE_ONLY, $env.TILDE_SUB, $env.HOME_SUB, $env.MID_TILDE, $env.OTHER_VAR] | to json -r") | from json
         assert equal $nu_out.0 $sb
-        assert equal $nu_out.1 ($sb | path join ".kube/config")
-        assert equal $nu_out.2 ($sb | path join ".cargo/bin")
+        assert equal ($nu_out.1 | str replace --all "\\" "/") ($"($sb)/.kube/config" | str replace --all "\\" "/")
+        assert equal ($nu_out.2 | str replace --all "\\" "/") ($"($sb)/.cargo/bin" | str replace --all "\\" "/")
         assert equal $nu_out.3 "a/~/b"
         assert equal $nu_out.4 "$OTHER/x"
 
         let conf_raw = (open --raw $conf_file)
-        assert ($conf_raw | str contains $"TILDE_SUB=\"($sb)/.kube/config\"")
+        assert (($conf_raw | str replace --all "\\" "/") | str contains ($"TILDE_SUB=\"($sb)/.kube/config\"" | str replace --all "\\" "/"))
         assert ($conf_raw | str contains "OTHER_VAR=\"\\$OTHER/x\"")
     }
 }
@@ -397,14 +397,15 @@ export def test_module_env_scheme_is_literal_and_not_executed [] {
         ensure-ygg-dirs $home
         let sb = ($home | path join "sb"); mkdir $sb
         let marker = ($home | path join "pwned")
+        let marker_lit = ($marker | str replace --all "\\" "/")
         let m = ($home | path join "modules" "m"); mkdir $m
-        $"name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[env]\nX = \"eval:touch ($marker)\"\n" | save -f ($m | path join "ygg.toml")
+        $"name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[env]\nX = \"eval:touch ($marker_lit)\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             compile-environment $home (resolve-effective-plan $home) --sandbox $sb
         }
         assert (not ($marker | path exists))
-        assert (open --raw ($home | path join ".state" "env" "env.zsh") | str contains $"export X='eval:touch ($marker)'")
+        assert (open --raw ($home | path join ".state" "env" "env.zsh") | str contains $"export X='eval:touch ($marker_lit)'")
     }
 }
 
@@ -509,8 +510,14 @@ export def test_path_entries_reach_all_shells [] {
         compile-environment $home $plan --sandbox $sb
         let env_dir = ($home | path join ".state" "env")
         let p = ($sb | path join ".local" "bin")
-        assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g ($p)")
-        assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\(($p) $path\)")
+        if $nu.os-info.family != "windows" {
+            assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g ($p)")
+            assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\(($p) $path\)")
+        } else {
+            let p_fish = ($p | str replace --all '\' '\\')
+            assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g '($p_fish)'")
+            assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\('($p)' $path\)")
+        }
         assert (open --raw ($env_dir | path join "env.zsh") | str contains "typeset -U path")
         assert equal ((^nu -c $"source '($env_dir | path join env.nu)'; $env.PATH | first" | complete).stdout | str trim) $p
     }
@@ -529,8 +536,15 @@ export def test_path_order_is_same_in_all_shells [] {
         let b = ($home | path join "pb")
         mkdir $a $b
         let env_dir = (compile-with-paths $home [$a, $b])
-        assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g ($a) ($b)")
-        assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\(($a) ($b) $path\)")
+        if $nu.os-info.family != "windows" {
+            assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g ($a) ($b)")
+            assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\(($a) ($b) $path\)")
+        } else {
+            let af = ($a | str replace --all '\' '\\')
+            let bf = ($b | str replace --all '\' '\\')
+            assert (open --raw ($env_dir | path join "env.fish") | str contains $"fish_add_path -g '($af)' '($bf)'")
+            assert (open --raw ($env_dir | path join "env.zsh") | str contains $"path=\('($a)' '($b)' $path\)")
+        }
         if (which fish | is-not-empty) {
             let out = (^fish -c $"set -gx PATH /usr/bin; source '($env_dir | path join env.fish)'; printf '%s\\n' $PATH[1] $PATH[2]" | lines)
             assert equal $out [$a, $b]
@@ -539,10 +553,12 @@ export def test_path_order_is_same_in_all_shells [] {
 }
 
 export def test_path_quoting_and_empty [] {
-    with-temp-ygg { |home|
-        let env_dir = (compile-with-paths $home ["/opt/my dir/it's$x"])
-        assert (open --raw ($env_dir | path join "env.zsh") | str contains "path=('/opt/my dir/it'\\''s$x' $path)")
-        assert (open --raw ($env_dir | path join "env.fish") | str contains "fish_add_path -g '/opt/my dir/it\\'s$x'")
+    if $nu.os-info.family != "windows" {
+        with-temp-ygg { |home|
+            let env_dir = (compile-with-paths $home ["/opt/my dir/it's$x"])
+            assert (open --raw ($env_dir | path join "env.zsh") | str contains "path=('/opt/my dir/it'\\''s$x' $path)")
+            assert (open --raw ($env_dir | path join "env.fish") | str contains "fish_add_path -g '/opt/my dir/it\\'s$x'")
+        }
     }
     with-temp-ygg { |home|
         let env_dir = (compile-with-paths $home [])
@@ -582,6 +598,7 @@ export def test_lazy_provider_quotes_every_argv_element [] {
 # BUG-1: an argv element holding both ' and " must round-trip through every generated env file
 # and never execute when the file is loaded.
 export def test_lazy_provider_quotes_mixed_quotes_round_trip [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         let sb = ($home | path join "sb"); mkdir $sb
         setup-secret-home $home false

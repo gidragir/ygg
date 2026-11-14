@@ -330,7 +330,7 @@ export def run-module-setup [
         return
     }
 
-    let ygg_src_dir = $YGG_SRC_DIR
+    let ygg_src_dir = ($YGG_SRC_DIR | path expand)
     let is_forced = if $force { "true" } else { ($env.YGG_FORCE? | default "false") }
     let sb = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
 

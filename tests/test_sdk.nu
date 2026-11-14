@@ -3,7 +3,7 @@ use ../src/state.nu *
 use ../src/manifest.nu *
 use ../src/link.nu *
 use ../src/sdk.nu *
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, test-link-dir, test-dangling-link]
 
 export def test_onchange_skips_recovers_missing_target_and_rolls_back_on_error [] {
     with-temp-ygg { |home|
@@ -158,7 +158,7 @@ export def test_merge_json_dangling_symlink_becomes_file [] {
         let frag = ($home | path join "frag.json")
         let dest = ($home | path join "dest.json")
         '{"feature":{"enabled":true}}' | save -f $frag
-        ^ln -s "/nonexistent/ygg-x" $dest
+        test-dangling-link ($home | path join "nonexistent-ygg-x") $dest
         merge-json $frag $dest
         assert equal ($dest | path type) "file"
         let res = (open $dest)
@@ -221,7 +221,7 @@ let scopes = ($env.YGG_SCOPES | from json)
     theme: $mod_cfg.theme,
     scopes: $scopes,
     dry_run: $env.YGG_DRY_RUN
-} | to json | save -f "' + $marker + '"' + "\n")
+} | to json | save -f ' + "'" + $marker + "'" + "\n")
         $script | save -f ($mod_dir | path join "setup.nu")
 
         let mod_plan = {
@@ -424,7 +424,7 @@ on_change = "reload-excluded"
 target = "~/.config/hm/dir"
 on_change = "reload-dir"
 ' | save -f ($mod_src | path join "ygg.toml")
-        ^ln -s $mod_src ($home | path join "modules" "hm")
+        test-link-dir $mod_src ($home | path join "modules" "hm")
         "[[modules]]\nname = \"hm\"\nexclude = [\"cfg/x.conf\"]\n" | save -f ($home | path join "host.toml")
         let hkey = { |k| "on_change:hm:" + $k }
 
