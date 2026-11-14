@@ -450,7 +450,7 @@ export def test_cli_add_dry_run_and_preflight_rollback [] {
         let keep_src = ($home | path join "keep-mod")
         mkdir $keep_src ($home | path join "modules") ($home | path join ".state" "backups") ($home | path join ".state" "env")
         mkdir ($sb | path join ".config")
-        "name = \"keep\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($keep_src | path join "ygg.toml")
+        "name = \"keep\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($keep_src | path join "ygg.toml")
         test-link-dir $keep_src ($home | path join "modules" "keep")
         "[[modules]]\nname = \"keep\"\n" | save -f ($home | path join "host.toml")
 

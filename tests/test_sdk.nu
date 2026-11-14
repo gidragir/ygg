@@ -499,7 +499,7 @@ on_change = "reload-dir"
         # 9. Sandbox without the mock log: never executed, hash not recorded
         "a3\n" | save -f ($mod_src | path join "cfg" "a.conf")
         let h_a = ((load-state $home).hashes | get (do $hkey "cfg/a.conf"))
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: "" } {
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: "" } {
             let r10 = (apply-with-hooks $home $sb)
             assert equal ($r10 | get status) ["skipped_sandbox"]
             assert equal ((load-state $home).hashes | get (do $hkey "cfg/a.conf")) $h_a
