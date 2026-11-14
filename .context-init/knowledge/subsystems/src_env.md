@@ -2,8 +2,8 @@
 directory: src/env.nu
 source:
   kind: git
-  blob_sha: b5ff35ae6e721cc498abc0effafb1bda6653f6f9
-  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
+  blob_sha: c4b9b010e78cf763001e08d43c38bdf9fd309274
+  commit_sha: e1466886272809a25ea67f71ff1481772a1c14a2
 generated_by:
   component: context-init
   role: update

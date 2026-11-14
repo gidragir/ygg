@@ -451,7 +451,7 @@ export def run-link-hooks [
     let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
     let mock_fail = ($env.YGG_MOCK_HOOK_FAIL? | default "" | split row "," | each { |c| $c | str trim } | where { |c| $c != "" })
     let hashes = ((load-state $ygg_home).hashes? | default {})
-    let changed_ops = ["LINK", "RELINK", "BACKUP_REPLACE"]
+    let changed_ops = ["LINK", "RELINK", "BACKUP_REPLACE", "COPY"]
 
     # 1-3. One group per (module, key, command); keep the groups that have to fire
     mut fired = []

@@ -2,22 +2,22 @@
 directory: docs
 source:
   kind: git
-  blob_sha: 7033979706b1c0adae68da000158dc229943306b
-  commit_sha: 307bca92930f2b3a263e6bf8abdf3df8ecd4e688
+  blob_sha: b4ae573aa82197bf05e9849fdd82a6e74ef359ce
+  commit_sha: e1466886272809a25ea67f71ff1481772a1c14a2
 generated_by:
   component: context-init
   role: update
   model: none
 freshness:
-  total_entries: 10
-  sampled_entries: 10
+  total_entries: 11
+  sampled_entries: 11
   unsampled_entries: 0
   pending_child_changes: 0
 ---
 
 # Подсистема: Docs (L1)
 
-Модуль и компоненты директории `docs` (10 файлов)
+Модуль и компоненты директории `docs` (11 файлов)
 
 > **Идентификатор:** `docs`
 > **Теги:** Generic / Multi-language, docs
@@ -26,6 +26,7 @@ freshness:
 
 | Файл | Статус |
 | :--- | :--- |
+| `docs/bugs/2026-11-12-phase4-open-defects.md` | Исходный код |
 | `docs/plans/2026-11-07-ygg-phase1-engine.md` | Исходный код |
 | `docs/plans/2026-11-08-ygg-engine-improvements-and-hardening.md` | Исходный код |
 | `docs/plans/2026-11-08-ygg-phase2-engine-fixes.md` | Исходный код |

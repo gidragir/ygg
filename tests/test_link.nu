@@ -665,7 +665,7 @@ name = "late"
         let w_app_a = ($t | where dest == $app_a)
         assert equal ($w_app_a | length) 1
         assert equal ($w_app_a | first | get module) "early"
-        assert equal ($w_app_a | first | get src) ($early | path join "pc" "a.kdl")
+        assert equal ($w_app_a | first | get src | str replace --all '\' '/') ($early | path join "pc" "a.kdl" | str replace --all '\' '/')
         assert equal ($w_app_a | first | get is_glob_child) false
         # Glob file not claimed by anyone else is still produced
         let w_app_b = ($t | where dest == $app_b | first)
@@ -939,7 +939,7 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         "preset\n" | save -f ($m | path join "OpenRGB" "off.orp")
         "foreign\n" | save -f ($sb | path join "elsewhere" "keep.txt")
         let dest = ($sb | path join ".config" "OpenRGB")
-        ^ln -s ($sb | path join "elsewhere") $dest
+        test-link-dir ($sb | path join "elsewhere") $dest
         "name = \"dotfiles\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"OpenRGB/*\" = \"~/.config/OpenRGB/*\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"dotfiles\"\n" | save -f ($home | path join "host.toml")
 
@@ -951,7 +951,7 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         assert equal ($problems | get reason) ["ownership_conflict"]
         let err = (try { apply-links $home $plan --sandbox $sb; "" } catch { |e| $e.msg })
         assert ($err | str contains "ownership_conflict")
-        assert equal ($dest | path type) "symlink"
+        assert (is-link-or-junction $dest)
         assert (not (($sb | path join "elsewhere" "off.orp") | path exists))
         assert equal (ls ($sb | path join "elsewhere") | length) 1
     }
@@ -1147,7 +1147,8 @@ export def test_forget_prune_children_use_normal_link_table [] {
         assert equal (($x | path join "f.txt") | path type) $expected_file_type
         assert (is-link-or-junction ($x | path join "sub"))
         assert equal (open --raw ($x | path join "sub" "a.txt")) "mod-a\n"
-        assert equal ((load-state $home).links | get ($x | path join "sub") | get type) "symlink"
+        let expected_link_type = if $nu.os-info.family == "windows" { "junction" } else { "symlink" }
+        assert equal ((load-state $home).links | get ($x | path join "sub") | get type) $expected_link_type
     }
 }
 

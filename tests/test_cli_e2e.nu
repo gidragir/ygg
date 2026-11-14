@@ -338,7 +338,8 @@ niri = "~/.config/niri"
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         let niri = ($sb | path join ".config" "niri")
         let star = ($sb | path join ".config" "starship.toml")
-        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
             # 1. diff and apply --dry-run show the plan and change nothing
             for args in [["diff"], ["apply", "--dry-run"]] {
                 let before = (snapshot-all $home $sb)
@@ -461,6 +462,7 @@ export def test_cli_add_dry_run_and_preflight_rollback [] {
 os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 pacman = ["curl"]
+winget = ["curl"]
 [links]
 app = "~/.config/app"
 ' | save -f ($good | path join "ygg.toml")
@@ -472,20 +474,22 @@ app = "~/.config/app"
 os = ["linux", "windows", "macos", "cachyos"]
 [packages]
 pacman = ["curl"]
+winget = ["curl"]
 [links]
 "configs/nope" = "~/.config/nope"
 ' | save -f ($bad | path join "ygg.toml")
 
         # Remote-style modules (local bare repos)
         let remote_ok = (make-bare-module $home "remote-ok" {
-            "ygg.toml": "name = \"remote-ok\"\nos = [\"linux\", \"cachyos\"]\n[links]\ncfg = \"~/.config/remote-cfg\"\n",
+            "ygg.toml": "name = \"remote-ok\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n[links]\ncfg = \"~/.config/remote-cfg\"\n",
             "cfg/a.conf": "a\n"
         })
         let remote_bad = (make-bare-module $home "remote-bad" {
-            "ygg.toml": "name = \"remote-bad\"\nos = [\"linux\", \"cachyos\"]\n[links]\n\"absent\" = \"~/.config/absent\"\n"
+            "ygg.toml": "name = \"remote-bad\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n[links]\n\"absent\" = \"~/.config/absent\"\n"
         })
 
-        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $pkg_log } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: $pkg_log } {
             let before = (snapshot-add $home $sb)
 
             # 1. Local dry-run: plan of the future module, nothing changes
@@ -1052,11 +1056,11 @@ export def test_readonly_commands_do_not_touch_fresh_home [] {
         # sources for `add --dry-run` (created before the snapshot, so they are part of it)
         let loc = ($home | path join "src-loc"); mkdir $loc
         "name = \"loc\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($loc | path join "ygg.toml")
-        let gitsrc = ($home | path join "src-git.git"); mkdir $gitsrc
-        "name = \"gm\"\nos = [\"linux\", \"cachyos\"]\n" | save -f ($gitsrc | path join "ygg.toml")
+        let gitsrc = ($home | path dirname | path join "src-git.git"); mkdir $gitsrc
+        "name = \"gm\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($gitsrc | path join "ygg.toml")
         ^git -C $gitsrc init -q -b main
         ^git -C $gitsrc add .
-        ^git -c user.email=t@t -c user.name=t -C $gitsrc commit -q -m init
+        ^git -c gc.auto=0 -c maintenance.auto=0 -c user.email=t@t -c user.name=t -C $gitsrc commit -q -m init
         with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos" } {
             let before = (tree-snapshot $home)
             for cmd in [["diff"], ["status"], ["doctor"], ["apply", "--dry-run"], ["add", "--dry-run", $loc], ["add", "--dry-run", $gitsrc], ["clean", "--dry-run"]] {

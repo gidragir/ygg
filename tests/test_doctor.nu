@@ -112,7 +112,8 @@ export def test_doctor_link_and_link_pending [] {
 export def test_doctor_orphan_link_and_state_orphan [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             setup-links-module $home | ignore
             let cfg = ($sb | path join ".config")
             mkdir ($sb | path join ".local" "bin")
@@ -152,7 +153,8 @@ export def test_doctor_orphan_link_and_state_orphan [] {
 export def test_doctor_sync_conflict_and_pending_save [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             let src = (make-module $home "m" 'name = "m"
 os = ["linux", "windows", "macos"]
 [save]
@@ -188,7 +190,8 @@ export def test_doctor_perm_on_private_files [] {
     if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             make-module $home "m" 'name = "m"
 os = ["linux", "windows", "macos"]
 [doctor]
@@ -248,7 +251,8 @@ cargo = ["ripgrep"]
 export def test_doctor_collision_and_shadow [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             let a = (make-module $home "a" 'name = "a"
 os = ["linux", "windows", "macos"]
 [links]
@@ -298,7 +302,8 @@ mode = "dir"
 export def test_doctor_secrets_template [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             let src = (make-module $home "m" 'name = "m"
 os = ["linux", "windows", "macos"]
 ')

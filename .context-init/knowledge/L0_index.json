@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-12",
+  "updated_at": "2026-11-14",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml",
@@ -42,13 +42,14 @@
     {
       "id": "docs",
       "name": "Docs",
-      "summary": "Модуль и компоненты директории `docs` (10 файлов)",
+      "summary": "Модуль и компоненты директории `docs` (11 файлов)",
       "l1_path": "subsystems/docs.md",
       "tags": [
         "Generic / Multi-language",
         "docs"
       ],
       "key_files": [
+        "docs/bugs/2026-11-12-phase4-open-defects.md",
         "docs/plans/2026-11-07-ygg-phase1-engine.md",
         "docs/plans/2026-11-08-ygg-engine-improvements-and-hardening.md",
         "docs/plans/2026-11-08-ygg-phase2-engine-fixes.md",
@@ -61,6 +62,10 @@
         "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md"
       ],
       "files": [
+        {
+          "path": "docs/bugs/2026-11-12-phase4-open-defects.md",
+          "is_entrypoint": false
+        },
         {
           "path": "docs/plans/2026-11-07-ygg-phase1-engine.md",
           "is_entrypoint": false
@@ -231,9 +236,9 @@
         "export def is-canonicalizable [path: string]: nothing -> bool",
         "export def warn-if-not-canonicalizable [path: string]: nothing -> nothing",
         "export def discard-staged-module [prep: record]: nothing -> nothing",
-        "def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool]: nothing -> record",
+        "def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool, read_only: bool]: nothing -> record",
         "export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record",
-        "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>",
+        "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force, --read-only # never write into YGG_HOME(...); implies --dry-run ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>",
         "export def remove-module [ygg_home: string, name: string]: nothing -> nothing"
       ],
       "summary_source": "heuristic"
