@@ -1203,3 +1203,37 @@ export def test_preflight_rejects_invalid_secrets_key [] {
         assert ((($p | where key == "env").0.detail) | str contains "secrets.toml")
     }
 }
+
+# A logical non-Windows override on a real Windows host must not switch the filesystem strategy:
+# files are still 3-way copies and directories junctions (there is no native `ln -s`)
+export def test_apply_links_real_windows_ignores_unix_override [] {
+    if $nu.os-info.family != "windows" { return }
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let m = ($home | path join "modules" "app")
+        mkdir ($m | path join "cfgdir")
+        "a\n" | save -f ($m | path join "app.conf")
+        "b\n" | save -f ($m | path join "cfgdir" "b.conf")
+        'name = "app"
+[links]
+"app.conf" = "~/.config/app/app.conf"
+"cfgdir" = "~/.config/app/cfgdir"' | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"app\"\n" | save -f ($home | path join "host.toml")
+
+        let r = (with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            apply-links $home (resolve-effective-plan $home) --sandbox $sb
+        })
+        assert equal ($r.failed | length) 0 $"no failed links expected: ($r.failed | to json -r)"
+
+        let links = ((load-state $home).links | transpose dest entry)
+        let file_dest = ($sb | path join ".config" "app" "app.conf")
+        let dir_dest = ($sb | path join ".config" "app" "cfgdir")
+        let file_entry = ($links | where { |l| (normalize-case $l.dest) == (normalize-case $file_dest) } | get -o 0.entry)
+        let dir_entry = ($links | where { |l| (normalize-case $l.dest) == (normalize-case $dir_dest) } | get -o 0.entry)
+        assert equal ($file_entry.type? | default "") "copy"
+        assert equal ($dir_entry.type? | default "") "junction"
+        assert equal ($file_dest | path type) "file"
+        assert equal (open --raw $file_dest) "a\n"
+        assert (is-link-or-junction $dir_dest)
+    }
+}

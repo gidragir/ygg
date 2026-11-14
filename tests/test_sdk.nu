@@ -725,3 +725,17 @@ export def test_service_launchd_label_builds_plist_and_domain_target [] {
         assert ($text | str contains $"service: launchctl kickstart -k gui/($uid)/com.example.agent") $text
     }
 }
+
+# Physical FS strategy follows YGG_HOST_OS_OVERRIDE=windows like apply-links does (Windows emulation)
+export def test_safe_link_windows_override_rejects_file_source [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let sb = $env.YGG_SANDBOX
+        "x\n" | save -f ($sb | path join "cfg.txt")
+        let err = (with-env { YGG_HOME: $home, YGG_HOST_OS_OVERRIDE: "windows" } {
+            try { safe-link "~/cfg.txt" "~/.app/cfg.txt"; "" } catch { |e| $e.msg }
+        })
+        assert ($err | str contains "only directories can be linked") $"expected Windows file-source refusal, got: '($err)'"
+        assert (not ($sb | path join ".app" "cfg.txt" | path exists))
+    }
+}

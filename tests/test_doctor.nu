@@ -701,3 +701,16 @@ export def test_nu_version_ok [] {
     assert (not (nu-version-ok "0.115.0"))
     assert (not (nu-version-ok "0.99.9"))
 }
+
+# On a real Windows host the ACL audit runs even with a logical non-Windows override
+export def test_doctor_real_windows_acl_audit_ignores_unix_override [] {
+    if $nu.os-info.family != "windows" { return }
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        "" | save -f ($home | path join "secrets.toml")
+        with-env { YGG_MOCK_WINDOWS_INSECURE_ACL: "1", YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let res = (check-perms $home { modules: [] } "")
+            assert ($res | any { |f| ($f.check == "perm") and ($f.detail | str contains "insecure Windows ACL") }) "Expected Windows ACL perm finding"
+        }
+    }
+}
