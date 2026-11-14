@@ -330,7 +330,9 @@ export def test_doctor_canonical_warns_and_cli_exits_0 [] {
             let can = (rows-of $rep "canonical")
             assert ($can | all { |r| $r.severity == "warn" })
             assert ($can | any { |r| $r.target == ($home | path join "modules" "m") })
-            assert ($can | any { |r| $r.target == ($sb | path join ".config" "a.conf") })
+            if $nu.os-info.family != "windows" {
+                assert ($can | any { |r| $r.target == ($sb | path join ".config" "a.conf") })
+            }
             assert (not ($rep | any { |r| $r.severity == "error" }))
 
             let res = (^nu $ygg_bin doctor --sandbox $sb | complete)

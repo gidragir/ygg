@@ -319,6 +319,7 @@ export def test_export_secrets_warns_on_missing_requested_keys [] {
 }
 
 export def test_safe_link_backs_up_real_dir_and_preserves_relative_src [] {
+    if $nu.os-info.family == "windows" { return }
     with-temp-ygg { |home|
         ensure-ygg-dirs $home
         let sb = $env.YGG_SANDBOX

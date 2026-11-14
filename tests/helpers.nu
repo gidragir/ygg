@@ -28,7 +28,7 @@ export def with-temp-ygg [action: closure]: nothing -> nothing {
         rm -rf $tmp
     } catch { |e|
         rm -rf $tmp
-        error make { msg: $e.msg }
+        error make { msg: ($e.rendered? | default $e.msg) }
     }
 }
 

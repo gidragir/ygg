@@ -1110,15 +1110,21 @@ cargo = ["x"]
         # host lock needs `ln` (hard link) on PATH; expose only it, not op/bw/pass
         let ln_dir = ($home | path join "ln-bin")
         mkdir $ln_dir
-        ^ln -s (which ln | get 0.path) ($ln_dir | path join "ln")
         let nu_dir = ($nu.current-exe | path dirname)
+        let path_list = if $nu.os-info.family == "windows" {
+            ^cp (which ln | get 0.path) ($ln_dir | path join "ln.exe")
+            [$nu_dir, $ln_dir, "C:\\Windows\\System32"]
+        } else {
+            ^ln -s (which ln | get 0.path) ($ln_dir | path join "ln")
+            [$nu_dir, $ln_dir]
+        }
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         let res = (with-env {
             YGG_HOME: $home,
             YGG_SANDBOX: $sb,
             YGG_HOST_OS_OVERRIDE: "cachyos",
             YGG_MOCK_PKG_LOG: $pkg_log,
-            PATH: [$nu_dir, $ln_dir]
+            PATH: $path_list
         } { ^nu $ygg_bin apply --force --sandbox $sb | complete })
 
         assert ($res.exit_code != 0)

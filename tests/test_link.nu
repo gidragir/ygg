@@ -203,8 +203,8 @@ export def test_save_copied_files [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "win")
         mkdir ($m1 | path join "terminal") ($sb | path join "terminal")
-        let repo_file = ($m1 | path join "terminal/settings.json")
-        let host_file = ($sb | path join "terminal/settings.json")
+        let repo_file = ($m1 | path join "terminal" "settings.json")
+        let host_file = ($sb | path join "terminal" "settings.json")
         '{"theme":"dark"}' | save -f $repo_file
         '{"theme":"light"}' | save -f $host_file
 
@@ -231,8 +231,8 @@ export def test_save_skips_conflict_without_baseline [] {
         let sb = ($home | path join "sb")
         let m1 = ($home | path join "modules" "win")
         mkdir ($m1 | path join "terminal") ($sb | path join "terminal")
-        let repo_file = ($m1 | path join "terminal/settings.json")
-        let host_file = ($sb | path join "terminal/settings.json")
+        let repo_file = ($m1 | path join "terminal" "settings.json")
+        let host_file = ($sb | path join "terminal" "settings.json")
         let module_content = '{"theme":"dark"}'
         let host_content = '{"theme":"light"}'
         $module_content | save -f $repo_file
