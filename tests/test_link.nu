@@ -152,6 +152,12 @@ export def test_is_link_or_junction [] {
         assert (not (is-link-or-junction $real_file))
         assert (not (is-link-or-junction $real_dir))
         assert (not (is-link-or-junction ($home | path join "nonexistent_file")))
+        if $nu.os-info.family == "windows" {
+            # nu `path type` uses symlink_metadata; Rust reports name-surrogate reparse points
+            # (junctions, symlinks) as symlinks, so no extra cmd/PowerShell probe is needed
+            assert equal ($valid_link | path type) "symlink"
+            assert equal ($dead_link | path type) "symlink"
+        }
     }
 }
 
@@ -175,6 +181,36 @@ export def test_remove_link_only_safety [] {
             false
         } catch { true })
         assert $failed
+    }
+}
+
+# A junction that `rmdir` cannot remove must raise; `del` on it would delete the files of its target
+export def test_remove_link_only_never_deletes_through_junction [] {
+    if $nu.os-info.family != "windows" { return }
+    with-temp-ygg { |home|
+        let target = ($home | path join "target")
+        mkdir $target
+        "keep\n" | save -f ($target | path join "file.txt")
+
+        # Precondition: rmdir fails on a read-only junction (attrib /L marks the link itself)
+        let probe = ($home | path join "probe")
+        test-link-dir $target $probe
+        ^cmd /c attrib +R (to-win32-path $probe) /L | complete | ignore
+        let probe_rm = (^cmd /c rmdir (to-win32-path $probe) | complete)
+        assert ($probe_rm.exit_code != 0) "precondition: rmdir must fail on a read-only junction"
+        ^cmd /c attrib -R (to-win32-path $probe) /L | complete | ignore
+        ^cmd /c rmdir (to-win32-path $probe) | complete | ignore
+
+        let link = ($home | path join "link")
+        test-link-dir $target $link
+        ^cmd /c attrib +R (to-win32-path $link) /L | complete | ignore
+        let raised = (try { remove-link-only $link; false } catch { true })
+        let target_kept = ($target | path join "file.txt" | path exists)
+        ^cmd /c attrib -R (to-win32-path $link) /L | complete | ignore
+        ^cmd /c rmdir (to-win32-path $link) | complete | ignore
+
+        assert $target_kept "files of the junction target must survive"
+        assert $raised "remove-link-only must raise when the junction is still in place"
     }
 }
 
