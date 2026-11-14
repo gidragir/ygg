@@ -1,0 +1,72 @@
+name: Release
+
+# Publishes a GitHub Release for a pushed v<semver> tag after the full test matrix passes.
+# Steps: bump YGG_VERSION in bin/ygg.nu, merge to main, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+on:
+  push:
+    tags: [ "v*" ]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify tag
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Nushell
+        uses: hustcer/setup-nu@v3
+        with:
+          version: '0.116.1'
+
+      - name: Tag matches YGG_VERSION
+        id: check
+        env:
+          TAG: ${{ github.ref_name }}
+        run: nu scripts/release.nu "$TAG"
+
+      - name: Tagged commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag ${GITHUB_REF_NAME} points to ${GITHUB_SHA}, which is not reachable from main"
+            exit 1
+          fi
+
+  test:
+    name: Test
+    needs: verify
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: Publish release
+    needs: [ verify, test ]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, nothing to do"
+            exit 0
+          fi
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"

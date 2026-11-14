@@ -17,7 +17,7 @@
 | :--- | :--- | :--- | :--- |
 | **Bin** | Модуль и компоненты директории `bin` (1 файлов) | `-` | [subsystems/bin.md](subsystems/bin.md) |
 | **Docs** | Модуль и компоненты директории `docs` (11 файлов) | `-` | [subsystems/docs.md](subsystems/docs.md) |
-| **Scripts** | Модуль и компоненты директории `scripts` (2 файлов) | `-` | [subsystems/scripts.md](subsystems/scripts.md) |
+| **Scripts** | Модуль и компоненты директории `scripts` (3 файлов) | `-` | [subsystems/scripts.md](subsystems/scripts.md) |
 | **Doctor** | Модуль и компоненты директории `src/doctor` (1 файлов) | `-` | [subsystems/src_doctor.md](subsystems/src_doctor.md) |
 | **Env** | Модуль и компоненты директории `src/env` (1 файлов) | `-` | [subsystems/src_env.md](subsystems/src_env.md) |
 | **Git** | Модуль и компоненты директории `src/git` (1 файлов) | `-` | [subsystems/src_git.md](subsystems/src_git.md) |

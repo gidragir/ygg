@@ -197,6 +197,19 @@ For Windows verification, run inside isolated Windows Sandbox:
 wsb tests\sandbox.wsb
 ```
 
+### Releasing
+
+`YGG_VERSION` in `bin/ygg.nu` is the single source of the version. To release:
+
+1. Bump `YGG_VERSION` and merge the change into `main`.
+2. Tag the merged commit and push the tag:
+
+```bash
+git tag v0.1.2 && git push origin v0.1.2
+```
+
+The `Release` workflow (`.github/workflows/release.yml`) checks that the tag is `v<semver>`, matches `YGG_VERSION` and points to a commit on `main` (`scripts/release.nu`), runs the full test matrix on Linux, Windows and macOS, and then publishes a GitHub Release with generated notes. A tag with a pre-release suffix (`v1.0.0-rc.1`) is published as a pre-release.
+
 ---
 
 ## 📄 License

@@ -2,15 +2,15 @@
 directory: tests
 source:
   kind: git
-  blob_sha: 8cace17ad9f3c065c769fcccfe598a275fff6d4d
-  commit_sha: a8b94aad0df2457f8b9816b40357457d4c7a9465
+  blob_sha: 7cdbd0940159aacee6614e49582778ee8dc0fffa
+  commit_sha: e9f2f5c4333209c9ccf0296d007549bc736b68f6
 generated_by:
   component: context-init
   role: update
   model: none
 freshness:
-  total_entries: 11
-  sampled_entries: 11
+  total_entries: 12
+  sampled_entries: 12
   unsampled_entries: 0
   pending_child_changes: 0
 ---
@@ -35,6 +35,7 @@ freshness:
 | `tests/test_manifest.nu` | Исходный код |
 | `tests/test_phase2_modules.nu` | Исходный код |
 | `tests/test_pkg_git.nu` | Исходный код |
+| `tests/test_release.nu` | Исходный код |
 | `tests/test_sdk.nu` | Исходный код |
 | `tests/test_state.nu` | Исходный код |
 
