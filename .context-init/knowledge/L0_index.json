@@ -124,7 +124,7 @@
     {
       "id": "scripts",
       "name": "Scripts",
-      "summary": "Модуль и компоненты директории `scripts` (2 файлов)",
+      "summary": "Модуль и компоненты директории `scripts` (3 файлов)",
       "l1_path": "subsystems/scripts.md",
       "tags": [
         "Generic / Multi-language",
@@ -132,7 +132,8 @@
       ],
       "key_files": [
         "scripts/install.ps1",
-        "scripts/install.sh"
+        "scripts/install.sh",
+        "scripts/release.nu"
       ],
       "files": [
         {
@@ -142,10 +143,18 @@
         {
           "path": "scripts/install.sh",
           "is_entrypoint": false
+        },
+        {
+          "path": "scripts/release.nu",
+          "is_entrypoint": false
         }
       ],
       "key_symbols": [
-        "export PATH=\"$HOME/.local/bin:$PATH\" # 2. Check or install mise(...) if ! command -v mise >/dev/null 2>&1; then echo \"==> mise not found, installing mise (user-space)...\" curl -fsSL https://mise.run | sh fi # Activate mise shims in current subshell if command -v mise >/dev/nul..."
+        "export PATH=\"$HOME/.local/bin:$PATH\" # 2. Check or install mise(...) if ! command -v mise >/dev/null 2>&1; then echo \"==> mise not found, installing mise (user-space)...\" curl -fsSL https://mise.run | sh fi # Activate mise shims in current subshell if command -v mise >/dev/nul...",
+        "export def read-ygg-version [file: string]: nothing -> string",
+        "export def release-tag-error [tag: string, version: string]: nothing -> string",
+        "export def is-prerelease [tag: string]: nothing -> bool",
+        "def main [tag: string]"
       ],
       "summary_source": "heuristic"
     },
@@ -432,6 +441,7 @@
         "tests/test_manifest.nu",
         "tests/test_phase2_modules.nu",
         "tests/test_pkg_git.nu",
+        "tests/test_release.nu",
         "tests/test_sdk.nu",
         "tests/test_state.nu"
       ],
@@ -470,6 +480,10 @@
         },
         {
           "path": "tests/test_pkg_git.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_release.nu",
           "is_entrypoint": false
         },
         {

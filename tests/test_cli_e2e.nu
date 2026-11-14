@@ -1,6 +1,7 @@
 use std/assert
 use ../src/state.nu [ensure-ygg-dirs]
 use ../src/link.nu [is-link-or-junction]
+use ../scripts/release.nu [read-ygg-version]
 use helpers.nu [with-temp-ygg, test-link-dir, test-dangling-link]
 
 export def test_full_cli_lifecycle [] {
@@ -267,7 +268,7 @@ export def test_cli_version_flag_and_subcommand [] {
     let v2 = (^nu $ygg_bin -v | complete)
     let v3 = (^nu $ygg_bin version | complete)
     assert equal $v1.exit_code 0
-    assert ($v1.stdout | str starts-with "ygg 0.1.1")
+    assert ($v1.stdout | str starts-with $"ygg (read-ygg-version $ygg_bin)")
     assert equal ($v1.stdout | str trim) ($v2.stdout | str trim)
     assert equal ($v1.stdout | str trim) ($v3.stdout | str trim)
 }
