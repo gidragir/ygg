@@ -1033,7 +1033,7 @@ def resolve-env-value [v: string, sb: string]: nothing -> string {
 | `perm` | Не `0600` (`rw-------`) на Unix: `secrets.toml`, `.state/env/*`, `99-ygg.conf`, файлы из `[doctor] private_files` | `error` |
 | `tool` | `nu` ниже 0.116, нет `git`, нет менеджера с пакетами в плане | `error` |
 | `collision` | Коллизии из RFC-010 (`resolved.collisions`) | `warn` |
-| `shadow` | Каталог заменён ссылкой, а в его последнем бэкапе `.state/backups/<timestamp>/...` есть файлы, которых нет в источнике (REP-006.5); в `fix` указан путь к бэкапу, восстановление выполняет пользователь | `warn` |
+| `shadow` | Каталог заменён ссылкой, а в его последнем бэкапе `.state/backups/<timestamp>/...` есть файлы, которых нет в источнике (REP-006.5); в `fix` указан путь к бэкапу, восстановление выполняет пользователь. Содержимое каталогов `.git` сворачивается в одну запись `<путь>/.git/ (N files)`. `ygg doctor --ack-shadow` записывает пару «цель → бэкап» в `state.acks.shadow`; подтверждённая находка выводится как `info`, пока не появится более новый бэкап той же цели | `warn` / `info` |
 | `secrets` | Ключи из `secrets.example.toml` отсутствуют в `secrets.toml` (RFC-024) | `warn` |
 | `canonical` | Цель ссылки или модуля доступна, но путь не канонизируется (RFC-025) | `warn` |
 

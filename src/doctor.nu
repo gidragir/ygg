@@ -253,8 +253,25 @@ def check-collisions [resolved: record]: nothing -> list<record> {
     }
 }
 
-# shadow: a directory replaced by a link whose latest backup has files the source does not have
-def check-shadow [ygg_home: string, targets: table]: nothing -> list<record> {
+# Shadowed paths for display: everything below a `.git` directory collapses into `<dir>/.git/ (N files)`
+def collapse-git-paths [paths: list<string>]: nothing -> list<string> {
+    let tagged = ($paths | each { |p|
+        let segs = ($p | split row "/")
+        let idx = ($segs | enumerate | where { |s| $s.item == ".git" } | get -o 0.index)
+        if ($idx == null) {
+            { key: $p, git: false }
+        } else {
+            { key: (($segs | first ($idx + 1) | str join "/") + "/"), git: true }
+        }
+    })
+    let git_dirs = ($tagged | where { |t| $t.git } | group-by key | transpose key rows | each { |g| $"($g.key) \(($g.rows | length) files\)" })
+    $git_dirs | append ($tagged | where { |t| not $t.git } | each { |t| $t.key })
+}
+
+# shadow: a directory replaced by a link whose latest backup has files the source does not have.
+# A finding acknowledged with `ygg doctor --ack-shadow` (state.acks.shadow) is `info` until a newer
+# backup of the same destination appears. Rows carry `backup` (the backup directory found).
+def check-shadow [ygg_home: string, targets: table, acked: list]: nothing -> list<record> {
     let bkp_root = ($ygg_home | path join ".state" "backups")
     let backups = (try { ls $bkp_root | where { |it| $it.type == "dir" } | sort-by name --reverse | get name } catch { [] })
     if ($backups | is-empty) {
@@ -272,9 +289,14 @@ def check-shadow [ygg_home: string, targets: table]: nothing -> list<record> {
         }
         let missing = (list-files-rel $found | where { |rel| ($t.src | path join $rel | path type) == null })
         if ($missing | is-not-empty) {
-            let shown = ($missing | first 5 | str join ", ")
-            let more = if (($missing | length) > 5) { $" and (($missing | length) - 5) more" } else { "" }
-            $rows = ($rows | append (finding "shadow" "warn" $t.dest $"latest backup has ($missing | length) file\(s\) missing in the source '($t.src)': ($shown)($more)" $"restore manually from '($found)'"))
+            let items = (collapse-git-paths $missing)
+            let shown = ($items | first 5 | str join ", ")
+            let more = if (($items | length) > 5) { $" and (($items | length) - 5) more" } else { "" }
+            let is_acked = ($acked | any { |a| ($a.target? == $t.dest) and ($a.backup? == $found) })
+            let severity = if $is_acked { "info" } else { "warn" }
+            let prefix = if $is_acked { "acknowledged: " } else { "" }
+            let fix = if $is_acked { $"restore manually from '($found)' if needed" } else { $"restore manually from '($found)', or acknowledge with 'ygg doctor --ack-shadow'" }
+            $rows = ($rows | append ((finding "shadow" $severity $t.dest $"($prefix)latest backup has ($missing | length) file\(s\) missing in the source '($t.src)': ($shown)($more)" $fix) | insert backup $found))
         }
     }
     $rows
@@ -354,7 +376,17 @@ def check-journal [ygg_home: string]: nothing -> list<record> {
     }
 }
 
-# Read-only audit of the host (RFC-017). Rows: { check, severity (error | warn), target, detail, fix }.
+# Acknowledge the shadow findings of `report` (state.acks.shadow = their {target, backup}; entries of
+# findings that are gone are dropped). Only state.json is written; the CLI runs this under the host lock.
+# Returns the findings that were warnings before.
+export def ack-shadow [ygg_home: string, report: list]: nothing -> list<record> {
+    let rows = ($report | where { |r| ($r.check == "shadow") and (($r.backup? | default "") != "") })
+    let st = (load-state $ygg_home)
+    save-state $ygg_home ($st | upsert acks ($st.acks | upsert shadow ($rows | each { |r| { target: $r.target, backup: $r.backup } })))
+    $rows | where { |r| $r.severity == "warn" }
+}
+
+# Read-only audit of the host (RFC-017). Rows: { check, severity (error | warn | info), target, detail, fix }.
 # Checks: link, link_pending, orphan_link, state_orphan, sync, perm, tool, collision, shadow,
 # secrets, canonical, journal_interrupted, journal_failed; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
 export def run-doctor [
@@ -392,7 +424,7 @@ export def run-doctor [
         (check-perms $ygg_home $plan $sb)
         (check-tools $plan)
         (check-collisions $resolved)
-        (check-shadow $ygg_home $targets)
+        (check-shadow $ygg_home $targets ($state.acks | get -o shadow | default []))
         (check-secrets $ygg_home $plan)
         (check-canonical $plan $targets)
         (check-journal $ygg_home)

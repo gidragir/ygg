@@ -40,7 +40,7 @@ def main [
     print "  ygg save [--no-lock]                     Save reverse-copied GUI/app edits back to modules"
     print "  ygg clean [--backups] [--hashes] [--dry-run] [--no-lock]  Clean old backups and orphaned state hashes"
     print "  ygg status [--json]                      Display module sync and git status table"
-    print "  ygg doctor [--json] [--fix] [-y]         Host audit & self-healing (exit code 1 on errors)"
+    print "  ygg doctor [--json] [--fix] [-y] [--ack-shadow]  Host audit & self-healing (exit code 1 on errors)"
     print "  ygg completions <shell>                  Generate shell completions (nu, zsh, bash, fish, ps1)"
     print "  ygg version                              Print version (also --version / -v)"
     print ""
@@ -595,6 +595,7 @@ def "main doctor" [
     --json, # Print findings as JSON
     --fix, # Repair fixable findings
     --yes (-y), # Confirm fixes without prompting
+    --ack-shadow, # Acknowledge current shadow findings (they stay as info until a newer backup appears)
     --sandbox: string = "" # Use this directory as HOME instead of the real one
 ] {
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
@@ -633,10 +634,25 @@ def "main doctor" [
         }
     }
 
+    mut acknowledged = []
+    if $ack_shadow {
+        let lock_file = (acquire-host-lock $ygg_home "doctor-ack")
+        try {
+            $acknowledged = (ack-shadow $ygg_home (run-doctor $ygg_home --sandbox=$effective_sandbox))
+            $report = (run-doctor $ygg_home --sandbox=$effective_sandbox)
+        } catch { |e|
+            release-host-lock $lock_file
+            error make { msg: $e.msg }
+        }
+        release-host-lock $lock_file
+    }
+
     let errors = ($report | where { |r| $r.severity == "error" } | length)
     if $json {
-        let out = if $fix {
-            { findings: $report, fixed: $fixed_findings }
+        let out = if $fix or $ack_shadow {
+            { findings: $report }
+            | merge (if $fix { { fixed: $fixed_findings } } else { {} })
+            | merge (if $ack_shadow { { acknowledged: $acknowledged } } else { {} })
         } else {
             $report
         }
@@ -646,6 +662,9 @@ def "main doctor" [
             print "Fixed findings:"
             print ($fixed_findings | select check target action status | table --expand)
             print ""
+        }
+        if $ack_shadow {
+            print $"Acknowledged ($acknowledged | length) shadow finding\(s\)."
         }
         if ($report | is-not-empty) {
             print ($report | table --expand)
