@@ -17,42 +17,12 @@ def ensure-executable [p: string]: nothing -> nothing {
     }
 }
 
-# Check if target path is a symlink or NTFS junction (including dangling symlinks)
+# Check if target path is a symlink or NTFS junction (including dangling ones).
+# `path type` uses symlink_metadata: Rust reports name-surrogate reparse points (symlinks, junctions)
+# as "symlink". Other reparse points (OneDrive/Cloud Files placeholders, WOF, AppExecLink) are real
+# data and must NOT be treated as links, so no generic ReparsePoint attribute probe is done.
 export def is-link-or-junction [path: string]: nothing -> bool {
-    let ptype: any = ($path | path type)
-    if ($ptype == "symlink") {
-        return true
-    }
-    if ($ptype == null) {
-        return false
-    }
-
-    # On Windows, check for ReparsePoint / Junction attribute without admin privileges
-    if ($nu.os-info.family == "windows") {
-        let parent = ($path | path dirname)
-        let name = ($path | path basename)
-        let win_parent = (to-win32-path $parent)
-        let dir_res = (try {
-            ^cmd /c dir /a:l /b $win_parent | complete
-        } catch {
-            { exit_code: 1, stdout: "" }
-        })
-        if ($dir_res.exit_code == 0) and ($name in ($dir_res.stdout | lines | str trim)) {
-            return true
-        }
-        let escaped_path = ($path | str replace --all "'" "''")
-        let ps_cmd = ("([System.IO.File]::GetAttributes('" + $escaped_path + "').HasFlag([System.IO.FileAttributes]::ReparsePoint))")
-        let ps_res = (try {
-            ^powershell -NoProfile -Command $ps_cmd | complete
-        } catch {
-            { exit_code: 1, stdout: "" }
-        })
-        if ($ps_res.exit_code == 0) and (($ps_res.stdout | str trim | str lowercase) == "true") {
-            return true
-        }
-    }
-
-    false
+    ($path | path type) == "symlink"
 }
 
 # Safely remove ONLY the symlink or junction without deleting target folder contents.
@@ -73,15 +43,24 @@ export def remove-link-only [path: string]: nothing -> nothing {
 
     if ($nu.os-info.family == "windows") {
         let win_path = (to-win32-path $path)
-        if ($ptype == "dir") or $is_link {
-            # Try rmdir (strictly without /S!) for NTFS junction
-            let rmdir_res = (try { ^cmd /c rmdir $win_path | complete } catch { { exit_code: 1 } })
+        if $is_link {
+            # rmdir (strictly without /S!) removes a junction / directory symlink itself
+            let rmdir_res = (try { ^cmd /c rmdir $win_path | complete } catch { { exit_code: 1, stderr: "" } })
             if $rmdir_res.exit_code != 0 {
-                # Fall back to del for file symlink
-                try { ^cmd /c del /f /q $win_path | complete } catch { }
+                # `del` on a link to a directory deletes the files of its TARGET: only a file
+                # symlink (or a dangling one) may fall back to del
+                let points_to_dir = (try { ($path | path expand | path type) == "dir" } catch { false })
+                if $points_to_dir {
+                    error make { msg: $"Failed to remove directory link '($path)': ($rmdir_res.stderr | str trim)" }
+                }
+                try { ^cmd /c del /f /q $win_path | complete | ignore } catch { }
             }
         } else {
-            try { ^cmd /c del /f /q $win_path | complete } catch { }
+            try { ^cmd /c del /f /q $win_path | complete | ignore } catch { }
+        }
+        # cmd's del reports success even when nothing was removed
+        if (($path | path type) != null) {
+            error make { msg: $"Failed to remove link '($path)'" }
         }
     } else {
         # Unix: strictly rm without -r
