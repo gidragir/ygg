@@ -1,7 +1,7 @@
 # src/sdk.nu
 # Yggdrasil configuration manager — Reactive SDK & setup.nu runner
 
-use state.nu [get-ygg-home, load-state, save-state, expand-target-path]
+use state.nu [get-ygg-home, load-state, save-state, expand-target-path, fs-windows]
 use pkg.nu [run-with-timeout, sudo-available]
 use link.nu [parse-services-tree, is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
 use env.nu [resolve-secret-value]
@@ -371,7 +371,7 @@ export def run-module-setup [
 export def safe-link [src: string, dest: string]: nothing -> nothing {
     let ygg_home = (get-ygg-home)
     let is_dry = (($env.YGG_DRY_RUN? | default "false") == "true")
-    let is_windows = ($nu.os-info.family == "windows")
+    let is_windows = (fs-windows)
     let target_dest = (expand-target-path $dest)
     let dest_parent = ($target_dest | path dirname)
     let is_abs = (is-path-absolute $src) or ($src | str starts-with "$")

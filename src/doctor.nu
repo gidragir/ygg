@@ -7,7 +7,7 @@
 # module directories, private files). Module-specific private files are declared by modules themselves
 # in `[doctor] private_files` of their manifest.
 
-use state.nu [load-state, save-state, expand-target-path, check-pending-journal, detect-host-os, to-win32-path, restrict-file-access]
+use state.nu [load-state, save-state, expand-target-path, check-pending-journal, fs-windows, to-win32-path, restrict-file-access]
 use manifest.nu [load-host-config, resolve-effective-plan]
 use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-literal-target, normalize-case, remove-link-only]
 use env.nu [missing-secret-keys, classify-secret-value, load-secrets-env]
@@ -159,8 +159,7 @@ def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string> {
 
 # perm: private files must not be accessible by group/others (Unix) or Users/Everyone (Windows RFC-035)
 export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> list<record> {
-    let host_os = (detect-host-os)
-    let is_windows = ($host_os.os == "windows")
+    let is_windows = (fs-windows)
     let private = ($plan.modules? | default [] | each { |m|
         to-list ($m.manifest?.doctor?.private_files? | default []) | each { |p| expand-target-path $p --sandbox $sb }
     } | flatten)
@@ -413,8 +412,7 @@ export def doctor-fix [
     findings: list<record>,
     --sandbox: string = ""
 ]: nothing -> list<record> {
-    let host_os = (detect-host-os)
-    let is_windows = ($host_os.os == "windows")
+    let is_windows = (fs-windows)
     mut state = (load-state $ygg_home)
     mut state_changed = false
     mut fixed_list = []

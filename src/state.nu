@@ -77,6 +77,14 @@ export def save-state [ygg_home: string, state: record]: nothing -> nothing {
     mv -f $tmp_file $state_file
 }
 
+# Physical filesystem strategy (RFC-006): 3-way copies for files, junctions for directories, ACL
+# instead of chmod. Always on a real Windows host, whatever YGG_HOST_OS_OVERRIDE says (there is no
+# native `ln -s`); on Unix only with the override "windows" (tests emulate junctions with symlinks).
+# Scopes and package managers keep following the logical OS from detect-host-os.
+export def fs-windows []: nothing -> bool {
+    ($nu.os-info.family == "windows") or (($env.YGG_HOST_OS_OVERRIDE? | default "" | str lowercase) == "windows")
+}
+
 # Detect host OS, distribution, and auto-discovered scopes
 export def detect-host-os []: nothing -> record<os: string, distro: string, auto_scopes: list<string>> {
     let override = ($env.YGG_HOST_OS_OVERRIDE? | default "")
