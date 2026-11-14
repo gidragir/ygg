@@ -2,8 +2,8 @@
 directory: src/state.nu
 source:
   kind: git
-  blob_sha: 969fd58d36adb8269a89d50f29a7ea8230222549
-  commit_sha: e1466886272809a25ea67f71ff1481772a1c14a2
+  blob_sha: 559f58c6e722a4f155ab44091fc411fe70f480dd
+  commit_sha: 17e27c1b315eb5b37a05e5e4b82639c03c9a2324
 generated_by:
   component: context-init
   role: update
@@ -35,6 +35,7 @@ export def assert-sandbox-home [sandbox: string]: nothing -> nothing
 export def ensure-ygg-dirs [ygg_home: string]: nothing -> nothing
 export def load-state [ygg_home: string]: nothing -> record
 export def save-state [ygg_home: string, state: record]: nothing -> nothing
+export def fs-windows []: nothing -> bool
 export def detect-host-os []: nothing -> record<os: string, distro: string, auto_scopes: list<string>>
 export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothing -> string
 ```
