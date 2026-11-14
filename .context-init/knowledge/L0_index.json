@@ -406,6 +406,7 @@
         "export def ensure-ygg-dirs [ygg_home: string]: nothing -> nothing",
         "export def load-state [ygg_home: string]: nothing -> record",
         "export def save-state [ygg_home: string, state: record]: nothing -> nothing",
+        "export def fs-windows []: nothing -> bool",
         "export def detect-host-os []: nothing -> record<os: string, distro: string, auto_scopes: list<string>>",
         "export def expand-target-path [raw_path: string, --sandbox: string = \"\"]: nothing -> string"
       ],

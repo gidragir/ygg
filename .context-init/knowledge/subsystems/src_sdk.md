@@ -2,8 +2,8 @@
 directory: src/sdk.nu
 source:
   kind: git
-  blob_sha: b2fc8172b203f12b55b57d237d30158983d137f6
-  commit_sha: 815458e5b6bc88a3a157c1c5138ac1e9e9d102aa
+  blob_sha: 36fda81571fe2aec932d389d7e976863cc0330e0
+  commit_sha: 17e27c1b315eb5b37a05e5e4b82639c03c9a2324
 generated_by:
   component: context-init
   role: update

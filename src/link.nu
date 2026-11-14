@@ -1,7 +1,7 @@
 # src/link.nu
 # Yggdrasil configuration manager — File linker, unfolding, 3-way sync & safe pruning
 
-use state.nu [load-state, save-state, expand-target-path, backup-existing, detect-host-os, to-win32-path]
+use state.nu [load-state, save-state, expand-target-path, backup-existing, fs-windows, to-win32-path]
 use env.nu [validate-secret-providers, load-secrets-env]
 
 # Make a file executable (owner) if it is not already; chmod stderr is suppressed.
@@ -481,7 +481,7 @@ export def compute-link-ops [
     --sandbox: string = ""
 ]: nothing -> table<op: string, dest: string, src: string, module: string, key: string, detail: string> {
     let state = (load-state $ygg_home)
-    let is_windows = ((detect-host-os).os == "windows")
+    let is_windows = (fs-windows)
     let sep = if ($nu.os-info.family == "windows") { "\\" } else { "/" }
     let targets = ($resolved.targets? | default [])
     let target_dests = ($targets | each { |t| $t.dest })
@@ -570,7 +570,7 @@ export def apply-links [
     --sandbox: string = ""
 ]: nothing -> record<applied: list<string>, pruned: list<string>, copies: list<string>, failed: list<record<dest: string, src: string, module: string, stderr: string>>> {
     mut state = (load-state $ygg_home)
-    let is_windows = ((detect-host-os).os == "windows")
+    let is_windows = (fs-windows)
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
 
     let resolved = (resolve-link-targets $plan --sandbox $effective_sandbox)
