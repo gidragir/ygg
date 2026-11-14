@@ -1215,6 +1215,7 @@ export def test_apply_links_real_windows_ignores_unix_override [] {
         "a\n" | save -f ($m | path join "app.conf")
         "b\n" | save -f ($m | path join "cfgdir" "b.conf")
         'name = "app"
+os = ["linux"]
 [links]
 "app.conf" = "~/.config/app/app.conf"
 "cfgdir" = "~/.config/app/cfgdir"' | save -f ($m | path join "ygg.toml")
