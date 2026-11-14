@@ -229,7 +229,7 @@ OTHER_VAR = "$OTHER/x"
         assert equal $nu_out.4 "$OTHER/x"
 
         let conf_raw = (open --raw $conf_file)
-        assert (($conf_raw | str replace --all "\\" "/") | str contains ($"TILDE_SUB=\"($sb)/.kube/config\"" | str replace --all "\\" "/"))
+        assert (($conf_raw | str replace --all "\\\\" "/" | str replace --all "\\" "/") | str contains ($"TILDE_SUB=\"($sb)/.kube/config\"" | str replace --all "\\" "/"))
         assert ($conf_raw | str contains "OTHER_VAR=\"\\$OTHER/x\"")
     }
 }

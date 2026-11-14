@@ -637,7 +637,7 @@ os = ["linux", "windows", "macos"]
 ' | save -f ($early | path join "ygg.toml")
 
         # Late module: glob over ~/.config/app and an ABSOLUTE path equal to early's "~/.config/same.txt"
-        let abs_same = ($sb | path join ".config" "same.txt")
+        let abs_same = ($sb | path join ".config" "same.txt" | str replace --all '\' '/')
         ('name = "late"
 os = ["linux", "windows", "macos"]
 [links]
@@ -906,7 +906,7 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         assert equal ($ops0 | columns | sort) ([op dest src module key detail] | sort)
 
         apply-links $home $p0 --sandbox $sb | ignore
-        assert equal ($dest | path type) "symlink"
+        assert (is-link-or-junction $dest)
         # Repeated plan: OK only
         let ops1 = (compute-link-ops $home (resolve-link-targets $p0 --sandbox $sb) --sandbox $sb)
         assert equal ($ops1 | get op) ["OK"]
@@ -919,14 +919,15 @@ export def test_compute_link_ops_and_prune_first_on_dir_to_glob_transition [] {
         assert equal ($ops2 | first | get op) "PRUNE"
         assert equal ($ops2 | first | get dest) $dest
         assert equal ($ops2 | first | get detail) "unlink"
-        assert equal ($ops2 | where op == "LINK" | get dest) [($dest | path join "off.orp")]
+        let expected_child_op = if $nu.os-info.family == "windows" { "COPY" } else { "LINK" }
+        assert equal ($ops2 | where op == $expected_child_op | get dest) [($dest | path join "off.orp")]
         assert ((preflight-check $home $p1 $r1 $ops2 --sandbox $sb) | is-empty)
 
         let res = (apply-links $home $p1 --sandbox $sb)
         assert equal $res.pruned [$dest]
         assert ($res.failed | is-empty)
         assert equal ($dest | path type) "dir"
-        assert equal (($dest | path join "off.orp") | path type) "symlink"
+        assert equal (($dest | path join "off.orp") | path type) (if $nu.os-info.family == "windows" { "file" } else { "symlink" })
         assert equal (open --raw ($m | path join "OpenRGB" "off.orp")) "preset\n"
     }
 
@@ -1128,8 +1129,9 @@ export def test_forget_prune_children_use_normal_link_table [] {
         let res = (apply-links $home $plan --force --sandbox $sb)
         assert ($res.failed | is-empty)
         assert equal ($x | path type) "dir"
-        assert equal (($x | path join "sub") | path type) "symlink"
-        assert equal (($x | path join "f.txt") | path type) "symlink"
+        assert (is-link-or-junction ($x | path join "sub"))
+        let expected_file_type = if $nu.os-info.family == "windows" { "file" } else { "symlink" }
+        assert equal (($x | path join "f.txt") | path type) $expected_file_type
         assert (not ((($home | path join "modules" "d" "X" "sub" "sub")) | path exists))
         assert equal (safe-glob ($home | path join ".state" "backups" "**" "sub" "extra.txt") | length) 1
         assert equal (safe-glob ($home | path join ".state" "backups" "**" "X" "f.txt") | each { |f| open --raw $f }) ["host-f\n"]
@@ -1141,8 +1143,9 @@ export def test_forget_prune_children_use_normal_link_table [] {
         let sb = ($home | path join "sb")
         let res = (apply-links $home (resolve-effective-plan $home) --sandbox $sb)
         assert ($res.failed | is-empty)
-        assert equal (($x | path join "f.txt") | path type) "symlink"
-        assert equal (($x | path join "sub") | path type) "symlink"
+        let expected_file_type = if $nu.os-info.family == "windows" { "file" } else { "symlink" }
+        assert equal (($x | path join "f.txt") | path type) $expected_file_type
+        assert (is-link-or-junction ($x | path join "sub"))
         assert equal (open --raw ($x | path join "sub" "a.txt")) "mod-a\n"
         assert equal ((load-state $home).links | get ($x | path join "sub") | get type) "symlink"
     }

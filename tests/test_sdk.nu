@@ -428,8 +428,9 @@ on_change = "reload-dir"
         test-link-dir $mod_src ($home | path join "modules" "hm")
         "[[modules]]\nname = \"hm\"\nexclude = [\"cfg/x.conf\"]\n" | save -f ($home | path join "host.toml")
         let hkey = { |k| "on_change:hm:" + $k }
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
 
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: $log } {
             # 1. First run: every hook fires once, the shared command once for two keys
             let r1 = (apply-with-hooks $home $sb)
             assert equal (hook-log $log | sort) ["hook: reload-a", "hook: reload-dir", "hook: reload-shared"]

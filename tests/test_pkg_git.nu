@@ -252,7 +252,7 @@ export def test_update_aborts_cleanly_on_conflict [] {
         let res = (update-modules $home)
         assert equal ($res | first | get status) "conflict"
         # Working file must remain clean without <<<<<<< markers and no active rebase-merge dir
-        let content = (open --raw ($cloned | path join "app.conf"))
+        let content = (open --raw ($cloned | path join "app.conf") | str replace --all "\r\n" "\n")
         assert (not ($content | str contains "<<<<<<<"))
         assert equal $content "line = local_custom\n"
         assert (not ($cloned | path join ".git/rebase-merge" | path exists))
@@ -335,7 +335,7 @@ export def test_update_modules_clean_success [] {
         assert equal ($res | first | get status) "ok"
         assert equal ($res | first | get updated) true
 
-        let content = (open --raw ($cloned | path join "app.conf"))
+        let content = (open --raw ($cloned | path join "app.conf") | str replace --all "\r\n" "\n")
         assert equal $content "v2\n"
     }
 }
@@ -447,7 +447,7 @@ export def test_add_module_dirty_guard_and_dry_run_clone_cleanup [] {
 
             # 4. --force replaces it; the dirty tree goes to .state/backups, not deleted
             add-module $home $bare --force | ignore
-            assert equal (open --raw ($mod_dir | path join "file.txt")) "test content\n"
+            assert equal (open --raw ($mod_dir | path join "file.txt") | str replace --all "\r\n" "\n") "test content\n"
             let saved = (glob (($home | path join ".state" "backups" "**" "guarded" "file.txt") | str replace --all '\' '/'))
             assert equal ($saved | length) 1
             assert equal (open --raw ($saved | first)) "dirty change\n"

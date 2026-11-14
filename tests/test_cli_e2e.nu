@@ -1,5 +1,6 @@
 use std/assert
 use ../src/state.nu [ensure-ygg-dirs]
+use ../src/link.nu [is-link-or-junction]
 use helpers.nu [with-temp-ygg, test-link-dir, test-dangling-link]
 
 export def test_full_cli_lifecycle [] {
@@ -358,7 +359,7 @@ niri = "~/.config/niri"
             assert equal ($notice | length) 1
             let bkp = ($notice | first | parse --regex "-> '(?P<p>.+)'$" | get 0.p)
             assert equal (open --raw $bkp) "host-version\n"
-            assert equal ($star | path type) "symlink"
+            assert equal ($star | path type) (if $nu.os-info.family == "windows" { "file" } else { "symlink" })
 
             # 3. diff after apply hides OK lines by default, --all shows them; no change on disk
             let before2 = (snapshot-all $home $sb)
@@ -524,7 +525,7 @@ pacman = ["curl"]
             let r5 = (^nu $ygg_bin add $good --sandbox $sb | complete)
             assert equal $r5.exit_code 0 $r5.stderr
             assert ($r5.stdout | str contains "Added module good")
-            assert equal (($sb | path join ".config" "app") | path type) "symlink"
+            assert (is-link-or-junction ($sb | path join ".config" "app"))
             let names = (open ($home | path join "host.toml") | get modules | get name)
             assert equal $names ["keep", "good"]
         }
@@ -643,7 +644,8 @@ on_change = "app msg reload"
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         let log = ($home | path join "pkg.log")
-        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: $log } {
             let before = (snapshot-all $home $sb)
             let dry = (^nu $ygg_bin apply --dry-run --sandbox $sb | complete)
             assert equal $dry.exit_code 0 $dry.stderr
@@ -1039,7 +1041,7 @@ export def test_cli_completions_generation [] {
 }
 
 def tree-snapshot [root: string]: nothing -> list<string> {
-    glob (($root | path join "**" "*") | str replace --all '\' '/') | sort | each { |p| $"($p)|(try { ls -D $p | get -o 0.modified | default '' } catch { '' })" }
+    glob (($root | path join "**" "*") | str replace --all '\' '/') | sort | each { |p| $"($p)|(try { ls -D $p | get -o 0.modified | into int | into string } catch { '' })" }
 }
 
 export def test_readonly_commands_do_not_touch_fresh_home [] {
@@ -1156,7 +1158,7 @@ export def test_cli_doctor_fix_refuses_when_host_locked [] {
             let dead_link = ($cfg | path join "locked-orphan.conf")
             test-dangling-link ($home | path join "gone-target") $dead_link
             {
-                pid: 1,
+                pid: $nu.pid,
                 host: (sys host | get hostname),
                 timestamp: "2026-11-08T00:00:00Z",
                 command: "apply"

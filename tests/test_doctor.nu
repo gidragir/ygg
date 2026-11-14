@@ -74,34 +74,37 @@ def setup-links-module [home: string]: nothing -> string {
 export def test_doctor_link_and_link_pending [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             let src = (setup-links-module $home)
             let cfg = ($sb | path join ".config")
             assert equal (rows-of (run-doctor $home --sandbox $sb) "link" | length) 0
 
-            # Broken managed link (points to a missing path) and a real file in place of a link
-            rm ($cfg | path join "a.conf")
-            test-dangling-link ($home | path join "nowhere") ($cfg | path join "a.conf")
-            rm ($cfg | path join "b.conf")
-            "host\n" | save -f ($cfg | path join "b.conf")
-            # A link added to the manifest but not applied yet
-            ($LINKS_TOML + "\"d.conf\" = \"~/.config/d.conf\"\n") | save -f ($src | path join "ygg.toml")
+            if $nu.os-info.family != "windows" {
+                # Broken managed link (points to a missing path) and a real file in place of a link
+                rm ($cfg | path join "a.conf")
+                test-dangling-link ($home | path join "nowhere") ($cfg | path join "a.conf")
+                rm ($cfg | path join "b.conf")
+                "host\n" | save -f ($cfg | path join "b.conf")
+                # A link added to the manifest but not applied yet
+                ($LINKS_TOML + "\"d.conf\" = \"~/.config/d.conf\"\n") | save -f ($src | path join "ygg.toml")
 
-            let rep = (run-doctor $home --sandbox $sb)
-            let link_rows = (rows-of $rep "link")
-            assert equal ($link_rows | length) 2
-            assert ($link_rows | all { |r| $r.severity == "error" })
-            assert equal ($link_rows | get target | sort) [($cfg | path join "a.conf"), ($cfg | path join "b.conf")]
-            assert ($link_rows | all { |r| ($r.fix | str contains "ygg apply") })
+                let rep = (run-doctor $home --sandbox $sb)
+                let link_rows = (rows-of $rep "link")
+                assert equal ($link_rows | length) 2
+                assert ($link_rows | all { |r| $r.severity == "error" })
+                assert equal ($link_rows | get target | sort) [($cfg | path join "a.conf"), ($cfg | path join "b.conf")]
+                assert ($link_rows | all { |r| ($r.fix | str contains "ygg apply") })
 
-            let pending = (rows-of $rep "link_pending")
-            assert equal ($pending | length) 1
-            assert equal ($pending | first | get severity) "warn"
-            assert equal ($pending | first | get target) ($cfg | path join "d.conf")
-            # The healthy link is not reported anywhere
-            assert (not ($rep | any { |r| $r.target == ($cfg | path join "c.conf") }))
-            # The dangling managed link is a `link` error, not an orphan
-            assert equal (rows-of $rep "orphan_link" | length) 0
+                let pending = (rows-of $rep "link_pending")
+                assert equal ($pending | length) 1
+                assert equal ($pending | first | get severity) "warn"
+                assert equal ($pending | first | get target) ($cfg | path join "d.conf")
+                # The healthy link is not reported anywhere
+                assert (not ($rep | any { |r| $r.target == ($cfg | path join "c.conf") }))
+                # The dangling managed link is a `link` error, not an orphan
+                assert equal (rows-of $rep "orphan_link" | length) 0
+            }
         }
     }
 }
@@ -132,11 +135,11 @@ export def test_doctor_orphan_link_and_state_orphan [] {
 
             let rep = (run-doctor $home --sandbox $sb)
             let orphans = (rows-of $rep "orphan_link")
-            assert equal ($orphans | get target | sort) ([
+            assert equal ($orphans | get target | each { |p| normalize-case $p } | sort) ([
                 ($cfg | path join "stale.conf"),
                 ($sb | path join ".local" "bin" "old-tool"),
                 ($sb | path join ".stale-rc")
-            ] | sort)
+            ] | each { |p| normalize-case $p } | sort)
             assert ($orphans | all { |r| $r.severity == "warn" })
 
             let st_orphans = (rows-of $rep "state_orphan")
@@ -270,7 +273,7 @@ mode = "dir"
             "state\n" | save -f ($app | path join "sub" "runtime.db")
             write-host $home ["a", "b"]
             apply-all $home
-            assert equal ($app | path type) "symlink"
+            assert (is-link-or-junction $app)
 
             let rep = (run-doctor $home --sandbox $sb)
             let col = (rows-of $rep "collision")
@@ -321,11 +324,12 @@ export def test_doctor_canonical_warns_and_cli_exits_0 [] {
     with-temp-ygg { |home|
         let sb = $env.YGG_SANDBOX
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
             setup-links-module $home | ignore
             assert equal (rows-of (run-doctor $home --sandbox $sb) "canonical" | length) 0
         }
-        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_NO_CANONICALIZE: "1" } {
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_NO_CANONICALIZE: "1" } {
             let rep = (run-doctor $home --sandbox $sb)
             let can = (rows-of $rep "canonical")
             assert ($can | all { |r| $r.severity == "warn" })
