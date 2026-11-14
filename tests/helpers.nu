@@ -3,7 +3,7 @@
 
 export def with-temp-ygg [action: closure]: nothing -> nothing {
     let tmp = if ($nu.os-info.family == "windows") {
-        let base = ($env.TEMP? | default ($env.TMP? | default "C:\\Temp"))
+        let base = ($env.RUNNER_TEMP? | default ($env.TEMP? | default ($env.TMP? | default "C:\\Temp")))
         let rand_suffix = (random chars --length 8)
         let dir = ($base | path join $"ygg-test-($rand_suffix)")
         mkdir $dir

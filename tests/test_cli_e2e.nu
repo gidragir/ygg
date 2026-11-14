@@ -1039,7 +1039,7 @@ export def test_cli_completions_generation [] {
 }
 
 def tree-snapshot [root: string]: nothing -> list<string> {
-    glob (($root | path join "**" "*") | str replace --all '\' '/') | sort | each { |p| $"($p)|(ls -D $p | get 0.modified)" }
+    glob (($root | path join "**" "*") | str replace --all '\' '/') | sort | each { |p| $"($p)|(try { ls -D $p | get -o 0.modified | default '' } catch { '' })" }
 }
 
 export def test_readonly_commands_do_not_touch_fresh_home [] {

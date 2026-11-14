@@ -51,7 +51,7 @@ def main [--filter: string = ""] {
     }
 
     cd $tests_dir
-    let results = ($all_tests | par-each { |entry|
+    let results = ($all_tests | par-each --threads 4 { |entry|
         let run_res = (with-env (clean-ygg-env) {
             ^nu -I $tests_dir -c $"use ($entry.file) *; ($entry.test)" | complete
         })
