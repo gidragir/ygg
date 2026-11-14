@@ -173,15 +173,127 @@ def csv-env [name: string]: nothing -> list<string> {
     $env | get -o $name | default "" | split row "," | each { |s| $s | str trim } | where { |it| $it != "" }
 }
 
+# Read-only listing commands of user-space managers (their output goes to parse-installed-pkgs)
+const LISTING_ARGVS = {
+    mise: [mise ls --global --json],
+    cargo: [cargo install --list],
+    pnpm: [pnpm ls -g --json --depth=0],
+    uv: [uv tool list]
+}
+
+# Installed packages from a user-space manager listing as {name, version, requested}
+# (`requested` is the version mise was asked for); unparseable output yields []
+export def parse-installed-pkgs [mgr: string, text: string]: nothing -> list<record<name: string, version: string, requested: string>> {
+    match $mgr {
+        "cargo" | "uv" => {
+            # `ripgrep v14.1.0:` / `ruff v0.5.0`; binaries follow as indented or `- ` lines
+            $text | lines
+            | where { |l| not (($l starts-with " ") or ($l starts-with "\t") or ($l starts-with "-")) }
+            | parse --regex '^(?<name>\S+) v(?<version>[^\s:]+)'
+            | each { |r| { name: $r.name, version: $r.version, requested: "" } }
+        },
+        "pnpm" => {
+            let data = (try { $text | from json } catch { null })
+            let roots = if (($data | describe) =~ '^(list|table)') { $data } else { [] }
+            $roots | each { |root|
+                let deps = ($root | get -o dependencies | default {})
+                if (($deps | describe) starts-with "record") {
+                    $deps | transpose name info | each { |d|
+                        { name: $d.name, version: ($d.info | get -o version | default "" | into string), requested: "" }
+                    }
+                } else { [] }
+            } | flatten
+        },
+        "mise" => {
+            let data = (try { $text | from json } catch { null })
+            if not (($data | describe) starts-with "record") {
+                return []
+            }
+            $data | transpose name entries | each { |t|
+                $t.entries | where { |e| ($e | get -o installed | default false) == true } | each { |e|
+                    {
+                        name: $t.name,
+                        version: ($e | get -o version | default "" | into string),
+                        requested: ($e | get -o requested_version | default "" | into string)
+                    }
+                }
+            } | flatten
+        },
+        _ => []
+    }
+}
+
+# Split `name@version` at the last `@` that does not open a scope (`@scope/pkg`, `npm:@scope/pkg`)
+def split-pkg-spec [spec: string]: nothing -> record<name: string, version: string> {
+    let idx = ($spec | str index-of --end "@")
+    if ($idx <= 0) {
+        return { name: $spec, version: "" }
+    }
+    if (($spec | str substring ($idx - 1)..($idx - 1)) in [":", "/"]) {
+        return { name: $spec, version: "" }
+    }
+    { name: ($spec | str substring 0..<$idx), version: ($spec | str substring ($idx + 1)..) }
+}
+
+# PEP 503 normalized Python package name
+def pep503-name [name: string]: nothing -> string {
+    $name | str lowercase | str replace --all --regex '[-_.]+' "-"
+}
+
+# `ruff`, `ruff[extra]`, `ruff==0.5.0`, `ruff@0.5.0`; range specifiers (`>=`) do not pin a version
+def uv-pkg-spec [spec: string]: nothing -> record<name: string, version: string> {
+    let m = ($spec | parse --regex '^(?<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?\s*(?:(?:==|@)\s*(?<version>[^\s,;]+))?')
+    if ($m | is-empty) {
+        return { name: (pep503-name $spec), version: "" }
+    }
+    let r = ($m | first)
+    { name: (pep503-name $r.name), version: ($r.version | default "") }
+}
+
+# A requested version is met by an exact version, mise's requested version or a `<want>.` prefix
+def pkg-version-matches [want: string, have: record]: nothing -> bool {
+    ($want in ["", "latest"]) or ($want == $have.version) or ($want == $have.requested) or ($have.version | str starts-with $"($want).")
+}
+
+# Whether the package spec of a user-space manager is satisfied by its installed listing
+export def pkg-spec-installed [mgr: string, spec: string, installed: list]: nothing -> bool {
+    let want = if ($mgr == "uv") { uv-pkg-spec $spec } else { split-pkg-spec $spec }
+    $installed | any { |p|
+        let name = if ($mgr == "uv") { pep503-name $p.name } else { $p.name }
+        ($name == $want.name) and (pkg-version-matches $want.version $p)
+    }
+}
+
+# Installed packages of a user-space manager, or null when it cannot be listed
+def list-installed-pkgs [mgr: string]: nothing -> any {
+    let argv = ($LISTING_ARGVS | get -o $mgr)
+    if ($argv == null) {
+        return null
+    }
+    let r = (try { run-external ($argv | first) ...($argv | skip 1) | complete } catch { { exit_code: -1, stdout: "" } })
+    if ($r.exit_code != 0) {
+        return null
+    }
+    parse-installed-pkgs $mgr $r.stdout
+}
+
 # RFC-022 / RFC-048: packages not installed yet (mock: installed packages come from
-# YGG_MOCK_PKG_INSTALLED, no manager is run). Managers without a precheck return `pkgs`.
+# YGG_MOCK_PKG_INSTALLED, no manager is run). Managers without a precheck (winget, scoop)
+# and managers whose listing fails return `pkgs`.
 export def missing-pkgs [mgr: string, pkgs: list<string>]: nothing -> list<string> {
-    if not ($mgr in ["pacman", "paru", "brew", "apt", "dnf", "zypper"]) {
+    if not ($mgr in ["pacman", "paru", "brew", "apt", "dnf", "zypper", ...($LISTING_ARGVS | columns)]) {
         return $pkgs
     }
     if (is-mock-mode) {
         let installed = (csv-env "YGG_MOCK_PKG_INSTALLED")
         return ($pkgs | where { |p| not ($p in $installed) })
+    }
+    if ($mgr in ($LISTING_ARGVS | columns)) {
+        let installed = (list-installed-pkgs $mgr)
+        if ($installed == null) {
+            return $pkgs
+        }
+        return ($pkgs | where { |p| not (pkg-spec-installed $mgr $p $installed) })
     }
     match $mgr {
         "pacman" | "paru" => {
@@ -393,6 +505,10 @@ export def install-packages [
         # RFC-022 / RFC-048: only packages that are not installed yet reach the manager
         let todo = (missing-pkgs $mgr $pkgs)
         if ($todo | is-empty) {
+            # A set satisfied by the precheck is cached like an installed one
+            if $cacheable {
+                $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
+            }
             $new_packages = ($new_packages | upsert $mgr $union_pkgs)
             continue
         }
@@ -438,8 +554,9 @@ export def install-packages [
         }
     }
 
-    # Hash and state.packages are stored only for successful managers on a real (or mock-logged) run
-    if ($new_hashes | columns | is-not-empty) or ($new_packages | columns | is-not-empty) {
+    # Hash and state.packages are stored only for successful managers on a real (or mock-logged) run;
+    # a dry-run (`ygg diff`) never writes the state
+    if (not $dry_run) and (($new_hashes | columns | is-not-empty) or ($new_packages | columns | is-not-empty)) {
         let st = (load-state $ygg_home)
         let merged_hashes = ($st.hashes? | default {} | merge $new_hashes)
         let merged_packages = ($st.packages? | default {} | merge $new_packages)
