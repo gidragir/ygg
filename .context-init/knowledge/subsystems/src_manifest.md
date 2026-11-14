@@ -2,8 +2,8 @@
 directory: src/manifest.nu
 source:
   kind: git
-  blob_sha: 00365b35c175a9ef161c50ad042b9c78da68d354
-  commit_sha: e1466886272809a25ea67f71ff1481772a1c14a2
+  blob_sha: f0ddee56b24b170ce9b7c8d2a2ebf60f36962c81
+  commit_sha: a8b94aad0df2457f8b9816b40357457d4c7a9465
 generated_by:
   component: context-init
   role: update

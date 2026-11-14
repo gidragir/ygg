@@ -533,3 +533,38 @@ export def test_dag_sort_is_stable_to_host_order [] {
     assert ($msg | str contains "p"); assert ($msg | str contains "q")
     assert (not ($msg =~ '\ba\b'))
 }
+
+# ygg.toml keys are portable: a foreign separator ("/" on Windows, "\" on Unix) becomes the native one
+# in src_path, like expand-target-path does for destinations
+export def test_manifest_src_path_uses_native_separator [] {
+    with-temp-ygg { |home|
+        let m = ($home | path join "modules" "m")
+        let foreign = if $nu.os-info.family == "windows" { "/" } else { "\\" }
+        let sep = (char path_sep)
+        let link_key = $"pc($foreign)a.kdl"
+        let save_key = $"app($foreign)s.json"
+        mkdir ($m | path join "pc") ($m | path join "app") ($m | path join "cfg" "sub")
+        "k\n" | save -f ($m | path join "pc" "a.kdl")
+        "{}" | save -f ($m | path join "app" "s.json")
+        ([
+            'name = "m"'
+            'os = ["linux", "windows", "macos"]'
+            '[links]'
+            $"'($link_key)' = \"~/.config/early/a.kdl\""
+            '"cfg/sub/*" = "~/.config/sub/*"'
+            '[save]'
+            $"'($save_key)' = \"~/.config/app/s.json\""
+        ] | str join "\n") | save -f ($m | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        let plan = (resolve-effective-plan $home)
+        let link_src = ($plan.links | where key == $link_key | get 0.src_path)
+        let glob_src = ($plan.links | where key == "cfg/sub/*" | get 0.src_path)
+        let save_src = ($plan.save | where key == $save_key | get 0.src_path)
+        assert ($link_src | str ends-with $"($sep)pc($sep)a.kdl") $"link src_path not native: ($link_src)"
+        assert ($glob_src | str ends-with $"($sep)cfg($sep)sub") $"glob src_path not native: ($glob_src)"
+        assert ($save_src | str ends-with $"($sep)app($sep)s.json") $"save src_path not native: ($save_src)"
+        assert ($link_src | path exists)
+        assert ($save_src | path exists)
+    }
+}

@@ -540,6 +540,12 @@ export def eval-scope-expression [expr: string, active_scopes: list<string>]: no
     $eval_stack | first
 }
 
+# ygg.toml keys are portable module-relative paths: "/" and "\\" become the native separator
+# (as expand-target-path does for destinations), so src_path never mixes separators
+def native-rel [rel: string]: nothing -> string {
+    $rel | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep)
+}
+
 # Resolve effective plan across active modules and scopes
 # --extra-modules: virtual { name, path, scopes } entries (RFC-012, `ygg add` preview / pre-flight);
 # an entry replaces the host.toml module of the same name and goes last, as a real `add` would.
@@ -716,7 +722,7 @@ export def resolve-effective-plan [
                 }
                 let clean_key = ($link_key | str replace --regex '^\./' '')
                 let base_rel = ($clean_key | str replace --regex '/\*$' '')
-                let src_path = ($mod_dir | path join $base_rel)
+                let src_path = ($mod_dir | path join (native-rel $base_rel))
                 let is_glob = (($link_key | str ends-with "/*") or ($dest_raw | str ends-with "/*"))
 
                 $plan_links = ($plan_links | append {
@@ -752,7 +758,7 @@ export def resolve-effective-plan [
                     key_order: $key_order,
                     key: $save_key,
                     src_rel: $clean_key,
-                    src_path: ($mod_dir | path join $clean_key),
+                    src_path: ($mod_dir | path join (native-rel $clean_key)),
                     dest_raw: $dest_raw
                 })
                 $key_order = $key_order + 1
