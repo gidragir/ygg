@@ -714,3 +714,105 @@ export def test_doctor_real_windows_acl_audit_ignores_unix_override [] {
         }
     }
 }
+
+# Module `s` with a `mode = "dir"` link over a host dir that was a git checkout with runtime state
+def setup-shadowed-git-dir [home: string]: nothing -> string {
+    let sb = $env.YGG_SANDBOX
+    let s = (make-module $home "s" 'name = "s"
+os = ["linux", "windows", "macos"]
+[links.app]
+target = "~/.config/app"
+mode = "dir"
+')
+    mkdir ($s | path join "app")
+    "common\n" | save -f ($s | path join "app" "common.txt")
+    let app = ($sb | path join ".config" "app")
+    mkdir ($app | path join ".git" "objects" "ab")
+    mkdir ($app | path join "sub")
+    "common\n" | save -f ($app | path join "common.txt")
+    "ref: refs/heads/main\n" | save -f ($app | path join ".git" "HEAD")
+    "[core]\n" | save -f ($app | path join ".git" "config")
+    "obj\n" | save -f ($app | path join ".git" "objects" "ab" "cdef")
+    "state\n" | save -f ($app | path join "sub" "runtime.db")
+    write-host $home ["s"]
+    apply-all $home
+    assert (is-link-or-junction $app)
+    $app
+}
+
+export def test_doctor_shadow_collapses_git_metadata [] {
+    with-temp-ygg { |home|
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            let app = (setup-shadowed-git-dir $home)
+            let shadow = (rows-of (run-doctor $home --sandbox $env.YGG_SANDBOX) "shadow")
+            assert equal ($shadow | length) 1
+            let row = ($shadow | first)
+            assert equal $row.severity "warn"
+            assert equal $row.target $app
+            # .git internals are one entry with a file count, real files stay listed one by one
+            assert ($row.detail | str contains ".git/ (3 files)") $row.detail
+            assert ($row.detail | str contains "sub/runtime.db") $row.detail
+            assert (not ($row.detail | str contains ".git/HEAD")) $row.detail
+            assert ($row.detail | str contains "4 file(s)") $row.detail
+        }
+    }
+}
+
+export def test_doctor_ack_shadow_downgrades_until_new_backup [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            let app = (setup-shadowed-git-dir $home)
+            let state_file = ($home | path join ".state" "state.json")
+            let state_before = (open --raw $state_file)
+
+            # A plain audit stays read-only
+            let rep = (run-doctor $home --sandbox $sb)
+            assert equal (open --raw $state_file) $state_before
+
+            # 1. Acknowledged: the finding stays visible as info and no longer counts as a warning
+            let acked = (ack-shadow $home $rep)
+            assert equal ($acked | get target) [$app]
+            let row = (rows-of (run-doctor $home --sandbox $sb) "shadow" | first)
+            assert equal $row.severity "info"
+            assert ($row.detail | str contains "acknowledged") $row.detail
+
+            # 2. The acknowledgement survives unrelated state rewrites
+            save-state $home (load-state $home)
+            assert equal (rows-of (run-doctor $home --sandbox $sb) "shadow" | first | get severity) "info"
+
+            # 3. A newer backup of the same destination raises the warning again
+            let rel = ($app | str replace --regex '^[A-Za-z]:' '' | str replace --regex '^[\\/]+' '')
+            let newer = ($home | path join ".state" "backups" "99991231_235959_000000" $rel)
+            mkdir $newer
+            "new\n" | save -f ($newer | path join "lost.txt")
+            let row3 = (rows-of (run-doctor $home --sandbox $sb) "shadow" | first)
+            assert equal $row3.severity "warn"
+            assert ($row3.detail | str contains "lost.txt") $row3.detail
+        }
+    }
+}
+
+export def test_doctor_cli_ack_shadow_flag [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            setup-shadowed-git-dir $home | ignore
+            let before = (^nu $ygg_bin doctor --json --sandbox $sb | complete)
+            assert equal (($before.stdout | from json) | where check == "shadow" | get severity) ["warn"]
+
+            let res = (^nu $ygg_bin doctor --ack-shadow --json --sandbox $sb | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            let out = ($res.stdout | from json)
+            assert equal ($out.acknowledged | length) 1
+            assert equal ($out.findings | where check == "shadow" | get severity) ["info"]
+
+            let text = (^nu $ygg_bin doctor --sandbox $sb | complete)
+            assert ($text.stdout | str contains "0 warning(s)") $text.stdout
+        }
+    }
+}
