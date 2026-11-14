@@ -1134,7 +1134,137 @@ export def test_missing_pkgs_mock_and_passthrough [] {
     with-env { YGG_MOCK_PKG_LOG: "mock.log", YGG_MOCK_PKG_INSTALLED: "curl" } {
         assert equal (missing-pkgs "apt" ["curl", "git"]) ["git"]
         assert equal (missing-pkgs "dnf" ["curl", "git"]) ["git"]
-        assert equal (missing-pkgs "cargo" ["curl", "git"]) ["curl", "git"]
+        # User-space managers are prechecked too; winget/scoop still pass everything through
+        assert equal (missing-pkgs "cargo" ["curl", "git"]) ["git"]
+        assert equal (missing-pkgs "mise" ["curl", "git"]) ["git"]
+        assert equal (missing-pkgs "pnpm" ["curl", "git"]) ["git"]
+        assert equal (missing-pkgs "uv" ["curl", "git"]) ["git"]
+        assert equal (missing-pkgs "winget" ["curl", "git"]) ["curl", "git"]
+    }
+}
+
+export def test_parse_installed_pkgs_listings [] {
+    let cargo = (parse-installed-pkgs "cargo" "foo v0.1.0 (https://github.com/x/foo#abc1234):\n    foo\nripgrep v14.1.0:\n    rg\n")
+    assert equal $cargo [
+        { name: "foo", version: "0.1.0", requested: "" },
+        { name: "ripgrep", version: "14.1.0", requested: "" }
+    ]
+
+    let uv = (parse-installed-pkgs "uv" "headroom-ai v0.41.0\n- headroom\n- headroom-cache-ttl\nruff v0.5.0\n- ruff\n")
+    assert equal ($uv | get name) ["headroom-ai", "ruff"]
+    assert equal ($uv | get version) ["0.41.0", "0.5.0"]
+
+    let pnpm_json = '[{"path": "/g", "private": true, "dependencies": {"typescript": {"version": "5.4.0"}, "@biomejs/biome": {"version": "1.8.0"}}}]'
+    let pnpm = (parse-installed-pkgs "pnpm" $pnpm_json)
+    assert equal ($pnpm | sort-by name | get name) ["@biomejs/biome", "typescript"]
+    assert equal ($pnpm | where name == "typescript" | first | get version) "5.4.0"
+    assert equal (parse-installed-pkgs "pnpm" '[{"path": "/g", "dependencies": {}}]') []
+
+    # mise: only installed entries; the requested version is kept for `tool@20`-style specs
+    let mise_json = '{"node": [{"version": "20.11.0", "requested_version": "20", "installed": true}], "aqua:BurntSushi/ripgrep": [{"version": "15.2.0", "requested_version": "latest", "installed": true}], "python": [{"version": "3.12.1", "requested_version": "3.12", "installed": false}]}'
+    let mise = (parse-installed-pkgs "mise" $mise_json)
+    assert equal ($mise | sort-by name) [
+        { name: "aqua:BurntSushi/ripgrep", version: "15.2.0", requested: "latest" },
+        { name: "node", version: "20.11.0", requested: "20" }
+    ]
+
+    # Unparseable output yields nothing (the caller then treats every package as missing)
+    assert equal (parse-installed-pkgs "pnpm" "not json") []
+    assert equal (parse-installed-pkgs "mise" "") []
+}
+
+export def test_pkg_spec_installed_matching [] {
+    let cargo = [{ name: "ripgrep", version: "14.1.0", requested: "" }]
+    assert (pkg-spec-installed "cargo" "ripgrep" $cargo)
+    assert (pkg-spec-installed "cargo" "ripgrep@14.1.0" $cargo)
+    assert (pkg-spec-installed "cargo" "ripgrep@14" $cargo)
+    assert (not (pkg-spec-installed "cargo" "ripgrep@13" $cargo))
+    assert (not (pkg-spec-installed "cargo" "ripgrep@14.1.01" $cargo))
+    assert (not (pkg-spec-installed "cargo" "bat" $cargo))
+
+    let mise = [
+        { name: "node", version: "20.11.0", requested: "20" },
+        { name: "aqua:BurntSushi/ripgrep", version: "15.2.0", requested: "latest" },
+        { name: "npm:@scope/tool", version: "1.0.0", requested: "latest" }
+    ]
+    assert (pkg-spec-installed "mise" "node" $mise)
+    assert (pkg-spec-installed "mise" "node@20" $mise)
+    assert (pkg-spec-installed "mise" "node@20.11.0" $mise)
+    assert (pkg-spec-installed "mise" "node@latest" $mise)
+    assert (not (pkg-spec-installed "mise" "node@18" $mise))
+    assert (pkg-spec-installed "mise" "aqua:BurntSushi/ripgrep" $mise)
+    assert (pkg-spec-installed "mise" "aqua:BurntSushi/ripgrep@latest" $mise)
+    assert (pkg-spec-installed "mise" "npm:@scope/tool" $mise)
+    assert (not (pkg-spec-installed "mise" "python@3.12" $mise))
+
+    let pnpm = [{ name: "@biomejs/biome", version: "1.8.0", requested: "" }, { name: "typescript", version: "5.4.0", requested: "" }]
+    assert (pkg-spec-installed "pnpm" "@biomejs/biome" $pnpm)
+    assert (pkg-spec-installed "pnpm" "@biomejs/biome@1.8.0" $pnpm)
+    assert (pkg-spec-installed "pnpm" "typescript@5" $pnpm)
+    assert (not (pkg-spec-installed "pnpm" "typescript@4" $pnpm))
+    assert (not (pkg-spec-installed "pnpm" "eslint" $pnpm))
+
+    # uv: PEP 503 name normalization; only exact pins (== / @) constrain the version
+    let uv = [{ name: "ruff", version: "0.5.0", requested: "" }, { name: "headroom-ai", version: "0.41.0", requested: "" }]
+    assert (pkg-spec-installed "uv" "ruff" $uv)
+    assert (pkg-spec-installed "uv" "Ruff" $uv)
+    assert (pkg-spec-installed "uv" "ruff==0.5.0" $uv)
+    assert (pkg-spec-installed "uv" "ruff@0.5.0" $uv)
+    assert (pkg-spec-installed "uv" "ruff>=0.4" $uv)
+    assert (not (pkg-spec-installed "uv" "ruff==0.4" $uv))
+    assert (pkg-spec-installed "uv" "headroom_ai" $uv)
+    assert (not (pkg-spec-installed "uv" "black" $uv))
+}
+
+# Real `cargo install --list` output, read from a fake CARGO_HOME (the host's crates are never read)
+export def test_missing_pkgs_reads_real_cargo_listing [] {
+    if (which cargo | is-empty) { return }
+    with-temp-ygg { |home|
+        let cargo_home = ($home | path join "cargo-home")
+        mkdir $cargo_home
+        "[v1]\n\"ripgrep 14.1.0 (registry+https://github.com/rust-lang/crates.io-index)\" = [\"rg\"]\n" | save -f ($cargo_home | path join ".crates.toml")
+        with-env { CARGO_HOME: $cargo_home } {
+            assert equal (missing-pkgs "cargo" ["ripgrep", "bat", "ripgrep@13"]) ["bat", "ripgrep@13"]
+        }
+    }
+}
+
+export def test_dry_run_precheck_never_writes_state [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let state_file = ($home | path join ".state" "state.json")
+        write-pkg-module $home "linux" "pacman = [\"curl\"]"
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_INSTALLED: "curl" } {
+            let res = (install-packages (resolve-effective-plan $home) --dry-run)
+            assert equal $res.executed []
+            assert equal (read-log $log) []
+            assert (not ($state_file | path exists)) "ygg diff must not write state.json"
+
+            # An existing state.json is left byte-for-byte untouched
+            save-state $home { links: {}, copies: {}, hashes: {}, packages: {} }
+            let before = (open --raw $state_file)
+            install-packages (resolve-effective-plan $home) --dry-run | ignore
+            assert equal (open --raw $state_file) $before
+        }
+    }
+}
+
+export def test_precheck_satisfied_set_is_cached [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        write-pkg-module $home "linux" "cargo = [\"bat\"]"
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_INSTALLED: "bat" } {
+            let r1 = (install-packages (resolve-effective-plan $home))
+            assert equal $r1.executed []
+            assert ((load-state $home).hashes | get -o "pkg:cargo" | is-not-empty) "satisfied set must store its hash"
+            assert equal ((load-state $home).packages | get -o cargo) ["bat"]
+        }
+        # The next run trusts the cache and skips the precheck
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_INSTALLED: "" } {
+            let r2 = (install-packages (resolve-effective-plan $home))
+            assert equal $r2.skipped ["cargo"]
+            assert equal (read-log $log) []
+        }
     }
 }
 
