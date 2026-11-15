@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-14",
+  "updated_at": "2026-11-15",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml",
@@ -33,16 +33,14 @@
         "def \"main version\" []",
         "def main [ --version (-v) # Print version ]",
         "def \"main init\" [ name?: string, --os: string = \"linux\" # Comma-separated target OS list for the new module (default: linux) ]",
-        "def \"main add\" [ source: string, # Local directory or git URL of the module(...) --scope (-s): string = \"\", # Comma-separated scopes to activate for the module --dry-run (-n), # Show the plan without modifying anything --force (-f), # Overwrite conflicting files and links (wit...",
-        "def assert-pkg-flags [pkg: string, skip_packages: bool]",
-        "def \"main remove\" [ name: string, # Module name --no-lock # Do not take the host lock ]"
+        "def \"main add\" [ source: string, # Local directory or git URL of the module(...) --scope (-s): string = \"\", # Comma-separated scopes to activate for the module --dry-run (-n), # Show the plan without modifying anything --force (-f), # Overwrite conflicting files and links (wit..."
       ],
       "summary_source": "heuristic"
     },
     {
       "id": "docs",
       "name": "Docs",
-      "summary": "Модуль и компоненты директории `docs` (11 файлов)",
+      "summary": "Модуль и компоненты директории `docs` (13 файлов)",
       "l1_path": "subsystems/docs.md",
       "tags": [
         "Generic / Multi-language",
@@ -56,10 +54,12 @@
         "docs/plans/2026-11-08-ygg-phase2-modules-migration.md",
         "docs/plans/2026-11-08-ygg-phase3-implementation-plan.md",
         "docs/plans/2026-11-10-ygg-phase4-implementation-plan.md",
+        "docs/plans/2026-11-15-ygg-module-containers-plan.md",
         "docs/specs/2026-11-07-modular-omni-architecture-design.md",
         "docs/specs/2026-11-08-ygg-engine-improvements-and-hardening.md",
         "docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md",
-        "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md"
+        "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md",
+        "docs/specs/2026-11-15-ygg-module-containers-design.md"
       ],
       "files": [
         {
@@ -91,6 +91,10 @@
           "is_entrypoint": false
         },
         {
+          "path": "docs/plans/2026-11-15-ygg-module-containers-plan.md",
+          "is_entrypoint": false
+        },
+        {
           "path": "docs/specs/2026-11-07-modular-omni-architecture-design.md",
           "is_entrypoint": false
         },
@@ -104,6 +108,10 @@
         },
         {
           "path": "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md",
+          "is_entrypoint": false
+        },
+        {
+          "path": "docs/specs/2026-11-15-ygg-module-containers-design.md",
           "is_entrypoint": false
         }
       ],
@@ -155,6 +163,38 @@
         "export def release-tag-error [tag: string, version: string]: nothing -> string",
         "export def is-prerelease [tag: string]: nothing -> bool",
         "def main [tag: string]"
+      ],
+      "summary_source": "heuristic"
+    },
+    {
+      "id": "src_container",
+      "name": "Container",
+      "summary": "Модуль и компоненты директории `src/container` (1 файлов)",
+      "l1_path": "subsystems/src_container.md",
+      "tags": [
+        "Generic / Multi-language",
+        "src_container"
+      ],
+      "key_files": [
+        "src/container.nu"
+      ],
+      "files": [
+        {
+          "path": "src/container.nu",
+          "is_entrypoint": false
+        }
+      ],
+      "key_symbols": [
+        "export const CONTAINER_RUNTIMES = [\"docker\", \"podman\"] const COMPOSE_DEFAULT_NAMES = [\"compose.yaml\" \"compose.yml\" \"docker-compose.yaml\" \"docker-compose.yml\"] def native-rel-path [rel: string]: nothing -> string",
+        "export def normalize-project-name [raw: string]: nothing -> string",
+        "export def find-override-file [file: string]: nothing -> string",
+        "def read-compose-name [file: string]: nothing -> string",
+        "export def compose-project-name [module: string, mod_dir: string, file: string]: nothing -> string",
+        "export def discover-stacks [module: string, mod_dir: string, cfg: record, scope_files: list<string>]: nothing -> list<record>",
+        "export def check-container-stacks [plan: record]: nothing -> list<record<module: string, key: string, reason: string, detail: string>>",
+        "export def compose-version-ok [output: string]: nothing -> bool",
+        "def container-sandbox [sandbox: string]: nothing -> string",
+        "def probe-runtime [rt: string]: nothing -> record<runtime: string, status: string, detail: string>"
       ],
       "summary_source": "heuristic"
     },
@@ -248,7 +288,7 @@
         "def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool, read_only: bool]: nothing -> record",
         "export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record",
         "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force, --read-only # never write into YGG_HOME(...); implies --dry-run ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>",
-        "export def remove-module [ygg_home: string, name: string]: nothing -> nothing"
+        "export def remove-module [ygg_home: string, name: string, --sandbox: string = \"\"]: nothing -> nothing"
       ],
       "summary_source": "heuristic"
     },
@@ -329,7 +369,7 @@
         }
       ],
       "key_symbols": [
-        "export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu *"
+        "export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu * export use container.nu *"
       ],
       "summary_source": "heuristic"
     },
@@ -435,6 +475,7 @@
         "tests/helpers.nu",
         "tests/run.nu",
         "tests/test_cli_e2e.nu",
+        "tests/test_container.nu",
         "tests/test_doctor.nu",
         "tests/test_env.nu",
         "tests/test_link.nu",
@@ -456,6 +497,10 @@
         },
         {
           "path": "tests/test_cli_e2e.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_container.nu",
           "is_entrypoint": false
         },
         {
@@ -503,7 +548,7 @@
     "Все изменения фиксируются через атомарные и типизированные коммиты."
   ],
   "generator": {
-    "version": "0.4.0",
-    "build": "05b1743"
+    "version": "0.5.1",
+    "build": "3697e79"
   }
 }

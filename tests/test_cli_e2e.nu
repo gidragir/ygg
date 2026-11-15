@@ -620,7 +620,7 @@ os = ["linux", "windows", "macos", "cachyos"]
             let rows = ($res.stdout | from json)
             assert equal ($rows | length) 1
             let row = ($rows | first)
-            assert equal ($row | columns | sort) (["name", "scopes", "path", "target", "branch", "dirty", "links_ok", "sync_conflicts", "pending_save"] | sort)
+            assert equal ($row | columns | sort) (["name", "scopes", "path", "target", "branch", "dirty", "links_ok", "sync_conflicts", "pending_save", "containers"] | sort)
             assert equal $row.name "json-mod"
             assert equal $row.scopes ["pc"]
             assert equal $row.target ($mod_src | path expand)
@@ -1711,6 +1711,28 @@ export def test_cli_remove_warns_when_down_fails [] {
             assert equal $r.exit_code 0 $r.stderr
             assert ($r.stderr | str contains "docker compose -p ds down") $r.stderr
             assert equal (open ($home | path join ".state" "state.json")).containers []
+        }
+    }
+}
+
+export def test_cli_status_shows_containers_column [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        with-env (ctr-flags $home | merge { YGG_MOCK_CONTAINER_RUNNING: "ds" }) {
+            ctr-started $home $ygg_bin $src
+            let broken = ($home | path join "modules" "broken")
+            mkdir $broken
+            "not = [valid toml\n" | save -f ($broken | path join "ygg.toml")
+            ($"\n[[modules]]\nname = \"broken\"\n") | save --append ($home | path join "host.toml")
+
+            let res = (^nu $ygg_bin status --json | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            let rows = ($res.stdout | from json)
+            let ds_row = ($rows | where name == "ds" | first)
+            let broken_row = ($rows | where name == "broken" | first)
+            assert equal $ds_row.containers "on 1/1 running"
+            assert equal $broken_row.containers "?"
         }
     }
 }

@@ -590,3 +590,23 @@ export def test_container_down_module_stacks_sandbox_and_unavailable [] {
         assert ((open --raw $log) | str contains "container: podman compose -p ds down\n")
     }
 }
+
+export def test_container_status_label_values [] {
+    let ok_rt = { runtime: "docker", status: "ok", detail: "" }
+    assert equal (container-status-label [] [] $ok_rt []) "-"
+
+    let s1 = { module: "ds", rel: "a/compose.yml", file: "", override: "", project: "ds-a", enabled: false }
+    let s2 = { module: "ds", rel: "b/compose.yml", file: "", override: "", project: "ds-b", enabled: false }
+    assert equal (container-status-label [$s1 $s2] [] $ok_rt []) "off"
+
+    let e1 = ($s1 | upsert enabled true)
+    let e2 = ($s2 | upsert enabled true)
+    assert equal (container-status-label [$e1 $e2] [] $ok_rt ["ds-a"]) "on 1/2 running"
+    assert equal (container-status-label [$e1 $e2] [] $ok_rt ["ds-a" "ds-b"]) "on 2/2 running"
+    assert equal (container-status-label [$e1 $e2] [] $ok_rt []) "on 0/2 running"
+
+    let down_rt = { runtime: "docker", status: "daemon_down", detail: "" }
+    let no_rt = { runtime: "", status: "no_runtime", detail: "" }
+    assert equal (container-status-label [$e1 $e2] [] $down_rt []) "on (daemon down)"
+    assert equal (container-status-label [$e1 $e2] [] $no_rt []) "on (no runtime)"
+}

@@ -713,7 +713,7 @@ os = ["linux", "cachyos"]
             apply-links $home (resolve-effective-plan $home) --sandbox $sb | ignore
 
             let row = (modules-status $home | first)
-            assert equal ($row | columns) ["name", "scopes", "path", "target", "branch", "dirty", "links_ok", "sync_conflicts", "pending_save"]
+            assert equal ($row | columns) ["name", "scopes", "path", "target", "branch", "dirty", "links_ok", "sync_conflicts", "pending_save", "containers"]
             assert equal $row.path ($home | path join "modules" "status_mod")
             assert equal $row.target ($ext_dir | path expand)
             assert equal $row.links_ok true

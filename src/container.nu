@@ -531,3 +531,53 @@ export def down-module-stacks [
     save-state $ygg_home ($fresh | upsert containers $keep | upsert hashes $hashes)
     $results
 }
+
+# List running compose project names via `<runtime> compose ls --format json` (read-only).
+# In mock mode (`YGG_MOCK_PKG_LOG` non-empty) reads `YGG_MOCK_CONTAINER_RUNNING` without logging.
+export def list-running-projects [runtime: string]: nothing -> list<string> {
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    if ($mock_log != "") {
+        return ($env.YGG_MOCK_CONTAINER_RUNNING? | default "" | split row "," | each { |s| $s | str trim } | where { |s| $s != "" })
+    }
+    if (($env.YGG_SANDBOX? | default "") != "") or ($runtime == "") {
+        return []
+    }
+    let r = (run-with-timeout [$runtime "compose" "ls" "--format" "json"] 30)
+    if $r.exit_code != 0 {
+        return []
+    }
+    try {
+        $r.stdout
+        | from json
+        | each { |row| $row.Name? | default ($row.name? | default "") }
+        | where { |n| $n != "" }
+    } catch {
+        []
+    }
+}
+
+# Pure status label for a module's containers column:
+# "-" | "off" | "on N/M running" | "on (no runtime)" | "on (daemon down)"
+export def container-status-label [
+    stacks: list,
+    state_containers: list,
+    runtime: record,
+    running: list<string>
+]: nothing -> string {
+    if ($stacks | is-empty) {
+        return "-"
+    }
+    let enabled = ($stacks | where enabled == true)
+    if ($enabled | is-empty) {
+        return "off"
+    }
+    if $runtime.status == "daemon_down" {
+        return "on (daemon down)"
+    }
+    if $runtime.status != "ok" {
+        return "on (no runtime)"
+    }
+    let total = ($enabled | length)
+    let active = ($enabled | where { |s| $s.project in $running } | length)
+    $"on ($active)/($total) running"
+}

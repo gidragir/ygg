@@ -155,6 +155,37 @@ links = { "powershell/profile.ps1" = "~/Documents/PowerShell/Microsoft.PowerShel
 
 ---
 
+## 🐳 Containers
+
+Modules can ship Docker/Podman Compose v2 stacks (`compose.yaml`, `compose.yml`, `docker-compose.yaml`, `docker-compose.yml`, or explicit `[containers] files = [...]`). Containers are opt-in per host (`containers = true` in `host.toml`) and disabled by default.
+
+* **Compose v2 only:** requires `docker compose` or `podman compose` v2+ (`docker-compose` v1 and `podman-compose` are rejected).
+* **Volumes are never deleted:** `ygg` never passes `-v`, `--volumes`, or `--rmi` to `down`.
+
+### Example: `data-science` module
+
+```text
+data-science/
+├── ygg.toml          # name, os, description
+├── packages.toml     # uv, python
+└── compose.yml       # services.postgres: image postgres:17, volume pgdata
+```
+
+```console
+$ ygg add gidragir/data-science
+Module 'data-science' declares containers (compose.yml). Start them now? [y/N]: n
+Added module data-science
+...
+$ ygg apply --containers data-science      # enable and start postgres
+$ ygg upgrade --containers                 # pull -> down -> up -d for enabled stacks
+$ ygg apply --no-containers data-science   # stop and disable
+```
+
+* **`ygg status`** shows a `containers` column (`-`, `off`, `on N/M running`, `on (no runtime)`, `on (daemon down)`).
+* **`ygg doctor`** reports warnings for enabled stacks that are not running, unavailable runtimes, or stale state entries (`--fix` skips them; run `ygg apply`).
+
+---
+
 ## 🪟 Windows Non-Admin Mechanics
 
 Running dotfile managers on corporate or restricted Windows setups usually fails because creating symbolic links requires elevated Administrator privileges or Windows Developer Mode.

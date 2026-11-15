@@ -816,3 +816,37 @@ export def test_doctor_cli_ack_shadow_flag [] {
         }
     }
 }
+
+export def test_doctor_container_findings_read_only [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+        let log = ($home | path join "mock.log")
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_RUNNING: "" } {
+            let src = (make-module $home "ds" "name = \"ds\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n")
+            "services: {}\n" | save -f ($src | path join "compose.yml")
+            "[[modules]]\nname = \"ds\"\ncontainers = true\n" | save -f ($home | path join "host.toml")
+            ensure-ygg-dirs $home
+            let state_file = ($home | path join ".state" "state.json")
+            save-state $home ((load-state $home) | upsert containers [{ module: "ghost", project: "ghost", file: "", override: "", runtime: "docker" }])
+            let state_hash = (open --raw $state_file | hash sha256)
+
+            let rep = (run-doctor $home --sandbox $sb)
+            let cf = (rows-of $rep "containers")
+            assert (($cf | length) == 2) $"expected 2 container findings, got: ($cf)"
+            assert ($cf | all { |r| $r.severity == "warn" })
+            assert ("ds" in ($cf | get target))
+            assert ("ghost" in ($cf | get target))
+            assert equal (open --raw $state_file | hash sha256) $state_hash
+
+            let log_lines = (open --raw $log | lines | where { |l| ($l | str trim) != "" })
+            assert ($log_lines | is-not-empty)
+            assert ($log_lines | all { |l| $l | str starts-with "container-probe:" })
+
+            # doctor-fix skips containers findings
+            let fixed = (doctor-fix $home $cf --sandbox $sb)
+            assert equal $fixed []
+            assert equal (open --raw $state_file | hash sha256) $state_hash
+        }
+    }
+}

@@ -2,11 +2,11 @@
 directory: src/mod.nu
 source:
   kind: git
-  blob_sha: a0f5e455bb219a2591ada029f4efb90883e6d8b6
-  commit_sha: cbe6f55f9c93a1c852c25c768b190ed5077ae844
+  blob_sha: 995ab2bd774b91db91570623b2d6c4904a0b7bb4
+  commit_sha: dadd7fbef08ba0f3acd485efe55cd76931159055
 generated_by:
   component: context-init
-  role: init
+  role: update
   model: none
 freshness:
   total_entries: 1
@@ -30,7 +30,7 @@ freshness:
 
 ## 🔑 Ключевой контракт и экспорты
 ```text
-export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu *
+export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu * export use container.nu *
 ```
 
 ## 🧪 Запуск и тестирование
