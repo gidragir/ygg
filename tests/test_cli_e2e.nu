@@ -1334,3 +1334,33 @@ export def test_apply_dry_run_reports_would_recover [] {
         }
     }
 }
+
+export def test_cli_apply_runs_container_step_from_host_toml [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        mkdir $sb ($home | path join "modules" "ds")
+        let d = ($home | path join "modules" "ds")
+        "name = \"ds\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($d | path join "ygg.toml")
+        "services: {}\n" | save -f ($d | path join "compose.yml")
+        "[[modules]]\nname = \"ds\"\ncontainers = true\n" | save -f ($home | path join "host.toml")
+        let log = ($home | path join "mock.log")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        let count = { if ($log | path exists) { open --raw $log | lines | where { |l| $l | str starts-with "container: " } | length } else { 0 } }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: $log, YGG_NONINTERACTIVE: "1" } {
+            let r1 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $r1.exit_code 0
+            assert equal (do $count) 1
+            assert ((open --raw $log) | str contains "-p ds up -d --remove-orphans")
+            let r2 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $r2.exit_code 0
+            assert equal (do $count) 1
+            "services: {}\n# edit\n" | save -f ($d | path join "compose.yml")
+            let r3 = (^nu $ygg_bin apply --dry-run --sandbox $sb | complete)
+            assert equal $r3.exit_code 0
+            assert ($r3.stdout | str contains "CONTAINER")
+            assert ($r3.stdout | str contains " up ds  (ds: compose.yml)")
+            assert equal (do $count) 1
+        }
+    }
+}

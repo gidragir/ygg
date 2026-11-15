@@ -254,7 +254,9 @@ def apply-plan [
     --extra-modules: list<record> = [],
     --locked,
     --prune-packages,
-    --force-system-prune
+    --force-system-prune,
+    --containers-enable: list<string> = [],
+    --containers-disable: list<string> = []
 ] {
     assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") {
@@ -269,7 +271,7 @@ def apply-plan [
         ensure-ygg-dirs $ygg_home
     }
 
-    let plan = (resolve-effective-plan $ygg_home --extra-modules $extra_modules)
+    let plan = (apply-container-overrides (resolve-effective-plan $ygg_home --extra-modules $extra_modules) $containers_enable $containers_disable)
 
     if $locked {
         let lock_errors = (verify-ygg-lock $ygg_home $plan)
@@ -351,7 +353,12 @@ def apply-plan [
             print ("  " + ("HOOK" | fill --alignment left --width 15) + " " + $h.cmd + "  (" + $h.module + ": " + ($h.keys | str join ", ") + ")")
         }
         run-service-actions $ygg_home $plan $ops --dry-run --force=$force --sandbox=$effective_sandbox | ignore
-        let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length) + ($pruned_cmds | length))
+        let ctr_res = (run-container-step $ygg_home $plan --dry-run --force-up $containers_enable --sandbox=$effective_sandbox)
+        for r in $ctr_res.results {
+            let tail = $"  \(($r.module): ($r.reason)\)"
+            print ("  " + ("CONTAINER" | fill --alignment left --width 15) + " " + $r.action + " " + $r.project + $tail)
+        }
+        let changes = (($ops | where op != "OK" | length) + ($pkg_res.executed | length) + ($pruned_cmds | length) + ($ctr_res.results | length))
         let unchanged = ($ops | where op == "OK" | length)
         print $"Plan: ($changes) change\(s\), ($unchanged) unchanged across ($mod_count) module\(s\). No changes made."
         return
@@ -416,6 +423,17 @@ def apply-plan [
             record-journal-step $ygg_home "services" "COMMITTED"
         }
 
+        # 6b. Module containers (RFC-059)
+        record-journal-step $ygg_home "containers" "IN_PROGRESS"
+        let ctr_strict = (($containers_enable | is-not-empty) or ($containers_disable | is-not-empty))
+        let ctr_res = (run-container-step $ygg_home $plan --force-up $containers_enable --strict=$ctr_strict --sandbox=$effective_sandbox)
+        let ctr_failed = ($ctr_res.results | where status == "failed")
+        if $ctr_res.status == "failed" {
+            record-journal-step $ygg_home "containers" "FAILED"
+        } else {
+            record-journal-step $ygg_home "containers" "COMMITTED"
+        }
+
         print $"Applied ($mod_count) module\(s\)."
 
         for f in $link_res.failed {
@@ -436,6 +454,9 @@ def apply-plan [
         }
         if ($svc_failed | is-not-empty) {
             $errors = ($errors | append ("Service actions failed: " + ($svc_failed | each { |f| $f.manager + ": " + $f.action + " " + $f.service + " (" + $f.stderr + ")" } | str join ", ")))
+        }
+        if ($ctr_failed | is-not-empty) {
+            $errors = ($errors | append ("Container actions failed: " + ($ctr_failed | each { |f| $f.module + ": " + $f.action + " " + $f.project + " (" + $f.stderr + ")" } | str join ", ")))
         }
         if ($errors | is-not-empty) {
             error make { msg: ($errors | str join "; ") }

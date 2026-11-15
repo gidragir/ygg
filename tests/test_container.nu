@@ -268,9 +268,25 @@ export def test_container_detect_runtime_mock [] {
         with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_STATUS: "daemon_down" } {
             assert equal (detect-container-runtime { runtime: "" }).status "daemon_down"
         }
+        # sandbox without mock log: nothing is created anywhere under home
         let log2 = ($home | path join "none.log")
-        assert equal (detect-container-runtime { runtime: "" }).status "skipped_sandbox"
+        let before = (glob ($home | path join "**" "*") | sort)
+        with-env { YGG_MOCK_PKG_LOG: "" } {
+            assert equal (detect-container-runtime { runtime: "" }).status "skipped_sandbox"
+        }
+        assert equal (glob ($home | path join "**" "*") | sort) $before
         assert (not ($log2 | path exists))
+        # control: the same call with a mock log (and sandbox) does write to that path
+        with-env { YGG_MOCK_PKG_LOG: $log2 } {
+            assert equal (detect-container-runtime { runtime: "" }).status "ok"
+        }
+        assert ($log2 | path exists)
+        # dry-run of run-compose: a real mock log is set but never created
+        let log3 = ($home | path join "dry.log")
+        with-env { YGG_MOCK_PKG_LOG: $log3 } {
+            assert equal (run-compose ["docker" "compose" "-p" "ds" "down"] 5 --dry-run).status "dry_run"
+        }
+        assert (not ($log3 | path exists))
     }
 }
 
@@ -305,5 +321,212 @@ export def test_container_inputs_hash_tracks_override_and_env [] {
             "# changed\n" | save --append ($d | path join $f)
             assert ((stack-inputs-hash $st) != $before)
         }
+    }
+}
+
+# --- Task 4: containers step -------------------------------------------------
+
+def step-setup [home: string, mods: list<string> = ["ds"]]: nothing -> nothing {
+    mut host = ""
+    for m in $mods {
+        let d = (mk-module $home $m)
+        "services: {}\n" | save -f ($d | path join "compose.yml")
+        $host = $host + $"[[modules]]\nname = \"($m)\"\ncontainers = true\n"
+    }
+    $host | save -f ($home | path join "host.toml")
+}
+
+def step-plan [home: string]: nothing -> record {
+    with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } { resolve-effective-plan $home }
+}
+
+def log-lines [log: string]: nothing -> list<string> {
+    if ($log | path exists) { open --raw $log | lines | where { |l| $l != "" } } else { [] }
+}
+
+export def test_container_step_up_once_then_noop_then_hash_change [] {
+    with-temp-ygg { |home|
+        step-setup $home
+        let log = ($home | path join "mock.log")
+        let f = ($home | path join "modules" "ds" "compose.yml")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let plan = (step-plan $home)
+            let r1 = (run-container-step $home $plan)
+            assert equal $r1.status "ok"
+            assert equal (log-lines $log | where { |l| $l | str starts-with "container:" }) [$"container: docker compose -f ($f) -p ds up -d --remove-orphans"]
+            let st = (load-state $home)
+            assert equal $st.containers.0.project "ds"
+            assert equal $st.containers.0.runtime "docker"
+            assert (($st.hashes | get -o "containers:ds:ds") != null)
+            let n = (log-lines $log | length)
+            let r2 = (run-container-step $home $plan)
+            assert equal $r2.status "noop"
+            assert equal (log-lines $log | length) $n
+            assert equal (log-lines $log | where { |l| $l | str starts-with "container-probe:" } | length) 1
+            "services: {}\n# changed\n" | save -f $f
+            let r3 = (run-container-step $home (step-plan $home))
+            assert equal $r3.status "ok"
+            assert equal (log-lines $log | where { |l| $l | str starts-with "container: " } | length) 2
+        }
+    }
+}
+
+export def test_container_step_down_for_removed_and_disabled [] {
+    with-temp-ygg { |home|
+        step-setup $home
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            run-container-step $home (step-plan $home) | ignore
+            # disabled
+            "[[modules]]\nname = \"ds\"\ncontainers = false\n" | save -f ($home | path join "host.toml")
+            let r = (run-container-step $home (step-plan $home))
+            assert equal $r.results.0.action "down"
+            assert equal $r.results.0.reason "disabled"
+            assert equal $r.results.0.status "ok"
+            assert ((log-lines $log | last) == "container: docker compose -p ds down")
+            let st = (load-state $home)
+            assert equal $st.containers []
+            assert equal ($st.hashes | get -o "containers:ds:ds") null
+        }
+    }
+    with-temp-ygg { |home|
+        step-setup $home
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            run-container-step $home (step-plan $home) | ignore
+            "" | save -f ($home | path join "host.toml")
+            let r = (run-container-step $home (step-plan $home))
+            assert equal $r.results.0.reason "module removed"
+            assert equal (load-state $home).containers []
+        }
+    }
+    with-temp-ygg { |home|
+        step-setup $home
+        let d = ($home | path join "modules" "ds")
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            run-container-step $home (step-plan $home) | ignore
+            rm ($d | path join "compose.yml")
+            "name = \"ds\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n[containers]\nfiles = []\n" | save -f ($d | path join "ygg.toml")
+            let r = (run-container-step $home (step-plan $home))
+            assert equal $r.results.0.reason "removed from manifest"
+            assert equal (log-lines $log | last) "container: docker compose -p ds down"
+            assert equal (load-state $home).containers []
+        }
+    }
+    # down uses the runtime the stack was started with, not the current setting
+    with-temp-ygg { |home|
+        step-setup $home
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            run-container-step $home (step-plan $home) | ignore
+            "[ygg.containers]\nruntime = \"podman\"\n[[modules]]\nname = \"ds\"\ncontainers = false\n" | save -f ($home | path join "host.toml")
+            let r = (run-container-step $home (step-plan $home))
+            assert equal $r.results.0.status "ok"
+            assert equal (log-lines $log | last) "container: docker compose -p ds down"
+        }
+    }
+}
+
+export def test_container_step_sandbox_without_mock_touches_nothing [] {
+    with-temp-ygg { |home|
+        step-setup $home
+        let before = (glob ($home | path join "**" "*") | sort)
+        with-env { YGG_MOCK_PKG_LOG: "" } {
+            let r = (run-container-step $home (step-plan $home))
+            assert equal $r.status "skipped_sandbox"
+        }
+        assert equal (load-state $home).containers []
+        assert equal ((load-state $home).hashes | get -o "containers:ds:ds") null
+        assert equal (glob ($home | path join "**" "*") | sort) $before
+    }
+}
+
+export def test_container_step_partial_failure [] {
+    with-temp-ygg { |home|
+        step-setup $home ["a" "b"]
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_FAIL: "-p a " } {
+            let r = (run-container-step $home (step-plan $home))
+            assert equal $r.status "failed"
+            assert equal ($r.results | where status == "failed" | get project) ["a"]
+            let st = (load-state $home)
+            assert equal ($st.containers | get project) ["b"]
+            assert equal ($st.hashes | get -o "containers:a:a") null
+            assert (($st.hashes | get -o "containers:b:b") != null)
+        }
+    }
+}
+
+export def test_container_step_runtime_unavailable_soft_and_strict [] {
+    with-temp-ygg { |home|
+        step-setup $home
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_STATUS: "daemon_down" } {
+            let plan = (step-plan $home)
+            let r = (run-container-step $home $plan)
+            assert equal $r.status "skipped_daemon_down"
+            assert equal $r.results.0.status "skipped_daemon_down"
+            assert equal (load-state $home).containers []
+            assert equal ((load-state $home).hashes | get -o "containers:ds:ds") null
+            assert equal (log-lines $log | where { |l| $l | str starts-with "container: " }) []
+            assert error { run-container-step $home $plan --strict }
+        }
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_STATUS: "no_runtime" } {
+            assert equal (run-container-step $home (step-plan $home)).status "skipped_no_runtime"
+        }
+    }
+}
+
+export def test_container_step_force_up_and_dry_run [] {
+    with-temp-ygg { |home|
+        step-setup $home
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let plan = (step-plan $home)
+            run-container-step $home $plan | ignore
+            let ups = { log-lines $log | where { |l| $l | str starts-with "container: " } | length }
+            assert equal (do $ups) 1
+            let r = (run-container-step $home $plan --force-up ["ds"])
+            assert equal $r.status "ok"
+            assert equal (do $ups) 2
+            # dry-run: results only, log and state.json untouched
+            let sj = ($home | path join ".state" "state.json")
+            let h0 = (open --raw $sj | hash sha256)
+            let n = (log-lines $log | length)
+            let d = (run-container-step $home $plan --dry-run --force-up ["ds"])
+            assert equal ($d.results | get status) ["dry_run"]
+            assert equal $d.results.0.action "up"
+            assert equal $d.results.0.reason "compose.yml"
+            assert equal (log-lines $log | length) $n
+            assert equal (open --raw $sj | hash sha256) $h0
+            # dry-run without candidates never probes the runtime
+            assert equal (run-container-step $home $plan --dry-run).status "noop"
+            assert equal (log-lines $log | length) $n
+        }
+    }
+}
+
+export def test_container_hash_keys_survive_gc [] {
+    with-temp-ygg { |home|
+        step-setup $home
+        let plan = (step-plan $home)
+        assert ("containers:ds:ds" in (collect-active-hash-keys $plan))
+        mkdir ($home | path join ".state")
+        save-state $home ((load-state $home) | upsert hashes { "containers:ds:ds": "h1", "containers:gone:gone": "h2", "other:x": "h3" })
+        gc-state-hashes $home (collect-active-hash-keys $plan) ["ds"] | ignore
+        let h = (load-state $home).hashes
+        assert equal ($h | columns | sort) ["containers:ds:ds" "other:x"]
+    }
+}
+
+export def test_container_overrides_set_enabled [] {
+    with-temp-ygg { |home|
+        step-setup $home ["a" "b"]
+        let plan = (step-plan $home)
+        let p = (apply-container-overrides $plan ["a"] ["b"])
+        assert equal ($p.containers | where module == "a" | get enabled) [true]
+        assert equal ($p.containers | where module == "b" | get enabled) [false]
+        assert equal (apply-container-overrides $plan [] []) $plan
     }
 }

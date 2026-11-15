@@ -2,6 +2,7 @@
 # Yggdrasil configuration manager — module containers (RFC-059): compose stack discovery
 
 use pkg.nu [run-with-timeout]
+use state.nu [load-state, save-state]
 
 # Whitelist of container runtimes (docker compose / podman compose)
 export const CONTAINER_RUNTIMES = ["docker", "podman"]
@@ -247,4 +248,136 @@ export def stack-inputs-hash [stack: record]: nothing -> string {
     $cands | each { |f|
         if (($f | path type) == "file") { $"($f | path basename):(open --raw $f | hash sha256)" } else { null }
     } | compact | str join "\n" | hash sha256
+}
+
+# Set `enabled` on stacks of the given modules (`--containers` / `--no-containers` overrides)
+export def apply-container-overrides [plan: record, enable: list<string>, disable: list<string>]: nothing -> record {
+    let stacks = ($plan.containers? | default [])
+    if ($stacks | is-empty) or (($enable | is-empty) and ($disable | is-empty)) { return $plan }
+    let updated = ($stacks | each { |s|
+        if ($s.module in $enable) {
+            $s | upsert enabled true
+        } else if ($s.module in $disable) {
+            $s | upsert enabled false
+        } else {
+            $s
+        }
+    })
+    $plan | upsert containers $updated
+}
+
+def container-hash-key [module: string, project: string]: nothing -> string {
+    $"containers:($module):($project)"
+}
+
+def skipped-status-of [det_status: string]: nothing -> string {
+    if $det_status == "daemon_down" { "skipped_daemon_down" } else { "skipped_no_runtime" }
+}
+
+# containers step of apply (RFC-059 §5.6): down for vanished/disabled stacks, up for new/changed ones
+export def run-container-step [
+    ygg_home: string,
+    plan: record,
+    --dry-run,
+    --force-up: list<string> = [],
+    --strict,
+    --sandbox: string = ""
+]: nothing -> record<status: string, results: list<record<module: string, project: string, action: string, status: string, stderr: string, reason: string>>> {
+    let settings = ($plan.container_settings? | default { runtime: "", timeout: 600 })
+    let timeout = ($settings.timeout? | default 600)
+    let stacks = ($plan.containers? | default [])
+    let enabled = ($stacks | where enabled == true)
+    let plan_mods = ($plan.modules? | default [] | each { |m| $m.name })
+    let state = (load-state $ygg_home)
+    let st_entries = ($state.containers? | default [])
+    let st_hashes = ($state.hashes? | default {})
+
+    let downs = ($st_entries | where { |e|
+        ($enabled | where { |s| $s.module == $e.module and $s.project == $e.project } | is-empty)
+    } | each { |e|
+        let reason = if ($e.module not-in $plan_mods) {
+            "module removed"
+        } else if ($stacks | where { |s| $s.module == $e.module and $s.project == $e.project } | is-empty) {
+            "removed from manifest"
+        } else {
+            "disabled"
+        }
+        { module: $e.module, project: $e.project, action: "down", reason: $reason, stack: $e, runtime: ($e.runtime? | default "") }
+    })
+    let ups = ($enabled | where { |s|
+        let in_state = ($st_entries | where { |e| $e.module == $s.module and $e.project == $s.project } | is-not-empty)
+        let saved = ($st_hashes | get -o (container-hash-key $s.module $s.project))
+        ($s.module in $force_up) or (not $in_state) or ($saved != (stack-inputs-hash $s))
+    } | each { |s|
+        { module: $s.module, project: $s.project, action: "up", reason: $s.rel, stack: $s, runtime: "" }
+    })
+    let cands = ($downs | append $ups)
+    if ($cands | is-empty) { return { status: "noop", results: [] } }
+
+    let mk = { |c, status, stderr| { module: $c.module, project: $c.project, action: $c.action, status: $status, stderr: $stderr, reason: $c.reason } }
+
+    if $dry_run {
+        return { status: "dry_run", results: ($cands | each { |c| do $mk $c "dry_run" "" }) }
+    }
+
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    if ($mock_log == "") and ((container-sandbox $sandbox) != "") {
+        return { status: "skipped_sandbox", results: ($cands | each { |c| do $mk $c "skipped_sandbox" "" }) }
+    }
+
+    # runtime detection: once for `up`, once per distinct recorded runtime for `down`
+    mut det = {}
+    if ($ups | is-not-empty) {
+        $det = ($det | insert "up" (detect-container-runtime $settings --sandbox $sandbox))
+    }
+    for rt in ($downs | get runtime | uniq) {
+        let r = if $rt == "" { detect-container-runtime $settings --sandbox $sandbox } else { detect-container-runtime $settings --runtime $rt --sandbox $sandbox }
+        $det = ($det | insert $"down:($rt)" $r)
+    }
+    for k in ($det | columns) {
+        let r = ($det | get $k)
+        if $r.status != "ok" {
+            let msg = $"[ygg] Container runtime '($r.runtime)' unavailable \(($r.status)\): ($r.detail). Start the daemon / install docker-compose v2 and rerun 'ygg apply'."
+            if $strict { error make { msg: $msg } }
+            print -e $msg
+        }
+    }
+
+    mut new_entries = $st_entries
+    mut new_hashes = $st_hashes
+    mut results = []
+    for c in $downs {
+        let r = ($det | get $"down:($c.runtime)")
+        if $r.status != "ok" {
+            $results = ($results | append (do $mk $c (skipped-status-of $r.status) ""))
+            continue
+        }
+        let res = (run-compose (build-compose-argv $r.runtime "down" $c.stack) $timeout --sandbox $sandbox)
+        $results = ($results | append (do $mk $c $res.status $res.stderr))
+        if $res.status == "ok" {
+            $new_entries = ($new_entries | where { |e| not ($e.module == $c.module and $e.project == $c.project) })
+            $new_hashes = ($new_hashes | reject -o (container-hash-key $c.module $c.project))
+        }
+    }
+    for c in $ups {
+        let r = ($det | get "up")
+        if $r.status != "ok" {
+            $results = ($results | append (do $mk $c (skipped-status-of $r.status) ""))
+            continue
+        }
+        let res = (run-compose (build-compose-argv $r.runtime "up" $c.stack) $timeout --sandbox $sandbox)
+        $results = ($results | append (do $mk $c $res.status $res.stderr))
+        if $res.status == "ok" {
+            let s = $c.stack
+            $new_entries = ($new_entries | where { |e| not ($e.module == $c.module and $e.project == $c.project) } | append { module: $c.module, project: $c.project, file: $s.file, override: ($s.override? | default ""), runtime: $r.runtime })
+            $new_hashes = ($new_hashes | upsert (container-hash-key $c.module $c.project) (stack-inputs-hash $s))
+        }
+    }
+
+    if ($results | where status == "ok" | is-not-empty) {
+        save-state $ygg_home ($state | upsert containers $new_entries | upsert hashes $new_hashes)
+    }
+    let statuses = ($results | get status)
+    let overall = if ("failed" in $statuses) { "failed" } else if ("ok" in $statuses) { "ok" } else { $statuses | first }
+    { status: $overall, results: $results }
 }
