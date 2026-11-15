@@ -558,3 +558,35 @@ export def test_container_resolve_targets_and_set_flag [] {
         assert equal ($mods | where name == "plain" | get 0 | get -o containers) null
     }
 }
+
+export def test_container_down_module_stacks_sandbox_and_unavailable [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "mock.log")
+        let entry = { module: "ds", project: "ds", file: "", override: "", runtime: "podman" }
+        let seed = { save-state $home ((load-state $home) | upsert containers [$entry]) }
+        # sandbox without mock log: no external calls, no probe, entry dropped
+        do $seed
+        with-env { YGG_MOCK_PKG_LOG: "" } {
+            let r = (down-module-stacks $home "ds" { runtime: "", timeout: 600 } --sandbox ($home | path join "sb"))
+            assert equal ($r | get status) ["skipped_sandbox"]
+        }
+        assert equal (load-state $home).containers []
+        assert (not ($log | path exists))
+        # runtime unavailable: probe happens, no compose call, entry dropped
+        do $seed
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_STATUS: "no_runtime" } {
+            let r = (down-module-stacks $home "ds" { runtime: "", timeout: 600 })
+            assert equal ($r | get status) ["skipped_no_runtime"]
+        }
+        let txt = (open --raw $log)
+        assert ($txt | str contains "container-probe: podman compose version")
+        assert (not ($txt | str contains "container: "))
+        assert equal (load-state $home).containers []
+        # ok path uses entry.runtime and never -v
+        do $seed
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            down-module-stacks $home "ds" { runtime: "docker", timeout: 600 } | ignore
+        }
+        assert ((open --raw $log) | str contains "container: podman compose -p ds down\n")
+    }
+}

@@ -838,3 +838,12 @@ export def set-modules-containers [ygg_home: string, names: list<string>, value:
     })
     save-host-config $ygg_home ($cfg | upsert modules $mods)
 }
+
+# Container settings of [ygg.containers] from host.toml (RFC-059)
+export def load-container-settings [ygg_home: string]: nothing -> record {
+    let cfg = (try { load-host-config $ygg_home } catch { {} })
+    {
+        runtime: ($cfg.ygg?.containers?.runtime? | default ""),
+        timeout: ($cfg.ygg?.containers?.timeout? | default 600)
+    }
+}

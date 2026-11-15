@@ -210,14 +210,15 @@ def assert-pkg-flags [pkg: string, skip_packages: bool] {
 # Remove a module and unlink its managed files
 def "main remove" [
     name: string, # Module name
+    --sandbox: string = "", # Use this directory as HOME instead of the real one
     --no-lock # Do not take the host lock
 ] {
-    assert-sandbox-home ($env.YGG_SANDBOX? | default "")
+    assert-sandbox-home (if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") })
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
     try {
-        remove-module $ygg_home $name
+        remove-module $ygg_home $name --sandbox $sandbox
         print $"Removed module ($name)"
         release-host-lock $lock_file
     } catch { |e|
@@ -289,6 +290,46 @@ def "main apply" [
     } catch { |e|
         release-host-lock $lock_file
         error make $e
+    }
+}
+
+# Upgrade container stacks: pull -> build -> down -> up
+def "main upgrade" [
+    ...modules: string, # Modules (default: all with enabled containers)
+    --containers, # Upgrade compose stacks
+    --dry-run (-n), # Show the commands without running them
+    --no-lock, # Do not take the host lock
+    --sandbox: string = "" # Use this directory as HOME instead of the real one
+] {
+    if not $containers {
+        error make { msg: "upgrade requires a target: --containers" }
+    }
+    let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+    assert-sandbox-home $effective_sandbox
+    let ygg_home = (get-ygg-home)
+    if $dry_run {
+        upgrade-containers $ygg_home (resolve-effective-plan $ygg_home) $modules --dry-run --sandbox $sandbox | ignore
+        return
+    }
+    ensure-ygg-dirs $ygg_home
+    let lock_file = (acquire-host-lock $ygg_home "upgrade" --no-lock=$no_lock)
+    let results = (try {
+        let r = (upgrade-containers $ygg_home (resolve-effective-plan $ygg_home) $modules --sandbox $sandbox)
+        release-host-lock $lock_file
+        $r
+    } catch { |e|
+        release-host-lock $lock_file
+        error make $e
+    })
+    for r in $results {
+        if $r.status == "ok" {
+            print $"Upgraded containers: ($r.module)/($r.project)"
+        } else {
+            print -e $"[ygg] Container upgrade of '($r.project)' \(($r.module)\): ($r.status) ($r.stderr)"
+        }
+    }
+    if ($results | where status != "ok" | is-not-empty) {
+        exit 1
     }
 }
 

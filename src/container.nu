@@ -415,3 +415,119 @@ export def ask-containers [name: string, rels: list<string>]: nothing -> bool {
     let answer = (try { input $"Module '($name)' declares containers \(($rels | str join ', ')\). Start them now? [y/N]: " } catch { "" })
     parse-yes-answer $answer
 }
+
+def container-warn-down [rt: string, project: string, why: string]: nothing -> nothing {
+    let r = if $rt == "" { "docker" } else { $rt }
+    print -e $"[ygg] Could not stop containers of project '($project)' \(($why)\). Run manually: ($r) compose -p ($project) down"
+}
+
+# `ygg upgrade --containers`: pull -> [build] -> down -> up for enabled stacks (RFC-059 §5.8)
+export def upgrade-containers [
+    ygg_home: string,
+    plan: record,
+    modules: list<string>,
+    --dry-run,
+    --sandbox: string = ""
+]: nothing -> list<record<module: string, project: string, status: string, stderr: string>> {
+    let settings = ($plan.container_settings? | default { runtime: "", timeout: 600 })
+    let timeout = ($settings.timeout? | default 600)
+    let stacks = ($plan.containers? | default [])
+    for m in $modules {
+        let ms = ($stacks | where module == $m)
+        if ($ms | is-empty) {
+            error make { msg: (if $m in ($plan.modules? | default [] | get name) { $"Module '($m)' declares no containers" } else { $"Module '($m)' not found" }) }
+        }
+        if ($ms | where enabled == true | is-empty) {
+            error make { msg: $"Containers of '($m)' are disabled. Run: ygg apply --containers ($m)" }
+        }
+    }
+    let targets = ($stacks | where enabled == true | where { |s| ($modules | is-empty) or ($s.module in $modules) })
+    if ($targets | is-empty) { return [] }
+    let mk = { |s, status, stderr| { module: $s.module, project: $s.project, status: $status, stderr: $stderr } }
+    let steps_of = { |rt, s|
+        ["pull"] | append (if (stack-has-build $s.file) { ["build"] } else { [] }) | append ["down" "up"] | each { |a| build-compose-argv $rt $a $s }
+    }
+
+    if $dry_run {
+        let rt = (let r = ($settings.runtime? | default ""); if $r == "" { "docker" } else { $r })
+        for s in $targets {
+            for argv in (do $steps_of $rt $s) {
+                print ("  " + ("CONTAINER" | fill -w 15) + " " + ($argv | str join " "))
+            }
+        }
+        return ($targets | each { |s| do $mk $s "dry_run" "" })
+    }
+
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    if ($mock_log == "") and ((container-sandbox $sandbox) != "") {
+        return ($targets | each { |s| do $mk $s "skipped_sandbox" "" })
+    }
+
+    let det = (detect-container-runtime $settings --sandbox $sandbox)
+    if $det.status != "ok" {
+        error make { msg: $"Container runtime '($det.runtime)' unavailable \(($det.status)\): ($det.detail)" }
+    }
+
+    let state = (load-state $ygg_home)
+    mut entries = ($state.containers? | default [])
+    mut hashes = ($state.hashes? | default {})
+    mut results = []
+    mut changed = false
+    for s in $targets {
+        mut res = { status: "ok", stderr: "" }
+        for argv in (do $steps_of $det.runtime $s) {
+            $res = (run-compose $argv $timeout --sandbox $sandbox)
+            if $res.status != "ok" { break }
+        }
+        $results = ($results | append (do $mk $s $res.status $res.stderr))
+        if $res.status == "ok" {
+            $changed = true
+            $entries = ($entries | where { |e| not ($e.module == $s.module and $e.project == $s.project) } | append { module: $s.module, project: $s.project, file: $s.file, override: ($s.override? | default ""), runtime: $det.runtime })
+            $hashes = ($hashes | upsert (container-hash-key $s.module $s.project) (stack-inputs-hash $s))
+        }
+    }
+    if $changed {
+        save-state $ygg_home ($state | upsert containers $entries | upsert hashes $hashes)
+    }
+    $results
+}
+
+# `down` of all recorded stacks of a module (before `ygg remove`); entries are always dropped, never `-v`
+export def down-module-stacks [
+    ygg_home: string,
+    module: string,
+    settings: record,
+    --sandbox: string = ""
+]: nothing -> list<record> {
+    let state = (load-state $ygg_home)
+    let mine = ($state.containers? | default [] | where module == $module)
+    if ($mine | is-empty) { return [] }
+    let timeout = ($settings.timeout? | default 600)
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    let sandboxed = ($mock_log == "") and ((container-sandbox $sandbox) != "")
+    mut results = []
+    for e in $mine {
+        let rt = ($e.runtime? | default "")
+        if $sandboxed {
+            container-warn-down $rt $e.project "sandbox"
+            $results = ($results | append { module: $module, project: $e.project, status: "skipped_sandbox", stderr: "" })
+            continue
+        }
+        let det = if $rt == "" { detect-container-runtime $settings --sandbox $sandbox } else { detect-container-runtime $settings --runtime $rt --sandbox $sandbox }
+        if $det.status != "ok" {
+            container-warn-down $rt $e.project $"runtime ($det.status)"
+            $results = ($results | append { module: $module, project: $e.project, status: $"skipped_($det.status)", stderr: "" })
+            continue
+        }
+        let res = (run-compose (build-compose-argv $det.runtime "down" { project: $e.project, file: ($e.file? | default ""), override: ($e.override? | default "") }) $timeout --sandbox $sandbox)
+        if $res.status != "ok" {
+            container-warn-down $det.runtime $e.project (if $res.stderr == "" { $res.status } else { $res.stderr })
+        }
+        $results = ($results | append { module: $module, project: $e.project, status: $res.status, stderr: $res.stderr })
+    }
+    let fresh = (load-state $ygg_home)
+    let keep = ($fresh.containers? | default [] | where { |e| $e.module != $module })
+    let hashes = ($fresh.hashes? | default {} | reject -o ...($mine | each { |e| container-hash-key $module $e.project }))
+    save-state $ygg_home ($fresh | upsert containers $keep | upsert hashes $hashes)
+    $results
+}

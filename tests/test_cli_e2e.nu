@@ -1586,3 +1586,131 @@ export def test_cli_apply_containers_strict_when_runtime_down [] {
         }
     }
 }
+
+def ctr-started [home: string, ygg_bin: string, src: string]: nothing -> nothing {
+    let r = (^nu $ygg_bin add --containers $src | complete)
+    assert equal $r.exit_code 0 $r.stderr
+}
+
+export def test_cli_upgrade_order_pull_down_up [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $src
+            rm -f $log
+            let r = (^nu $ygg_bin upgrade --containers | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            let l = (ctr-log $log)
+            assert equal ($l | length) 3 ($l | str join "\n")
+            assert ($l.0 | str ends-with "-p ds pull --ignore-buildable") $l.0
+            assert equal $l.1 "container: docker compose -p ds down"
+            assert ($l.2 | str ends-with "-p ds up -d --remove-orphans") $l.2
+            assert (not ($l | any { |x| $x | str contains " -v" }))
+            assert (not ($l | any { |x| ($x | str contains "--volumes") or ($x | str contains "--rmi") }))
+            assert equal (open ($home | path join ".state" "state.json")).containers.0.project "ds"
+        }
+    }
+}
+
+export def test_cli_upgrade_with_build_service [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        "services:\n  app:\n    build: .\n" | save -f ($src | path join "compose.yml")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $src
+            rm -f $log
+            let r = (^nu $ygg_bin upgrade --containers ds | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            let l = (ctr-log $log)
+            assert equal ($l | length) 4 ($l | str join "\n")
+            assert ($l.0 | str contains " pull ")
+            assert ($l.1 | str ends-with "-p ds build --pull") $l.1
+            assert ($l.2 | str ends-with "-p ds down") $l.2
+            assert ($l.3 | str contains " up -d ")
+        }
+    }
+}
+
+export def test_cli_upgrade_pull_failure_keeps_containers [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $src
+            rm -f $log
+            let r = (with-env { YGG_MOCK_CONTAINER_FAIL: "pull" } { ^nu $ygg_bin upgrade --containers | complete })
+            assert ($r.exit_code != 0) $r.stdout
+            let l = (ctr-log $log)
+            assert equal ($l | length) 1 ($l | str join "\n")
+            assert ($l.0 | str contains " pull ")
+            assert (not ($l | any { |x| $x | str contains " down" }))
+            assert equal (open ($home | path join ".state" "state.json")).containers.0.project "ds"
+        }
+    }
+}
+
+export def test_cli_upgrade_errors [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            assert equal (^nu $ygg_bin add --no-containers $src | complete).exit_code 0
+            let r1 = (^nu $ygg_bin upgrade | complete)
+            assert ($r1.exit_code != 0)
+            assert ($r1.stderr | str contains "upgrade requires a target: --containers") $r1.stderr
+            let r2 = (^nu $ygg_bin upgrade --containers ds | complete)
+            assert ($r2.exit_code != 0)
+            assert ($r2.stderr | str contains "Containers of 'ds' are disabled. Run: ygg apply --containers ds") $r2.stderr
+            assert equal (ctr-log $log | length) 0
+            ctr-started $home $ygg_bin $src
+            rm -f $log
+            let d = (^nu $ygg_bin upgrade --containers --dry-run | complete)
+            assert equal $d.exit_code 0 $d.stderr
+            assert ($d.stdout | str contains "CONTAINER")
+            assert ($d.stdout | str contains "docker compose -p ds down")
+            assert ($d.stdout | str contains "-p ds pull --ignore-buildable")
+            assert (not ($log | path exists)) "dry-run must not write the mock log (no probe either)"
+        }
+    }
+}
+
+export def test_cli_remove_downs_stacks_without_volumes [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $src
+            rm -f $log
+            let r = (^nu $ygg_bin remove ds | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            let l = (ctr-log $log)
+            assert equal ($l | length) 1 ($l | str join "\n")
+            assert equal $l.0 "container: docker compose -p ds down"
+            assert (not (open --raw $log | str contains " -v"))
+            assert (not (open --raw $log | str contains "--volumes"))
+            assert equal (open ($home | path join ".state" "state.json")).containers []
+        }
+    }
+}
+
+export def test_cli_remove_warns_when_down_fails [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $src
+            let r = (with-env { YGG_MOCK_CONTAINER_FAIL: "down" } { ^nu $ygg_bin remove ds | complete })
+            assert equal $r.exit_code 0 $r.stderr
+            assert ($r.stderr | str contains "docker compose -p ds down") $r.stderr
+            assert equal (open ($home | path join ".state" "state.json")).containers []
+        }
+    }
+}

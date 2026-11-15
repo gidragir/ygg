@@ -1,9 +1,10 @@
 # src/git.nu
 # Yggdrasil configuration manager — Module Git Manager & local directory linker
 
-use manifest.nu [load-host-config, save-host-config, load-module-manifest, validate-module-os]
+use manifest.nu [load-container-settings, load-host-config, save-host-config, load-module-manifest, validate-module-os]
 use link.nu [unlink-module, is-link-or-junction, remove-link-only, backup-with-notice, link-target-matches]
 use state.nu [detect-host-os, load-state, ensure-ygg-dirs, to-win32-path]
+use container.nu [down-module-stacks]
 
 # Raise when a real (non-link) Git module directory has uncommitted changes.
 # Shared guard of `add` (replacing the module) and `remove`.
@@ -196,11 +197,14 @@ export def add-module [
 }
 
 # Remove a module, safely unlinking files and guarding against uncommitted changes
-export def remove-module [ygg_home: string, name: string]: nothing -> nothing {
+export def remove-module [ygg_home: string, name: string, --sandbox: string = ""]: nothing -> nothing {
     let mod_dir = ($ygg_home | path join "modules" $name)
 
     # If it is a real Git directory (not a symlink), guard against uncommitted changes
     assert-module-clean $mod_dir $name "remove"
+
+    # Stop recorded compose stacks (never with volumes), RFC-059
+    down-module-stacks $ygg_home $name (load-container-settings $ygg_home) --sandbox $sandbox | ignore
 
     # Safe unlinking of deployed links and copies
     unlink-module $ygg_home $name | ignore
