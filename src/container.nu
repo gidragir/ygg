@@ -1,6 +1,8 @@
 # src/container.nu
 # Yggdrasil configuration manager — module containers (RFC-059): compose stack discovery
 
+use pkg.nu [run-with-timeout]
+
 # Whitelist of container runtimes (docker compose / podman compose)
 export const CONTAINER_RUNTIMES = ["docker", "podman"]
 
@@ -128,4 +130,121 @@ export def check-container-stacks [plan: record]: nothing -> list<record<module:
         }
     }
     $problems
+}
+
+# True when `docker compose version` output reports Compose v2+ (v1 / podman-compose are rejected)
+export def compose-version-ok [output: string]: nothing -> bool {
+    let m = ($output | lines | each { |l| $l | parse --regex 'Docker Compose version v?(?<major>\d+)\.' } | flatten)
+    if ($m | is-empty) { return false }
+    ($m | first | get major | into int) >= 2
+}
+
+def container-sandbox [sandbox: string]: nothing -> string {
+    if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
+}
+
+# Probe a single runtime: ok | no_runtime | unsupported_provider | daemon_down
+def probe-runtime [rt: string]: nothing -> record<runtime: string, status: string, detail: string> {
+    if (which $rt | is-empty) {
+        return { runtime: $rt, status: "no_runtime", detail: $"($rt) not found in PATH" }
+    }
+    let v = (run-with-timeout [$rt "compose" "version"] 30)
+    if $v.exit_code != 0 or not (compose-version-ok ($v.stdout + "\n" + $v.stderr)) {
+        return { runtime: $rt, status: "unsupported_provider", detail: "install the docker-compose v2 plugin" }
+    }
+    let d = (run-with-timeout [$rt "compose" "ls" "--format" "json"] 30)
+    if $d.exit_code != 0 {
+        return { runtime: $rt, status: "daemon_down", detail: ($d.stderr | str trim) }
+    }
+    { runtime: $rt, status: "ok", detail: "" }
+}
+
+# Detect the container runtime (docker -> podman unless forced by --runtime / settings.runtime)
+export def detect-container-runtime [
+    settings: record,
+    --runtime: string = "",
+    --sandbox: string = ""
+]: nothing -> record<runtime: string, status: string, detail: string> {
+    let forced = if ($runtime != "") { $runtime } else { ($settings.runtime? | default "") }
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    let sb = (container-sandbox $sandbox)
+    let first_rt = if ($forced != "") { $forced } else { "docker" }
+    if ($mock_log == "") and ($sb != "") {
+        return { runtime: $first_rt, status: "skipped_sandbox", detail: "sandbox" }
+    }
+    if ($mock_log != "") {
+        $"container-probe: ($first_rt) compose version\n" | save --append $mock_log
+        let st = ($env.YGG_MOCK_CONTAINER_STATUS? | default "ok")
+        return { runtime: $first_rt, status: (if ($st == "") { "ok" } else { $st }), detail: "mock" }
+    }
+    if ($forced != "") {
+        return (probe-runtime $forced)
+    }
+    let results = ($CONTAINER_RUNTIMES | each { |r| probe-runtime $r })
+    let ok = ($results | where status == "ok")
+    if not ($ok | is-empty) { return ($ok | first) }
+    let pick = ($results | where status != "no_runtime")
+    if ($pick | is-empty) {
+        { runtime: "", status: "no_runtime", detail: "neither docker nor podman found in PATH" }
+    } else {
+        $pick | first
+    }
+}
+
+# argv for a compose action (no -v / --volumes / --rmi ever)
+export def build-compose-argv [runtime: string, action: string, stack: record]: nothing -> list<string> {
+    let files = (["-f" $stack.file] | append (if (($stack.override? | default "") != "") { ["-f" $stack.override] } else { [] }))
+    match $action {
+        "up" => ([$runtime "compose"] | append $files | append ["-p" $stack.project "up" "-d" "--remove-orphans"]),
+        "down" => [$runtime "compose" "-p" $stack.project "down"],
+        "pull" => ([$runtime "compose"] | append $files | append ["-p" $stack.project "pull" "--ignore-buildable"]),
+        "build" => ([$runtime "compose"] | append $files | append ["-p" $stack.project "build" "--pull"]),
+        _ => (error make { msg: $"Unknown compose action '($action)'" })
+    }
+}
+
+# Execute a compose argv (mock / sandbox / dry-run aware)
+export def run-compose [
+    argv: list<string>,
+    timeout: int,
+    --dry-run,
+    --sandbox: string = ""
+]: nothing -> record<status: string, stderr: string> {
+    if $dry_run { return { status: "dry_run", stderr: "" } }
+    let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
+    let sb = (container-sandbox $sandbox)
+    if ($mock_log == "") and ($sb != "") { return { status: "skipped_sandbox", stderr: "" } }
+    let cmd_str = ($argv | str join " ")
+    if ($mock_log != "") {
+        let fails = ($env.YGG_MOCK_CONTAINER_FAIL? | default "" | split row "," | each { |c| $c | str trim } | where { |c| $c != "" })
+        $"container: ($cmd_str)\n" | save --append $mock_log
+        if ($fails | any { |f| $cmd_str | str contains $f }) {
+            return { status: "failed", stderr: $"mock failure: ($cmd_str)" }
+        }
+        return { status: "ok", stderr: "" }
+    }
+    let r = (run-with-timeout $argv $timeout)
+    if $r.exit_code == 0 { { status: "ok", stderr: "" } } else { { status: "failed", stderr: ($r.stderr | str trim) } }
+}
+
+# True when any service of the compose file declares `build`; YAML is parsed, regex fallback for tags
+export def stack-has-build [file: string]: nothing -> bool {
+    let raw = (try { open --raw $file } catch { return false })
+    try {
+        let y = ($raw | from yaml)
+        let svc = (if (($y | describe) starts-with "record") { $y.services? } else { null })
+        if $svc == null or not (($svc | describe) starts-with "record") { return false }
+        $svc | values | any { |v| (($v | describe) starts-with "record") and ($v.build? != null) }
+    } catch {
+        $raw | lines | any { |l| $l =~ '^\s+build:' }
+    }
+}
+
+# SHA-256 over compose file, override and sibling .env (missing files skipped)
+export def stack-inputs-hash [stack: record]: nothing -> string {
+    let dir = ($stack.file | path dirname)
+    let cands = ([$stack.file ($stack.override? | default "") ($dir | path join ".env")] | where { |f| $f != "" })
+    $cands | each { |f|
+        if (($f | path type) == "file") { $"($f | path basename):(open --raw $f | hash sha256)" } else { null }
+    } | compact | str join "\n" | hash sha256
 }

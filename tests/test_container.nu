@@ -209,3 +209,101 @@ export def test_container_preflight_runtime_and_flag_validation [] {
         }
     }
 }
+
+def mk-stack [d: string, ovr: string = ""]: nothing -> record {
+    { module: "ds", rel: "compose.yml", file: ($d | path join "compose.yml"), override: $ovr, project: "ds", enabled: true }
+}
+
+export def test_container_compose_version_parsing [] {
+    assert (compose-version-ok "Docker Compose version v2.29.7")
+    assert (compose-version-ok ">>>> Executing external compose provider \"/usr/bin/docker-compose\".\nDocker Compose version 2.31.0")
+    assert (not (compose-version-ok "podman-compose version 1.2.0\npodman version 5.3.1"))
+    assert (not (compose-version-ok "docker-compose version 1.29.2, build 5becea4c"))
+}
+
+export def test_container_argv_shapes_and_no_volume_flags [] {
+    let st = { module: "ds", rel: "x", file: "/m/my mod/compose.yml", override: "/m/my mod/compose.override.yml", project: "ds", enabled: true }
+    assert equal (build-compose-argv "docker" "up" $st) ["docker" "compose" "-f" "/m/my mod/compose.yml" "-f" "/m/my mod/compose.override.yml" "-p" "ds" "up" "-d" "--remove-orphans"]
+    assert equal (build-compose-argv "podman" "down" $st) ["podman" "compose" "-p" "ds" "down"]
+    assert equal (build-compose-argv "docker" "pull" $st) ["docker" "compose" "-f" "/m/my mod/compose.yml" "-f" "/m/my mod/compose.override.yml" "-p" "ds" "pull" "--ignore-buildable"]
+    assert equal (build-compose-argv "docker" "build" $st) ["docker" "compose" "-f" "/m/my mod/compose.yml" "-f" "/m/my mod/compose.override.yml" "-p" "ds" "build" "--pull"]
+    for a in ["up" "down" "pull" "build"] {
+        let argv = (build-compose-argv "docker" $a $st)
+        for bad in ["-v" "--volumes" "--rmi"] { assert (not ($bad in $argv)) }
+    }
+}
+
+export def test_container_run_compose_mock_sandbox_dry_run [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "mock.log")
+        let argv = ["docker" "compose" "-p" "ds" "down"]
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            assert equal (run-compose $argv 5).status "ok"
+        }
+        assert ((open --raw $log) | str contains "container: docker compose -p ds down\n")
+        let log2 = ($home | path join "mock2.log")
+        with-env { YGG_MOCK_PKG_LOG: $log2, YGG_MOCK_CONTAINER_FAIL: "down" } {
+            assert equal (run-compose $argv 5).status "failed"
+        }
+        assert equal (run-compose $argv 5).status "skipped_sandbox"
+        assert equal (run-compose $argv 5 --dry-run).status "dry_run"
+        with-env { YGG_MOCK_PKG_LOG: ($home | path join "never.log") } {
+            assert equal (run-compose $argv 5 --dry-run).status "dry_run"
+        }
+        assert (not (($home | path join "never.log") | path exists))
+    }
+}
+
+export def test_container_detect_runtime_mock [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let r = (detect-container-runtime { runtime: "" })
+            assert equal $r.runtime "docker"
+            assert equal $r.status "ok"
+            assert equal (detect-container-runtime { runtime: "podman" }).runtime "podman"
+            assert equal (detect-container-runtime { runtime: "docker" } --runtime podman).runtime "podman"
+        }
+        assert ((open --raw $log) | str contains "container-probe: docker compose version")
+        with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_STATUS: "daemon_down" } {
+            assert equal (detect-container-runtime { runtime: "" }).status "daemon_down"
+        }
+        let log2 = ($home | path join "none.log")
+        assert equal (detect-container-runtime { runtime: "" }).status "skipped_sandbox"
+        assert (not ($log2 | path exists))
+    }
+}
+
+export def test_container_has_build_yaml_and_tag_fallback [] {
+    with-temp-ygg { |home|
+        let a = ($home | path join "a.yml")
+        "services:\n  app:\n    build: .\n" | save -f $a
+        assert (stack-has-build $a)
+        let b = ($home | path join "b.yml")
+        "services:\n  app:\n    image: nginx\n" | save -f $b
+        assert (not (stack-has-build $b))
+        let c = ($home | path join "c.yml")
+        "services:\n  app:\n    image: x\n    build: !override\n      context: .\n" | save -f $c
+        assert (stack-has-build $c)
+    }
+}
+
+export def test_container_inputs_hash_tracks_override_and_env [] {
+    with-temp-ygg { |home|
+        let d = ($home | path join "stk")
+        mkdir $d
+        "services: {}\n" | save -f ($d | path join "compose.yml")
+        "services: {}\n" | save -f ($d | path join "compose.override.yml")
+        "A=1\n" | save -f ($d | path join ".env")
+        "FROM x\n" | save -f ($d | path join "Dockerfile")
+        let st = (mk-stack $d ($d | path join "compose.override.yml"))
+        let h0 = (stack-inputs-hash $st)
+        "FROM y\n" | save -f ($d | path join "Dockerfile")
+        assert equal (stack-inputs-hash $st) $h0
+        for f in ["compose.yml" "compose.override.yml" ".env"] {
+            let before = (stack-inputs-hash $st)
+            "# changed\n" | save --append ($d | path join $f)
+            assert ((stack-inputs-hash $st) != $before)
+        }
+    }
+}
