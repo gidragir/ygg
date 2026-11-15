@@ -1,7 +1,7 @@
 # tests/test_container.nu
 use std/assert
 use ../src *
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, safe-glob]
 
 def mk-module [home: string, name: string]: nothing -> string {
     let d = ($home | path join "modules" $name)
@@ -162,7 +162,7 @@ export def test_container_preflight_missing_file_and_outside_path [] {
     with-temp-ygg { |home|
         let d = (mk-module $home "ds")
         "services: {}\n" | save -f ($d | path join "compose.yml")
-        $"name = \"ds\"\nos = [\"linux\", \"cachyos\"]\n[containers]\nfiles = [\"nope.yml\", \"../x/compose.yml\", \"($home | path join 'abs.yml')\"]\n" | save -f ($d | path join "ygg.toml")
+        { name: "ds", os: ["linux", "cachyos"], containers: { files: ["nope.yml", "../x/compose.yml", ($home | path join "abs.yml")] } } | to toml | save -f ($d | path join "ygg.toml")
         "[[modules]]\nname = \"ds\"\ncontainers = true\n" | save -f ($home | path join "host.toml")
         with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
             let probs = (check-container-stacks (resolve-effective-plan $home))
@@ -270,11 +270,11 @@ export def test_container_detect_runtime_mock [] {
         }
         # sandbox without mock log: nothing is created anywhere under home
         let log2 = ($home | path join "none.log")
-        let before = (glob ($home | path join "**" "*") | sort)
+        let before = (safe-glob ($home | path join "**" "*") | sort)
         with-env { YGG_MOCK_PKG_LOG: "" } {
             assert equal (detect-container-runtime { runtime: "" }).status "skipped_sandbox"
         }
-        assert equal (glob ($home | path join "**" "*") | sort) $before
+        assert equal (safe-glob ($home | path join "**" "*") | sort) $before
         assert (not ($log2 | path exists))
         # control: the same call with a mock log (and sandbox) does write to that path
         with-env { YGG_MOCK_PKG_LOG: $log2 } {
@@ -431,14 +431,14 @@ export def test_container_step_down_for_removed_and_disabled [] {
 export def test_container_step_sandbox_without_mock_touches_nothing [] {
     with-temp-ygg { |home|
         step-setup $home
-        let before = (glob ($home | path join "**" "*") | sort)
+        let before = (safe-glob ($home | path join "**" "*") | sort)
         with-env { YGG_MOCK_PKG_LOG: "" } {
             let r = (run-container-step $home (step-plan $home))
             assert equal $r.status "skipped_sandbox"
         }
         assert equal (load-state $home).containers []
         assert equal ((load-state $home).hashes | get -o "containers:ds:ds") null
-        assert equal (glob ($home | path join "**" "*") | sort) $before
+        assert equal (safe-glob ($home | path join "**" "*") | sort) $before
     }
 }
 

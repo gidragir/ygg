@@ -16,7 +16,7 @@ def native-rel-path [rel: string]: nothing -> string {
 # Normalize a compose project name: lowercase, [a-z0-9_-] only, collapsed dashes, trimmed edges
 export def normalize-project-name [raw: string]: nothing -> string {
     $raw
-    | str downcase
+    | str lowercase
     | str replace --all --regex '[^a-z0-9_-]' '-'
     | str replace --all --regex '-{2,}' '-'
     | str replace --all --regex '^[-_]+|[-_]+$' ''
