@@ -47,7 +47,7 @@ export def compose-project-name [module: string, mod_dir: string, file: string]:
     let raw = if ($declared != "") {
         $declared
     } else {
-        let rel_parts = (($file | path expand -n | path relative-to ($mod_dir | path expand -n)) | str replace --all "\\" "/" | split row "/")
+        let rel_parts = (try { (($file | path expand -n | path relative-to ($mod_dir | path expand -n)) | str replace --all "\\" "/" | split row "/") } catch { [] })
         if ($rel_parts | length) <= 1 { $module } else { $"($module)-($rel_parts | drop 1 | last)" }
     }
     normalize-project-name $raw
@@ -73,4 +73,59 @@ export def discover-stacks [module: string, mod_dir: string, cfg: record, scope_
             enabled: false
         }
     }
+}
+
+# Preflight validation of container stacks (RFC-059); only enabled stacks are checked for files/collisions
+export def check-container-stacks [plan: record]: nothing -> list<record<module: string, key: string, reason: string, detail: string>> {
+    mut problems = []
+    let mods = ($plan.modules? | default [])
+    let settings = ($plan.container_settings? | default { runtime: "", timeout: 600 })
+    let rt = ($settings.runtime? | default "")
+    if $rt != "" and ($rt not-in $CONTAINER_RUNTIMES) {
+        $problems = ($problems | append {
+            module: "containers", key: "runtime", reason: "invalid_container_runtime",
+            detail: $"Unsupported container runtime '($rt)' \(allowed: ($CONTAINER_RUNTIMES | str join ', ')\)"
+        })
+    }
+    for m in $mods {
+        let raw = ($m.containers_raw? | default null)
+        if $raw != null and (($raw | describe) != "bool") {
+            $problems = ($problems | append {
+                module: $m.name, key: "containers", reason: "invalid_containers_flag",
+                detail: $"Module '($m.name)': 'containers' must be true or false, got '($raw)'"
+            })
+        }
+    }
+    let enabled = ($plan.containers? | default [] | where enabled == true)
+    mut valid = []
+    for st in $enabled {
+        let mod_dir = ($mods | where name == $st.module | get -o 0.dir | default "")
+        let rel = ($st.rel | str replace --all "\\" "/")
+        let abs_rel = ($rel | str starts-with "/") or ($rel =~ '^[A-Za-z]:')
+        let parts = ($rel | split row "/")
+        let outside = $abs_rel or (".." in $parts) or ($mod_dir != "" and (not (($st.file | path expand -n) | str starts-with (($mod_dir | path expand -n) + (char path_sep)))))
+        if $outside {
+            $problems = ($problems | append {
+                module: $st.module, key: $st.rel, reason: "container_path_outside_module",
+                detail: $"Compose file '($st.rel)' is outside module '($st.module)'"
+            })
+        } else if (($st.file | path type) != "file") {
+            $problems = ($problems | append {
+                module: $st.module, key: $st.rel, reason: "container_file_missing",
+                detail: $"Compose file '($st.rel)' of module '($st.module)' not found"
+            })
+        } else {
+            $valid = ($valid | append $st)
+        }
+    }
+    for g in ($valid | group-by project | transpose project stacks) {
+        if ($g.stacks | length) > 1 {
+            let who = ($g.stacks | each { |s| $"($s.module): ($s.rel)" } | str join ", ")
+            $problems = ($problems | append {
+                module: ($g.stacks | first | get module), key: $g.project, reason: "container_project_collision",
+                detail: $"Compose project name '($g.project)' is used by several stacks \(($who)\)"
+            })
+        }
+    }
+    $problems
 }

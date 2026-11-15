@@ -153,3 +153,59 @@ export def test_container_load_state_without_containers_key [] {
         assert equal (load-state $home).containers []
     }
 }
+
+def pf-reasons [problems: list<record>]: nothing -> list<string> {
+    $problems | get reason | sort
+}
+
+export def test_container_preflight_missing_file_and_outside_path [] {
+    with-temp-ygg { |home|
+        let d = (mk-module $home "ds")
+        "services: {}\n" | save -f ($d | path join "compose.yml")
+        $"name = \"ds\"\nos = [\"linux\", \"cachyos\"]\n[containers]\nfiles = [\"nope.yml\", \"../x/compose.yml\", \"($home | path join 'abs.yml')\"]\n" | save -f ($d | path join "ygg.toml")
+        "[[modules]]\nname = \"ds\"\ncontainers = true\n" | save -f ($home | path join "host.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let probs = (check-container-stacks (resolve-effective-plan $home))
+            assert equal (pf-reasons $probs) ["container_file_missing" "container_path_outside_module" "container_path_outside_module"]
+            assert equal ($probs | get module | uniq) ["ds"]
+            let pre = (preflight-check $home (resolve-effective-plan $home) --quiet)
+            assert equal ($pre | where reason =~ "^container_" | length) 3
+        }
+        "[[modules]]\nname = \"ds\"\ncontainers = false\n" | save -f ($home | path join "host.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            assert equal (check-container-stacks (resolve-effective-plan $home)) []
+        }
+    }
+}
+
+export def test_container_preflight_project_collision [] {
+    with-temp-ygg { |home|
+        let a = (mk-module $home "a")
+        let b = (mk-module $home "b")
+        "name: pg\nservices: {}\n" | save -f ($a | path join "compose.yml")
+        "name: pg\nservices: {}\n" | save -f ($b | path join "compose.yml")
+        "[[modules]]\nname = \"a\"\ncontainers = true\n[[modules]]\nname = \"b\"\ncontainers = true\n" | save -f ($home | path join "host.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let probs = (check-container-stacks (resolve-effective-plan $home))
+            assert equal (pf-reasons $probs) ["container_project_collision"]
+            assert ($probs.0.detail | str contains "pg")
+        }
+    }
+}
+
+export def test_container_preflight_runtime_and_flag_validation [] {
+    with-temp-ygg { |home|
+        let d = (mk-module $home "ds")
+        "services: {}\n" | save -f ($d | path join "compose.yml")
+        "[[modules]]\nname = \"ds\"\ncontainers = true\n[ygg.containers]\nruntime = \"nerdctl\"\n" | save -f ($home | path join "host.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            assert equal (pf-reasons (check-container-stacks (resolve-effective-plan $home))) ["invalid_container_runtime"]
+        }
+        "[[modules]]\nname = \"ds\"\ncontainers = \"yes\"\n" | save -f ($home | path join "host.toml")
+        with-env { YGG_HOST_OS_OVERRIDE: "cachyos" } {
+            let probs = (check-container-stacks (resolve-effective-plan $home))
+            assert equal (pf-reasons $probs) ["invalid_containers_flag"]
+            assert equal $probs.0.module "ds"
+        }
+    }
+}
