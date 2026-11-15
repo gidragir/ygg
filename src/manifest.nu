@@ -2,6 +2,7 @@
 # Yggdrasil configuration manager — Manifest parser, OS guard & scope resolution
 
 use state.nu [detect-host-os]
+use container.nu [discover-stacks]
 
 # Load host configuration from $YGG_HOME/host.toml (defaults to { modules: [] })
 export def load-host-config [ygg_home: string]: nothing -> record {
@@ -135,6 +136,7 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
         path: $raw_path,
         scope: ($raw.scope? | default {}),
         doctor: ($raw.doctor? | default {}),
+        containers: ($raw.containers? | default {}),
         setup: { dry_run_safe: ($raw.setup?.dry_run_safe? | default false) }
     }
 
@@ -609,6 +611,7 @@ export def resolve-effective-plan [
     mut plan_env = {}
     mut plan_aliases = {}
     mut plan_path = []
+    mut plan_containers = []
     mut key_order = 0
     mut mod_rank = -1
 
@@ -643,6 +646,7 @@ export def resolve-effective-plan [
         # Collect module's aliases
         mut mod_aliases = $manifest.aliases
         # Collect module's path
+        mut mod_scope_container_files = []
         mut mod_path = ($manifest.path? | default [])
         if not (($mod_path | describe) starts-with "list") {
             $mod_path = [$mod_path]
@@ -668,6 +672,11 @@ export def resolve-effective-plan [
                             let added = ($scope_data.packages | get $mgr)
                             $mod_packages = ($mod_packages | upsert $mgr ($cur | append $added | uniq))
                         }
+                    }
+                    # container stacks in scope (kept apart from base files, RFC-059)
+                    if ($scope_data.containers?.files? != null) {
+                        let cf = if (($scope_data.containers.files | describe) starts-with "list") { $scope_data.containers.files } else { [$scope_data.containers.files] }
+                        $mod_scope_container_files = ($mod_scope_container_files | append $cf | uniq)
                     }
                     # links in scope
                     if ($scope_data.links? != null) {
@@ -781,6 +790,12 @@ export def resolve-effective-plan [
         # Merge aliases across modules (later module overrides earlier)
         $plan_aliases = ($plan_aliases | merge $mod_aliases)
 
+        # Container stacks (RFC-059)
+        let containers_raw = ($mod_entry.containers? | default null)
+        let mod_stacks = (discover-stacks $mod_name $mod_dir ($manifest.containers? | default {}) $mod_scope_container_files
+            | each { |st| $st | upsert enabled ($containers_raw == true) })
+        $plan_containers = ($plan_containers | append $mod_stacks)
+
         # Record active module entry
         $plan_modules = ($plan_modules | append {
             name: $mod_name,
@@ -792,7 +807,8 @@ export def resolve-effective-plan [
             has_setup: ($mod_dir | path join "setup.nu" | path exists),
             pin: ($mod_entry.pin? | default false),
             ref: ($mod_entry.ref? | default ""),
-            rev: ($mod_entry.rev? | default "")
+            rev: ($mod_entry.rev? | default ""),
+            containers_raw: $containers_raw
         })
     }
 
@@ -804,6 +820,30 @@ export def resolve-effective-plan [
         services: $plan_services,
         env: $plan_env,
         aliases: $plan_aliases,
-        path: $plan_path
+        path: $plan_path,
+        containers: $plan_containers,
+        container_settings: {
+            runtime: ($host_cfg.ygg?.containers?.runtime? | default ""),
+            timeout: ($host_cfg.ygg?.containers?.timeout? | default 600)
+        }
+    }
+}
+
+# Write `containers = <value>` into the host.toml entries of the given modules (RFC-059)
+export def set-modules-containers [ygg_home: string, names: list<string>, value: bool]: nothing -> nothing {
+    if ($names | is-empty) { return }
+    let cfg = (load-host-config $ygg_home)
+    let mods = ($cfg.modules? | default [] | each { |m|
+        if $m.name in $names { $m | upsert containers $value } else { $m }
+    })
+    save-host-config $ygg_home ($cfg | upsert modules $mods)
+}
+
+# Container settings of [ygg.containers] from host.toml (RFC-059)
+export def load-container-settings [ygg_home: string]: nothing -> record {
+    let cfg = (try { load-host-config $ygg_home } catch { {} })
+    {
+        runtime: ($cfg.ygg?.containers?.runtime? | default ""),
+        timeout: ($cfg.ygg?.containers?.timeout? | default 600)
     }
 }

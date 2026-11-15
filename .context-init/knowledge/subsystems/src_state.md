@@ -2,8 +2,8 @@
 directory: src/state.nu
 source:
   kind: git
-  blob_sha: 3f5f9ecb4112bb6d152ea51c168640f100d8f6a1
-  commit_sha: 9fc2715e329857cec74b41adaa696d00a9284ca0
+  blob_sha: 86ccce518c5ac3ee0f04998281cd4b9763f43aaf
+  commit_sha: dadd7fbef08ba0f3acd485efe55cd76931159055
 generated_by:
   component: context-init
   role: update

@@ -13,6 +13,7 @@ use link.nu [resolve-link-targets, compute-link-ops, is-link-or-junction, link-l
 use env.nu [missing-secret-keys, classify-secret-value, load-secrets-env]
 use pkg.nu [missing-package-managers]
 use git.nu [copy-sync-status, is-canonicalizable]
+use container.nu [detect-container-runtime, list-running-projects]
 
 const MIN_NU_MINOR = 116
 
@@ -386,9 +387,42 @@ export def ack-shadow [ygg_home: string, report: list]: nothing -> list<record> 
     $rows | where { |r| $r.severity == "warn" }
 }
 
+# containers: enabled stacks not running, enabled modules with unavailable runtime, or stale state.containers entries (RFC-059)
+def check-containers [plan: record, state: record, --sandbox: string = ""]: nothing -> list<record> {
+    let stacks = ($plan.containers? | default [])
+    let enabled = ($stacks | where enabled == true)
+    let st_entries = ($state.containers? | default [])
+    let settings = ($plan.container_settings? | default { runtime: "", timeout: 600 })
+    mut rows = []
+
+    for e in $st_entries {
+        if ($stacks | where { |s| $s.module == $e.module and $s.project == $e.project } | is-empty) {
+            $rows = ($rows | append (finding "containers" "warn" $e.project $"stack recorded in state \(module '($e.module)'\) is no longer in plan" "run: ygg apply"))
+        }
+    }
+
+    if ($enabled | is-not-empty) {
+        let rt = (detect-container-runtime $settings --sandbox $sandbox)
+        if $rt.status != "ok" {
+            for m in ($enabled | get module | uniq) {
+                $rows = ($rows | append (finding "containers" "warn" $m $"containers enabled for module '($m)', but runtime is unavailable \(($rt.status)\)" "run: ygg apply"))
+            }
+        } else {
+            let running = (list-running-projects $rt.runtime)
+            for s in $enabled {
+                if $s.project not-in $running {
+                    $rows = ($rows | append (finding "containers" "warn" $s.project $"enabled container stack \(module '($s.module)'\) is not running" "run: ygg apply"))
+                }
+            }
+        }
+    }
+
+    $rows
+}
+
 # Read-only audit of the host (RFC-017). Rows: { check, severity (error | warn | info), target, detail, fix }.
 # Checks: link, link_pending, orphan_link, state_orphan, sync, perm, tool, collision, shadow,
-# secrets, canonical, journal_interrupted, journal_failed; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
+# secrets, canonical, journal_interrupted, journal_failed, containers; plus `plan` (error) when host.toml or a module manifest cannot be resolved.
 export def run-doctor [
     ygg_home: string,
     --sandbox: string = ""
@@ -428,6 +462,7 @@ export def run-doctor [
         (check-secrets $ygg_home $plan)
         (check-canonical $plan $targets)
         (check-journal $ygg_home)
+        (check-containers $plan $state --sandbox $sb)
     ] | flatten
 }
 

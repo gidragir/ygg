@@ -1,9 +1,10 @@
 # src/git.nu
 # Yggdrasil configuration manager — Module Git Manager & local directory linker
 
-use manifest.nu [load-host-config, save-host-config, load-module-manifest, validate-module-os]
+use manifest.nu [load-container-settings, load-host-config, save-host-config, load-module-manifest, validate-module-os]
 use link.nu [unlink-module, is-link-or-junction, remove-link-only, backup-with-notice, link-target-matches]
 use state.nu [detect-host-os, load-state, ensure-ygg-dirs, to-win32-path]
+use container.nu [down-module-stacks, discover-stacks, detect-container-runtime, list-running-projects, container-status-label]
 
 # Raise when a real (non-link) Git module directory has uncommitted changes.
 # Shared guard of `add` (replacing the module) and `remove`.
@@ -162,6 +163,9 @@ export def register-staged-module [ygg_home: string, prep: record, --force]: not
     if ($prep.scopes | is-not-empty) {
         $mod_record = ($mod_record | upsert scopes $prep.scopes)
     }
+    if ($prep.containers? != null) {
+        $mod_record = ($mod_record | upsert containers $prep.containers)
+    }
     let updated_mods = ($cur_mods | where { |m| $m.name != $prep.name } | append $mod_record)
     save-host-config $ygg_home ($host_cfg | upsert modules $updated_mods)
 
@@ -193,11 +197,14 @@ export def add-module [
 }
 
 # Remove a module, safely unlinking files and guarding against uncommitted changes
-export def remove-module [ygg_home: string, name: string]: nothing -> nothing {
+export def remove-module [ygg_home: string, name: string, --sandbox: string = ""]: nothing -> nothing {
     let mod_dir = ($ygg_home | path join "modules" $name)
 
     # If it is a real Git directory (not a symlink), guard against uncommitted changes
     assert-module-clean $mod_dir $name "remove"
+
+    # Stop recorded compose stacks (never with volumes), RFC-059
+    down-module-stacks $ygg_home $name (load-container-settings $ygg_home) --sandbox $sandbox | ignore
 
     # Safe unlinking of deployed links and copies
     unlink-module $ygg_home $name | ignore
@@ -419,16 +426,51 @@ export def link-entry-ok [dest: string, entry: record]: nothing -> bool {
 }
 
 # Return module status summary table:
-# name, scopes, path, target, branch, dirty, links_ok, sync_conflicts, pending_save
+# name, scopes, path, target, branch, dirty, links_ok, sync_conflicts, pending_save, containers
 export def modules-status [ygg_home: string]: nothing -> table {
     let host_cfg = (load-host-config $ygg_home)
     let state = (load-state $ygg_home)
     let sync = (copy-sync-status $state)
     let has_git = (which git | is-not-empty)
+    let state_containers = ($state.containers? | default [])
+    let cfg_mods = ($host_cfg.modules? | default [])
+
+    # Discover base/auto stacks per module without resolve-effective-plan (broken modules show "?")
+    let mod_stacks_list = ($cfg_mods | each { |mod|
+        let name = $mod.name
+        let mod_path = if ($mod.path? != null) and ($mod.path != "") {
+            $mod.path
+        } else {
+            ($ygg_home | path join "modules" $name)
+        }
+        let enabled_flag = (($mod.containers? | default null) == true)
+        try {
+            let manifest = (load-module-manifest $mod_path)
+            let stacks = (discover-stacks $name $mod_path ($manifest.containers? | default {}) []
+                | each { |st| $st | upsert enabled $enabled_flag })
+            { ok: true, stacks: $stacks }
+        } catch {
+            { ok: false, stacks: [] }
+        }
+    })
+
+    let has_enabled_stacks = ($mod_stacks_list | any { |e| $e.ok and ($e.stacks | any { |st| $st.enabled }) })
+    let rt = if $has_enabled_stacks {
+        detect-container-runtime (load-container-settings $ygg_home)
+    } else {
+        { runtime: "", status: "no_runtime", detail: "" }
+    }
+    let running = if ($has_enabled_stacks and $rt.status == "ok") {
+        list-running-projects $rt.runtime
+    } else {
+        []
+    }
 
     mut rows = []
 
-    for mod in ($host_cfg.modules? | default []) {
+    for it in ($cfg_mods | enumerate) {
+        let mod = $it.item
+        let mod_entry = ($mod_stacks_list | get $it.index)
         let name = $mod.name
         let scopes = ($mod.scopes? | default [])
         let mod_path = if ($mod.path? != null) and ($mod.path != "") {
@@ -462,6 +504,11 @@ export def modules-status [ygg_home: string]: nothing -> table {
         let mod_links = ($state.links | columns | where { |k| (($state.links | get $k | get -o module) == $name) })
         let links_ok = ($mod_links | all { |dest| link-entry-ok $dest ($state.links | get $dest) })
         let mod_sync = ($sync | where { |r| $r.module == $name })
+        let containers_col = if (not $mod_entry.ok) {
+            "?"
+        } else {
+            container-status-label $mod_entry.stacks $state_containers $rt $running
+        }
 
         $rows = ($rows | append {
             name: $name,
@@ -472,7 +519,8 @@ export def modules-status [ygg_home: string]: nothing -> table {
             dirty: $dirty,
             links_ok: $links_ok,
             sync_conflicts: ($mod_sync | where { |r| $r.status == "conflict" } | length),
-            pending_save: ($mod_sync | where { |r| $r.status == "pending_save" } | length)
+            pending_save: ($mod_sync | where { |r| $r.status == "pending_save" } | length),
+            containers: $containers_col
         })
     }
 

@@ -16,6 +16,8 @@
 * **План реализации Фазы 3:** [docs/plans/2026-11-08-ygg-phase3-implementation-plan.md](docs/plans/2026-11-08-ygg-phase3-implementation-plan.md)
 * **Спецификация Фазы 4 — корректность и безопасность (RFC-041..058):** [docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md](docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md)
 * **План реализации Фазы 4:** [docs/plans/2026-11-10-ygg-phase4-implementation-plan.md](docs/plans/2026-11-10-ygg-phase4-implementation-plan.md)
+* **Спецификация контейнеров модулей (RFC-059):** [docs/specs/2026-11-15-ygg-module-containers-design.md](docs/specs/2026-11-15-ygg-module-containers-design.md)
+* **План реализации контейнеров модулей:** [docs/plans/2026-11-15-ygg-module-containers-plan.md](docs/plans/2026-11-15-ygg-module-containers-plan.md)
 * **Навыки разработки:**
   - Разработка на Nushell: [.agents/skills/nushell-ygg-dev/SKILL.md](.agents/skills/nushell-ygg-dev/SKILL.md)
   - Тестирование и верификация модулей dotfiles: [.agents/skills/ygg-module-verification/SKILL.md](.agents/skills/ygg-module-verification/SKILL.md)

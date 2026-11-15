@@ -2,8 +2,8 @@
 directory: bin/ygg.nu
 source:
   kind: git
-  blob_sha: cced9813c8607053d2c65b6109ca253e6e06bb45
-  commit_sha: 9fc2715e329857cec74b41adaa696d00a9284ca0
+  blob_sha: ed54ed7e466d691fd6697241f5459334a75424ad
+  commit_sha: e68d41fb1a0b6bc770c058b8b6a045904fd974fa
 generated_by:
   component: context-init
   role: update
@@ -34,8 +34,6 @@ def "main version" []
 def main [ --version (-v) # Print version ]
 def "main init" [ name?: string, --os: string = "linux" # Comma-separated target OS list for the new module (default: linux) ]
 def "main add" [ source: string, # Local directory or git URL of the module(...) --scope (-s): string = "", # Comma-separated scopes to activate for the module --dry-run (-n), # Show the plan without modifying anything --force (-f), # Overwrite conflicting files and links (wit...
-def assert-pkg-flags [pkg: string, skip_packages: bool]
-def "main remove" [ name: string, # Module name --no-lock # Do not take the host lock ]
 ```
 
 ## 🧪 Запуск и тестирование

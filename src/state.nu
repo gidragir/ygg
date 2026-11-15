@@ -37,7 +37,7 @@ export def ensure-ygg-dirs [ygg_home: string]: nothing -> nothing {
 # Load current state from .state/state.json
 export def load-state [ygg_home: string]: nothing -> record {
     let state_file = ($ygg_home | path join ".state" "state.json")
-    let default_state = { links: {}, copies: {}, hashes: {}, packages: {}, acks: {} }
+    let default_state = { links: {}, copies: {}, hashes: {}, packages: {}, acks: {}, containers: [] }
 
     if not ($state_file | path exists) {
         return $default_state
@@ -57,7 +57,8 @@ export def load-state [ygg_home: string]: nothing -> record {
         copies: ($loaded.copies? | default {}),
         hashes: ($loaded.hashes? | default {}),
         packages: ($loaded.packages? | default {}),
-        acks: ($loaded.acks? | default {})
+        acks: ($loaded.acks? | default {}),
+        containers: ($loaded.containers? | default [])
     }
 }
 
@@ -446,6 +447,7 @@ export def begin-journal-transaction [ygg_home: string, plan: record, command: s
             setup: "PENDING",
             env: "PENDING",
             services: "PENDING",
+            containers: "PENDING",
             finalize: "PENDING"
         }
     }
@@ -493,7 +495,7 @@ export def fail-journal-transaction [ygg_home: string, error_msg: string]: nothi
     } catch { {} })
 
     let steps = ($loaded.steps? | default {})
-    let known_steps = ["prune_packages", "packages", "links", "setup", "env", "services", "finalize"]
+    let known_steps = ["prune_packages", "packages", "links", "setup", "env", "services", "containers", "finalize"]
     let cols = ($steps | columns)
     let step_keys = ($known_steps | where { |k| $k in $cols } | append ($cols | where { |k| $k not-in $known_steps }))
 
@@ -585,7 +587,7 @@ export def check-pending-journal [ygg_home: string]: nothing -> record<state: st
         mut failed_step = ($data.failed_step? | default "")
         if $failed_step == "" {
             let cols = ($steps | columns)
-            let known = ["prune_packages", "packages", "links", "setup", "env", "services", "finalize"]
+            let known = ["prune_packages", "packages", "links", "setup", "env", "services", "containers", "finalize"]
             let order = ($known | where { |k| $k in $cols } | append ($cols | where { |k| $k not-in $known }))
             for k in $order {
                 let st = ($steps | get -o $k | default "PENDING")
@@ -619,7 +621,7 @@ export def check-pending-journal [ygg_home: string]: nothing -> record<state: st
     mut failed_step = ($data.failed_step? | default "")
     if $failed_step == "" {
         let cols = ($steps | columns)
-        let known = ["prune_packages", "packages", "links", "setup", "env", "services", "finalize"]
+        let known = ["prune_packages", "packages", "links", "setup", "env", "services", "containers", "finalize"]
         let order = ($known | where { |k| $k in $cols } | append ($cols | where { |k| $k not-in $known }))
         for k in $order {
             let st = ($steps | get -o $k | default "PENDING")
@@ -746,7 +748,7 @@ export def gc-state-hashes [
     }
 
     let orphans = ($hashes | columns | where { |k|
-        if (($k | str starts-with "pkg:") or ($k | str starts-with "on_change:") or ($k | str starts-with "svc:")) {
+        if (($k | str starts-with "pkg:") or ($k | str starts-with "on_change:") or ($k | str starts-with "svc:") or ($k | str starts-with "containers:")) {
             $k not-in $active_keys
         } else if ($k | str starts-with "setup:") {
             let rest = ($k | str substring 6..)
@@ -822,6 +824,11 @@ export def collect-active-hash-keys [plan: record]: nothing -> list<string> {
                 }
             }
         }
+    }
+
+    # 4. Container stacks: containers:<module>:<project>
+    for st in ($plan.containers? | default [] | where enabled == true) {
+        $active = ($active | append $"containers:($st.module):($st.project)")
     }
 
     $active | uniq
