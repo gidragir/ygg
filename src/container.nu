@@ -403,7 +403,7 @@ export def resolve-container-targets [plan: record, modules: list<string>, mode:
 
 # y / yes (case-insensitive, trimmed) -> true, anything else -> false
 export def parse-yes-answer [answer: string]: nothing -> bool {
-    ($answer | str trim | str downcase) in ["y" "yes"]
+    ($answer | str trim | str lowercase) in ["y" "yes"]
 }
 
 # Ask whether to start the containers of a freshly added module; false without a terminal
