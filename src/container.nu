@@ -467,6 +467,7 @@ export def upgrade-containers [
     if $det.status != "ok" {
         error make { msg: $"Container runtime '($det.runtime)' unavailable \(($det.status)\): ($det.detail)" }
     }
+    let rt = $det.runtime
 
     let state = (load-state $ygg_home)
     mut entries = ($state.containers? | default [])
@@ -474,15 +475,37 @@ export def upgrade-containers [
     mut results = []
     mut changed = false
     for s in $targets {
+        let existing = ($entries | where { |e| $e.module == $s.module and $e.project == $s.project })
+        let entry_rt = if ($existing | is-empty) { "" } else { ($existing | first | get -o runtime | default "") }
+        let pre_steps = (["pull"] | append (if (stack-has-build $s.file) { ["build"] } else { [] }))
         mut res = { status: "ok", stderr: "" }
-        for argv in (do $steps_of $det.runtime $s) {
-            $res = (run-compose $argv $timeout --sandbox $sandbox)
+        for a in $pre_steps {
+            $res = (run-compose (build-compose-argv $rt $a $s) $timeout --sandbox $sandbox)
             if $res.status != "ok" { break }
+        }
+        if $res.status == "ok" {
+            let down_rt = if ($entry_rt != "") and ($entry_rt != $rt) {
+                let d = (detect-container-runtime $settings --runtime $entry_rt --sandbox $sandbox)
+                if $d.status != "ok" {
+                    $res = { status: "failed", stderr: $"Container runtime '($d.runtime)' unavailable \(($d.status)\): ($d.detail)" }
+                    ""
+                } else {
+                    $d.runtime
+                }
+            } else {
+                $rt
+            }
+            if $res.status == "ok" {
+                $res = (run-compose (build-compose-argv $down_rt "down" $s) $timeout --sandbox $sandbox)
+            }
+            if $res.status == "ok" {
+                $res = (run-compose (build-compose-argv $rt "up" $s) $timeout --sandbox $sandbox)
+            }
         }
         $results = ($results | append (do $mk $s $res.status $res.stderr))
         if $res.status == "ok" {
             $changed = true
-            $entries = ($entries | where { |e| not ($e.module == $s.module and $e.project == $s.project) } | append { module: $s.module, project: $s.project, file: $s.file, override: ($s.override? | default ""), runtime: $det.runtime })
+            $entries = ($entries | where { |e| not ($e.module == $s.module and $e.project == $s.project) } | append { module: $s.module, project: $s.project, file: $s.file, override: ($s.override? | default ""), runtime: $rt })
             $hashes = ($hashes | upsert (container-hash-key $s.module $s.project) (stack-inputs-hash $s))
         }
     }

@@ -3,7 +3,7 @@ directory: src/git.nu
 source:
   kind: git
   blob_sha: e370f9293f1c2e5314fef42c9612b74be7c79289
-  commit_sha: dadd7fbef08ba0f3acd485efe55cd76931159055
+  commit_sha: b9448ea3686e1f0d2d8d96bd8bd3a73ab78f0fb0
 generated_by:
   component: context-init
   role: update

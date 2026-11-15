@@ -1672,10 +1672,62 @@ export def test_cli_upgrade_errors [] {
             rm -f $log
             let d = (^nu $ygg_bin upgrade --containers --dry-run | complete)
             assert equal $d.exit_code 0 $d.stderr
-            assert ($d.stdout | str contains "CONTAINER")
-            assert ($d.stdout | str contains "docker compose -p ds down")
+            assert ($d.stdout | str contains "  CONTAINER       ")
+            assert ($d.stdout | str contains "  CONTAINER       docker compose -p ds down")
             assert ($d.stdout | str contains "-p ds pull --ignore-buildable")
             assert (not ($log | path exists)) "dry-run must not write the mock log (no probe either)"
+        }
+    }
+}
+
+export def test_cli_upgrade_partial_failure_continues [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let a = (ctr-mk-src $home "a")
+        let b = (ctr-mk-src $home "b")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $a
+            ctr-started $home $ygg_bin $b
+            let b_compose = ($home | path join "modules" "b" "compose.yml")
+            "services:\n  app:\n    image: alpine:latest\n" | save -f $b_compose
+            let old_hash_b = ((open ($home | path join ".state" "state.json")).hashes | get "containers:b:b")
+            rm -f $log
+            let r = (with-env { YGG_MOCK_CONTAINER_FAIL: "-p a pull" } { ^nu $ygg_bin upgrade --containers | complete })
+            assert ($r.exit_code != 0) $r.stdout
+            let l = (ctr-log $log)
+            assert ($l | any { |x| $x | str contains "-p a pull" }) ($l | str join "\n")
+            assert (not ($l | any { |x| ($x | str contains "-p a down") or ($x | str contains "-p a up") })) ($l | str join "\n")
+            assert ($l | any { |x| $x | str contains "-p b up -d --remove-orphans" }) ($l | str join "\n")
+            let st = (open ($home | path join ".state" "state.json"))
+            assert equal ($st.containers | get project | sort) ["a" "b"]
+            let new_hash_b = ($st.hashes | get "containers:b:b")
+            assert ($new_hash_b != $old_hash_b) "expected b hash to be updated after upgrade"
+        }
+    }
+}
+
+export def test_cli_upgrade_runtime_switch_uses_state_runtime_for_down [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            ctr-started $home $ygg_bin $src
+            assert equal (open ($home | path join ".state" "state.json")).containers.0.runtime "docker"
+            let host_toml = ($home | path join "host.toml")
+            ("[ygg.containers]\nruntime = \"podman\"\n\n" + (open --raw $host_toml)) | save -f $host_toml
+            rm -f $log
+            let r = (^nu $ygg_bin upgrade --containers | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            let l = (ctr-log $log)
+            assert equal ($l | length) 3 ($l | str join "\n")
+            assert ($l.0 | str starts-with "container: podman compose ") $l.0
+            assert ($l.0 | str ends-with "-p ds pull --ignore-buildable") $l.0
+            assert equal $l.1 "container: docker compose -p ds down"
+            assert ($l.2 | str starts-with "container: podman compose ") $l.2
+            assert ($l.2 | str ends-with "-p ds up -d --remove-orphans") $l.2
+            assert equal (open ($home | path join ".state" "state.json")).containers.0.runtime "podman"
         }
     }
 }
