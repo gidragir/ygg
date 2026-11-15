@@ -152,11 +152,19 @@ def "main add" [
             error make { msg: $e.msg }
         }
         let has_stacks = ($stacks | is-not-empty)
+        let existing_ctr = (try {
+            let m = ((load-host-config $ygg_home).modules? | default [] | where name == $prep0.name)
+            if ($m | is-empty) { null } else { $m.0.containers? }
+        } catch { null })
         let ctr_value = if not $has_stacks {
             false
         } else if $containers {
             true
-        } else if $no_containers or $dry_run {
+        } else if $no_containers {
+            false
+        } else if $existing_ctr != null {
+            $existing_ctr
+        } else if $dry_run {
             false
         } else {
             ask-containers $prep0.name ($stacks | get rel)

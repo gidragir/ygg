@@ -1494,6 +1494,24 @@ export def test_cli_add_containers_flag_starts_stack [] {
     }
 }
 
+export def test_cli_readd_preserves_existing_containers_flag [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            let r1 = (^nu $ygg_bin add --containers $src | complete)
+            assert equal $r1.exit_code 0 $r1.stderr
+            assert equal (ctr-flag-of $home "ds") true
+            rm -f $log
+            let r2 = (^nu $ygg_bin add $src | complete)
+            assert equal $r2.exit_code 0 $r2.stderr
+            assert equal (ctr-flag-of $home "ds") true
+            assert (not ((ctr-log $log) | any { |l| $l | str contains " down" }))
+        }
+    }
+}
+
 export def test_cli_add_dry_run_does_not_touch_host_toml [] {
     with-temp-ygg { |home|
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
