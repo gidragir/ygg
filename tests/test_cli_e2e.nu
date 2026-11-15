@@ -1368,10 +1368,14 @@ export def test_cli_apply_runs_container_step_from_host_toml [] {
 def ctr-mk-src [home: string, name: string, --compose = true, --scope-only]: nothing -> string {
     let d = ($home | path join "src" $name)
     mkdir $d
-    let extra = if $scope_only { "[scope.linux.containers]\nfiles = [\"compose.yml\"]\n" } else { "" }
+    let extra = if $scope_only { "[scope.linux.containers]\nfiles = [\"stack/app.yml\"]\n" } else { "" }
     $"name = \"($name)\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n($extra)" | save -f ($d | path join "ygg.toml")
-    if $compose and (not $scope_only) { "services: {}\n" | save -f ($d | path join "compose.yml") }
-    if $scope_only { "services: {}\n" | save -f ($d | path join "compose.yml") }
+    if $scope_only {
+        mkdir ($d | path join "stack")
+        "services: {}\n" | save -f ($d | path join "stack" "app.yml")
+    } else if $compose {
+        "services: {}\n" | save -f ($d | path join "compose.yml")
+    }
     $d
 }
 
@@ -1410,6 +1414,30 @@ export def test_cli_add_scope_only_stack_triggers_question_path [] {
             let r = (^nu $ygg_bin add $src | complete)
             assert equal $r.exit_code 0 $r.stderr
             assert equal (ctr-flag-of $home "ds") false
+        }
+    }
+}
+
+export def test_cli_add_scope_inactive_stack_not_detected [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds" --scope-only)
+        with-env ((ctr-flags $home) | upsert YGG_HOST_OS_OVERRIDE "windows") {
+            let r = (^nu $ygg_bin add $src | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            assert equal (ctr-flag-of $home "ds") null
+        }
+    }
+}
+
+export def test_cli_add_containers_flags_mutually_exclusive [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        with-env (ctr-flags $home) {
+            let r = (^nu $ygg_bin add --containers --no-containers $src | complete)
+            assert ($r.exit_code != 0)
+            assert ($r.stderr | str contains "--containers and --no-containers are mutually exclusive") $r.stderr
         }
     }
 }
@@ -1548,9 +1576,11 @@ export def test_cli_apply_containers_strict_when_runtime_down [] {
             assert equal (^nu $ygg_bin add --no-containers $ds | complete).exit_code 0
             let r = (^nu $ygg_bin apply --containers ds | complete)
             assert ($r.exit_code != 0) $r.stderr
+            assert ($r.stderr | str contains "no_runtime") $r.stderr
             # plain apply with an already-enabled flag only warns
             let r2 = (^nu $ygg_bin apply | complete)
             assert equal $r2.exit_code 0 $r2.stderr
+            assert ($r2.stderr | str contains "unavailable (no_runtime)") $r2.stderr
             let mods = (open ($home | path join "host.toml")).modules
             assert equal ($mods | where name == "ds" | get 0.containers) true
         }
