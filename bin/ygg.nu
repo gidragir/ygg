@@ -103,10 +103,15 @@ def "main add" [
     --pkg: string = "", # Comma-separated package managers to run
     --pkg-timeout: int = -1, # Package manager timeout in seconds
     --refresh-packages, # Reinstall packages even if their hash is unchanged
+    --containers, # Start the module's compose stacks without asking
+    --no-containers, # Do not start the module's compose stacks
     --sandbox: string = "", # Use this directory as HOME instead of the real one
     --no-lock # Do not take the host lock
 ] {
     assert-pkg-flags $pkg $skip_packages
+    if $containers and $no_containers {
+        error make { msg: "--containers and --no-containers are mutually exclusive" }
+    }
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
 
@@ -136,8 +141,28 @@ def "main add" [
 
         # RFC-012: stage first (no change to modules/ or host.toml), check the plan with the module
         # as a virtual entry, and register only after pre-flight passed (RFC-020).
-        let prep = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --read-only=$dry_run --force=$force)
-        let extra = [{ name: $prep.name, path: $prep.path, scopes: $all_scopes }]
+        let prep0 = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --read-only=$dry_run --force=$force)
+        let extra0 = [{ name: $prep0.name, path: $prep0.path, scopes: $all_scopes }]
+
+        # RFC-059: stacks are looked up through the effective plan (active scopes are honored)
+        let stacks = try {
+            (resolve-effective-plan $ygg_home --extra-modules $extra0).containers? | default [] | where module == $prep0.name
+        } catch { |e|
+            discard-staged-module $prep0
+            error make { msg: $e.msg }
+        }
+        let has_stacks = ($stacks | is-not-empty)
+        let ctr_value = if not $has_stacks {
+            false
+        } else if $containers {
+            true
+        } else if $no_containers or $dry_run {
+            false
+        } else {
+            ask-containers $prep0.name ($stacks | get rel)
+        }
+        let prep = if $has_stacks { $prep0 | insert containers $ctr_value } else { $prep0 }
+        let extra = if $has_stacks { [($extra0.0 | insert containers $ctr_value)] } else { $extra0 }
 
         if $dry_run {
             try {
@@ -221,8 +246,17 @@ def "main apply" [
     --no-lock, # Do not take the host lock
     --locked, # Fail if modules do not match the lock file
     --prune-packages, # Remove packages no longer declared by any module
-    --force-system-prune # Allow pruning of system-level packages
+    --force-system-prune, # Allow pruning of system-level packages
+    --containers, # Start compose stacks (of the given modules, or of all modules)
+    --no-containers, # Stop compose stacks (of the given modules, or of all modules)
+    ...modules: string # Modules for --containers / --no-containers
 ] {
+    if $containers and $no_containers {
+        error make { msg: "--containers and --no-containers are mutually exclusive" }
+    }
+    if ($modules | is-not-empty) and (not $containers) and (not $no_containers) {
+        error make { msg: "module names require --containers or --no-containers" }
+    }
     let effective_sandbox = if ($sandbox != "") { $sandbox } else { ($env.YGG_SANDBOX? | default "") }
     assert-sandbox-home $effective_sandbox
 
@@ -233,7 +267,24 @@ def "main apply" [
 
     let lock_file = (acquire-host-lock $ygg_home "apply" --no-lock=($no_lock or $dry_run))
     try {
-        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox --locked=$locked --prune-packages=$prune_packages --force-system-prune=$force_system_prune
+        mut ctr_enable: list<string> = []
+        mut ctr_disable: list<string> = []
+        if $containers or $no_containers {
+            let mode = if $containers { "enable" } else { "disable" }
+            let base_plan = (resolve-effective-plan $ygg_home)
+            let targets = (resolve-container-targets $base_plan $modules $mode)
+            if $containers { $ctr_enable = $targets } else { $ctr_disable = $targets }
+            if (not $dry_run) and ($targets | is-not-empty) {
+                # validate before touching host.toml
+                let checked = (apply-container-overrides $base_plan $ctr_enable $ctr_disable)
+                let issues = (check-container-stacks $checked)
+                if ($issues | is-not-empty) {
+                    error make { msg: (format-preflight-errors $issues) }
+                }
+                set-modules-containers $ygg_home $targets $containers
+            }
+        }
+        apply-plan --dry-run=$dry_run --force=$force --all=$all --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$sandbox --locked=$locked --prune-packages=$prune_packages --force-system-prune=$force_system_prune --containers-enable=$ctr_enable --containers-disable=$ctr_disable
         release-host-lock $lock_file
     } catch { |e|
         release-host-lock $lock_file

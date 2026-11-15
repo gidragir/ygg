@@ -1364,3 +1364,195 @@ export def test_cli_apply_runs_container_step_from_host_toml [] {
         }
     }
 }
+
+def ctr-mk-src [home: string, name: string, --compose = true, --scope-only]: nothing -> string {
+    let d = ($home | path join "src" $name)
+    mkdir $d
+    let extra = if $scope_only { "[scope.linux.containers]\nfiles = [\"compose.yml\"]\n" } else { "" }
+    $"name = \"($name)\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n($extra)" | save -f ($d | path join "ygg.toml")
+    if $compose and (not $scope_only) { "services: {}\n" | save -f ($d | path join "compose.yml") }
+    if $scope_only { "services: {}\n" | save -f ($d | path join "compose.yml") }
+    $d
+}
+
+def ctr-log [log: string]: nothing -> list<string> {
+    if ($log | path exists) { open --raw $log | lines | where { |l| $l | str starts-with "container: " } } else { [] }
+}
+
+def ctr-flags [home: string]: nothing -> record {
+    let os = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+    { YGG_HOME: $home, YGG_SANDBOX: ($home | path join "sb"), YGG_HOST_OS_OVERRIDE: $os, YGG_MOCK_PKG_LOG: ($home | path join "mock.log"), YGG_NONINTERACTIVE: "1" }
+}
+
+def ctr-flag-of [home: string, name: string]: nothing -> any {
+    (open ($home | path join "host.toml")).modules | where name == $name | get -o 0 | get -o containers
+}
+
+export def test_cli_add_noninteractive_defaults_containers_off [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        with-env (ctr-flags $home) {
+            let r = (^nu $ygg_bin add $src | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            assert equal (ctr-flag-of $home "ds") false
+            assert ($r.stderr | str contains "ygg apply --containers ds") $r.stderr
+            assert equal (ctr-log ($home | path join "mock.log")) []
+        }
+    }
+}
+
+export def test_cli_add_scope_only_stack_triggers_question_path [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds" --scope-only)
+        with-env ((ctr-flags $home) | upsert YGG_HOST_OS_OVERRIDE "cachyos") {
+            let r = (^nu $ygg_bin add $src | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            assert equal (ctr-flag-of $home "ds") false
+        }
+    }
+}
+
+export def test_cli_apply_containers_preflight_failure_keeps_host_toml [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        mkdir ($home | path join "sb")
+        for n in ["first" "second"] {
+            let d = ($home | path join "modules" $n)
+            mkdir $d
+            $"name = \"($n)\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($d | path join "ygg.toml")
+            "name: pg\nservices: {}\n" | save -f ($d | path join "compose.yml")
+        }
+        "[[modules]]\nname = \"first\"\ncontainers = true\n[[modules]]\nname = \"second\"\n" | save -f ($home | path join "host.toml")
+        let h0 = (open --raw ($home | path join "host.toml") | hash sha256)
+        with-env (ctr-flags $home) {
+            let r = (^nu $ygg_bin apply --containers second | complete)
+            assert ($r.exit_code != 0)
+            assert ($r.stderr | str contains "container_project_collision") $r.stderr
+            assert equal (open --raw ($home | path join "host.toml") | hash sha256) $h0
+            # dry-run surfaces the same preflight errors and leaves host.toml alone
+            let d = (^nu $ygg_bin apply --dry-run --containers second | complete)
+            assert ($d.exit_code != 0)
+            assert ($d.stderr | str contains "container_project_collision") $d.stderr
+            assert equal (open --raw ($home | path join "host.toml") | hash sha256) $h0
+            # missing compose file
+            "name = \"first\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n[containers]\nfiles = [\"compose.yml\"]\n" | save -f ($home | path join "modules" "first" "ygg.toml")
+            rm ($home | path join "modules" "first" "compose.yml")
+            let m = (^nu $ygg_bin apply --dry-run --containers first | complete)
+            assert ($m.exit_code != 0)
+            assert ($m.stderr | str contains "container_file_missing") $m.stderr
+            assert equal (open --raw ($home | path join "host.toml") | hash sha256) $h0
+        }
+    }
+}
+
+export def test_cli_add_containers_flag_starts_stack [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        let plain = (ctr-mk-src $home "plain" --compose=false)
+        let log = ($home | path join "mock.log")
+        with-env (ctr-flags $home) {
+            let r = (^nu $ygg_bin add --containers $src | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            assert equal (ctr-flag-of $home "ds") true
+            assert ((ctr-log $log) | where { |l| $l | str contains " up " } | is-not-empty)
+            let r2 = (^nu $ygg_bin add $plain | complete)
+            assert equal $r2.exit_code 0 $r2.stderr
+            let mods = (open ($home | path join "host.toml")).modules
+            assert equal ($mods | where name == "plain" | get 0 | get -o containers) null
+        }
+    }
+}
+
+export def test_cli_add_dry_run_does_not_touch_host_toml [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let src = (ctr-mk-src $home "ds")
+        with-env (ctr-flags $home) {
+            let r = (^nu $ygg_bin add --dry-run --containers $src | complete)
+            assert equal $r.exit_code 0 $r.stderr
+            assert (not ($home | path join "host.toml" | path exists))
+            assert equal (ctr-log ($home | path join "mock.log")) []
+        }
+    }
+}
+
+export def test_cli_apply_containers_enable_disable_targets [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let log = ($home | path join "mock.log")
+        let ds = (ctr-mk-src $home "ds")
+        let ml = (ctr-mk-src $home "ml")
+        "services: {}\nx-n: ml\n" | save -f ($ml | path join "compose.yml")
+        with-env (ctr-flags $home) {
+            for s in [$ds $ml] {
+                assert equal (^nu $ygg_bin add --no-containers $s | complete).exit_code 0
+            }
+            assert equal (ctr-flag-of $home "ds") false
+            let r1 = (^nu $ygg_bin apply --containers ds | complete)
+            assert equal $r1.exit_code 0 $r1.stderr
+            assert equal (ctr-flag-of $home "ds") true
+            assert equal (ctr-flag-of $home "ml") false
+            let l1 = (ctr-log $log)
+            assert ($l1 | where { |l| $l | str contains "-p ds up" } | is-not-empty)
+            assert ($l1 | where { |l| $l | str contains "-p ml " } | is-empty)
+            let r2 = (^nu $ygg_bin apply --no-containers | complete)
+            assert equal $r2.exit_code 0 $r2.stderr
+            assert equal (ctr-flag-of $home "ds") false
+            assert equal (ctr-flag-of $home "ml") false
+            assert ((ctr-log $log) | where { |l| $l | str contains "-p ds down" } | is-not-empty)
+            let r3 = (^nu $ygg_bin apply --containers | complete)
+            assert equal $r3.exit_code 0 $r3.stderr
+            assert equal (ctr-flag-of $home "ds") true
+            assert equal (ctr-flag-of $home "ml") true
+            let l3 = (ctr-log $log)
+            assert ($l3 | where { |l| $l | str contains "-p ml up" } | is-not-empty)
+            assert (($l3 | where { |l| $l | str contains "-p ds up" } | length) >= 2)
+        }
+    }
+}
+
+export def test_cli_apply_container_argument_errors [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let ds = (ctr-mk-src $home "ds")
+        let plain = (ctr-mk-src $home "plain" --compose=false)
+        with-env (ctr-flags $home) {
+            ^nu $ygg_bin add --no-containers $ds | complete | ignore
+            ^nu $ygg_bin add $plain | complete | ignore
+            let h0 = (open --raw ($home | path join "host.toml") | hash sha256)
+            let r1 = (^nu $ygg_bin apply ds | complete)
+            assert ($r1.exit_code != 0)
+            assert ($r1.stderr | str contains "module names require --containers or --no-containers") $r1.stderr
+            let r2 = (^nu $ygg_bin apply --containers --no-containers | complete)
+            assert ($r2.exit_code != 0)
+            assert ($r2.stderr | str contains "mutually exclusive") $r2.stderr
+            let r3 = (^nu $ygg_bin apply --containers nope | complete)
+            assert ($r3.exit_code != 0)
+            assert ($r3.stderr | str contains "Module 'nope' not found") $r3.stderr
+            let r4 = (^nu $ygg_bin apply --containers plain | complete)
+            assert ($r4.exit_code != 0)
+            assert ($r4.stderr | str contains "declares no containers") $r4.stderr
+            assert equal (open --raw ($home | path join "host.toml") | hash sha256) $h0
+        }
+    }
+}
+
+export def test_cli_apply_containers_strict_when_runtime_down [] {
+    with-temp-ygg { |home|
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let ds = (ctr-mk-src $home "ds")
+        with-env ((ctr-flags $home) | upsert YGG_MOCK_CONTAINER_STATUS "no_runtime") {
+            assert equal (^nu $ygg_bin add --no-containers $ds | complete).exit_code 0
+            let r = (^nu $ygg_bin apply --containers ds | complete)
+            assert ($r.exit_code != 0) $r.stderr
+            # plain apply with an already-enabled flag only warns
+            let r2 = (^nu $ygg_bin apply | complete)
+            assert equal $r2.exit_code 0 $r2.stderr
+            let mods = (open ($home | path join "host.toml")).modules
+            assert equal ($mods | where name == "ds" | get 0.containers) true
+        }
+    }
+}

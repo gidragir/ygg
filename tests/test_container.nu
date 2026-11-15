@@ -470,7 +470,8 @@ export def test_container_step_runtime_unavailable_soft_and_strict [] {
             assert equal (load-state $home).containers []
             assert equal ((load-state $home).hashes | get -o "containers:ds:ds") null
             assert equal (log-lines $log | where { |l| $l | str starts-with "container: " }) []
-            assert error { run-container-step $home $plan --strict }
+            let msg = (try { run-container-step $home $plan --strict; "" } catch { |e| $e.msg })
+            assert ($msg | str contains "Container runtime 'docker' unavailable (daemon_down)") $"unexpected strict error: ($msg)"
         }
         with-env { YGG_MOCK_PKG_LOG: $log, YGG_MOCK_CONTAINER_STATUS: "no_runtime" } {
             assert equal (run-container-step $home (step-plan $home)).status "skipped_no_runtime"
@@ -528,5 +529,32 @@ export def test_container_overrides_set_enabled [] {
         assert equal ($p.containers | where module == "a" | get enabled) [true]
         assert equal ($p.containers | where module == "b" | get enabled) [false]
         assert equal (apply-container-overrides $plan [] []) $plan
+    }
+}
+
+export def test_container_parse_yes_answer [] {
+    assert (parse-yes-answer "y"); assert (parse-yes-answer " YES ")
+    assert (not (parse-yes-answer "")); assert (not (parse-yes-answer "n")); assert (not (parse-yes-answer "yep"))
+}
+
+export def test_container_resolve_targets_and_set_flag [] {
+    with-temp-ygg { |home|
+        step-setup $home ["ds" "ml"]
+        mk-module $home "plain" | ignore
+        "[[modules]]\nname = \"plain\"\n[[modules]]\nname = \"ds\"\ncontainers = true\n[[modules]]\nname = \"ml\"\n" | save -f ($home | path join "host.toml")
+        let plan = (step-plan $home)
+        assert equal (resolve-container-targets $plan [] "enable" | sort) ["ds" "ml"]
+        assert equal (resolve-container-targets $plan [] "disable") ["ds"]
+        assert equal (resolve-container-targets $plan ["ml"] "enable") ["ml"]
+        let m1 = (try { resolve-container-targets $plan ["nope"] "enable"; "" } catch { |e| $e.msg })
+        assert equal $m1 "Module 'nope' not found"
+        let m2 = (try { resolve-container-targets $plan ["plain"] "enable"; "" } catch { |e| $e.msg })
+        assert equal $m2 "Module 'plain' declares no containers"
+        set-modules-containers $home ["ml"] true
+        set-modules-containers $home ["ds"] false
+        let mods = (open ($home | path join "host.toml")).modules
+        assert equal ($mods | where name == "ml" | get 0.containers) true
+        assert equal ($mods | where name == "ds" | get 0.containers) false
+        assert equal ($mods | where name == "plain" | get 0 | get -o containers) null
     }
 }

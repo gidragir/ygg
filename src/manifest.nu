@@ -828,3 +828,13 @@ export def resolve-effective-plan [
         }
     }
 }
+
+# Write `containers = <value>` into the host.toml entries of the given modules (RFC-059)
+export def set-modules-containers [ygg_home: string, names: list<string>, value: bool]: nothing -> nothing {
+    if ($names | is-empty) { return }
+    let cfg = (load-host-config $ygg_home)
+    let mods = ($cfg.modules? | default [] | each { |m|
+        if $m.name in $names { $m | upsert containers $value } else { $m }
+    })
+    save-host-config $ygg_home ($cfg | upsert modules $mods)
+}

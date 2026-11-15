@@ -381,3 +381,37 @@ export def run-container-step [
     let overall = if ("failed" in $statuses) { "failed" } else if ("ok" in $statuses) { "ok" } else { $statuses | first }
     { status: $overall, results: $results }
 }
+
+# Modules targeted by `apply --containers` / `--no-containers` (mode: enable | disable); empty `modules` = all eligible
+export def resolve-container-targets [plan: record, modules: list<string>, mode: string]: nothing -> list<string> {
+    let stacks = ($plan.containers? | default [])
+    let plan_mods = ($plan.modules? | default [] | each { |m| $m.name })
+    if ($modules | is-empty) {
+        let pool = if $mode == "disable" { $stacks | where enabled == true } else { $stacks }
+        return ($pool | get module | uniq)
+    }
+    for m in $modules {
+        if $m not-in $plan_mods {
+            error make { msg: $"Module '($m)' not found" }
+        }
+        if ($stacks | where module == $m | is-empty) {
+            error make { msg: $"Module '($m)' declares no containers" }
+        }
+    }
+    $modules | uniq
+}
+
+# y / yes (case-insensitive, trimmed) -> true, anything else -> false
+export def parse-yes-answer [answer: string]: nothing -> bool {
+    ($answer | str trim | str downcase) in ["y" "yes"]
+}
+
+# Ask whether to start the containers of a freshly added module; false without a terminal
+export def ask-containers [name: string, rels: list<string>]: nothing -> bool {
+    if (($env.YGG_NONINTERACTIVE? | default "") == "1") or (not (is-terminal --stdin)) {
+        print -e $"[ygg] Containers of '($name)' are not started. Run: ygg apply --containers ($name)"
+        return false
+    }
+    let answer = (try { input $"Module '($name)' declares containers \(($rels | str join ', ')\). Start them now? [y/N]: " } catch { "" })
+    parse-yes-answer $answer
+}

@@ -162,6 +162,9 @@ export def register-staged-module [ygg_home: string, prep: record, --force]: not
     if ($prep.scopes | is-not-empty) {
         $mod_record = ($mod_record | upsert scopes $prep.scopes)
     }
+    if ($prep.containers? != null) {
+        $mod_record = ($mod_record | upsert containers $prep.containers)
+    }
     let updated_mods = ($cur_mods | where { |m| $m.name != $prep.name } | append $mod_record)
     save-host-config $ygg_home ($host_cfg | upsert modules $updated_mods)
 
