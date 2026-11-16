@@ -610,3 +610,18 @@ export def test_container_status_label_values [] {
     assert equal (container-status-label [$e1 $e2] [] $down_rt []) "on (daemon down)"
     assert equal (container-status-label [$e1 $e2] [] $no_rt []) "on (no runtime)"
 }
+
+export def test_container_run_compose_with_label [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "mock.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            let dry = (run-compose ["docker" "compose" "-p" "ds" "up" "-d"] 60 --dry-run --label "[containers] up ds/ds")
+            assert equal $dry.status "dry_run"
+            assert (not ($log | path exists))
+
+            let res = (run-compose ["docker" "compose" "-p" "ds" "up" "-d"] 60 --label "[containers] up ds/ds")
+            assert equal $res.status "ok"
+            assert ((open --raw $log) | str contains "container: docker compose -p ds up -d\n")
+        }
+    }
+}

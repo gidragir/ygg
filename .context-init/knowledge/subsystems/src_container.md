@@ -2,8 +2,8 @@
 directory: src/container.nu
 source:
   kind: git
-  blob_sha: 87588a8569e61c18f97d48d35e73e4132e0406fe
-  commit_sha: e68d41fb1a0b6bc770c058b8b6a045904fd974fa
+  blob_sha: fc49fca40f40661e16999ad9a4e93bc40cbd6305
+  commit_sha: 23920184815ab8144336b355ca51148c6577d991
 generated_by:
   component: context-init
   role: update

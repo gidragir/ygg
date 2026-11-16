@@ -1506,3 +1506,16 @@ export def test_failed_git_status_never_destroys_local_changes [] {
         }
     }
 }
+
+export def test_pkg_prepare_sudo_for_progress [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        with-env { YGG_MOCK_PKG_LOG: $log } {
+            assert equal (prepare-sudo-for-progress true true) false
+            assert equal (prepare-sudo-for-progress false false) false
+        }
+        with-env { YGG_MOCK_PKG_LOG: "", YGG_NONINTERACTIVE: "1" } {
+            assert equal (prepare-sudo-for-progress true true) false
+        }
+    }
+}

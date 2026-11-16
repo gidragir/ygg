@@ -2,7 +2,8 @@
 # Yggdrasil configuration manager — Reactive SDK & setup.nu runner
 
 use state.nu [get-ygg-home, load-state, save-state, expand-target-path, fs-windows]
-use pkg.nu [run-with-timeout, sudo-available]
+use pkg.nu [run-with-timeout, sudo-available, prepare-sudo-for-progress]
+use progress.nu [progress-clear-line]
 use link.nu [parse-services-tree, is-link-or-junction, remove-link-only, link-target-matches, swap-symlink-atomic, create-windows-dir-link, backup-with-notice]
 use env.nu [resolve-secret-value]
 
@@ -349,16 +350,24 @@ export def run-module-setup [
     }
 
     with-env $env_vars {
-        let res = (^nu -I $ygg_src_dir $setup_script | complete)
-        if ($res.stdout | str trim) != "" {
-            print -n $res.stdout
+        let mod_name = ($mod_plan.name? | default ($mod_dir | path basename))
+        let res = if ($is_dry == "true") {
+            let r = (^nu -I $ygg_src_dir $setup_script | complete)
+            if ($r.stdout | str trim) != "" {
+                print -n $r.stdout
+            }
+            $r
+        } else {
+            run-with-timeout ["nu", "-I", $ygg_src_dir, $setup_script] 0 --label $"[hooks] ($mod_name) setup.nu"
         }
         if $res.exit_code != 0 {
-            if ($res.stderr | str trim) != "" {
-                print -e $res.stderr
+            let err_out = if ($res.stderr | str trim) != "" { $res.stderr } else { $res.stdout }
+            if ($err_out | str trim) != "" {
+                progress-clear-line
+                print -e $err_out
             }
             error make {
-                msg: $"setup.nu for module '($mod_plan.name? | default ($mod_dir | path basename))' failed with exit code ($res.exit_code): ($res.stderr)"
+                msg: $"setup.nu for module '($mod_name)' failed with exit code ($res.exit_code): ($err_out)"
             }
         }
     }
@@ -491,7 +500,7 @@ export def run-link-hooks [
         } else if ($sb != "") {
             { status: "skipped_sandbox", stderr: "" }
         } else {
-            let res = (run-with-timeout ["nu", "-c", $cmd] 30)
+            let res = (run-with-timeout ["nu", "-c", $cmd] 30 --label $"[hooks] ($modules): ($keys | str join ', ')")
             if $res.exit_code == 0 {
                 { status: "ok", stderr: "" }
             } else {
@@ -500,6 +509,7 @@ export def run-link-hooks [
             }
         }
         if ($outcome.status == "failed") {
+            progress-clear-line
             for k in $keys {
                 print -e $"[ygg] Warning: on_change for '($k)' failed: ($outcome.stderr)"
             }
@@ -679,7 +689,8 @@ export def run-service-actions [
             }
         } else {
             try {
-                let res = (run-with-timeout $cmd_argv 30)
+                let no_tty = (prepare-sudo-for-progress ($mgr == "systemd-system") false)
+                let res = (run-with-timeout $cmd_argv 30 --label $"[services] ($action) ($svc) \(($mgr)\)" --no-tty-progress=$no_tty)
                 if $res.exit_code == 0 {
                     { status: "ok", stderr: "" }
                 } else {
@@ -697,6 +708,7 @@ export def run-service-actions [
         }
 
         if ($outcome.status == "failed") {
+            progress-clear-line
             print -e $"[ygg] Warning: service action failed for '($svc)': ($outcome.stderr)"
         }
 

@@ -739,3 +739,32 @@ export def test_safe_link_windows_override_rejects_file_source [] {
         assert (not ($sb | path join ".app" "cfg.txt" | path exists))
     }
 }
+
+export def test_run_module_setup_no_stdout_leak_and_error_fallback [] {
+    with-temp-ygg { |home|
+        let mod_dir = ($home | path join "modules" "demo")
+        mkdir $mod_dir
+        "print 'noisy-setup-stdout'\n" | save -f ($mod_dir | path join "setup.nu")
+        let mod_plan = {
+            name: "demo",
+            dir: $mod_dir,
+            config: {},
+            scopes: ["linux"],
+            has_setup: true,
+            setup: { dry_run_safe: false }
+        }
+        let src_dir = if ("src/mod.nu" | path exists) { "src" } else { "../src" }
+        let plan_json = ($mod_plan | to json -r)
+        let cmd = $"use mod.nu *; with-env { NO_COLOR: '1' } { run-module-setup '($home)' \('($plan_json)' | from json\) }"
+        let sub = (^nu -I $src_dir -c $cmd | complete)
+        assert equal $sub.exit_code 0
+        assert not ($sub.stdout | str contains "noisy-setup-stdout")
+        assert ($sub.stderr | str contains "[ok] [hooks] demo setup.nu")
+
+        # Ошибка с пустым stderr должна пробросить stdout
+        "print 'stdout-err-fallback'; exit 2\n" | save -f ($mod_dir | path join "setup.nu")
+        let err_msg = (try { run-module-setup $home $mod_plan; "" } catch { |e| $e.msg })
+        assert ($err_msg != "")
+        assert ($err_msg | str contains "stdout-err-fallback")
+    }
+}

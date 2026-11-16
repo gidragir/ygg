@@ -4,6 +4,7 @@
 use state.nu [load-state, save-state, expand-target-path, backup-existing, fs-windows, to-win32-path]
 use env.nu [validate-secret-providers, load-secrets-env]
 use container.nu [check-container-stacks]
+use progress.nu [progress-clear-line]
 
 # Make a file executable (owner) if it is not already; chmod stderr is suppressed.
 # In nu 0.116 `ls -lD` mode is a 9-char string ("rwxr-xr-x") without a type char.
@@ -299,6 +300,7 @@ export def resolve-link-targets [
 export def backup-with-notice [ygg_home: string, target: string]: nothing -> string {
     let bkp = (backup-existing $ygg_home $target)
     if ($bkp != "") {
+        progress-clear-line
         print $"[ygg] Backed up existing '($target)' -> '($bkp)'"
     }
     $bkp

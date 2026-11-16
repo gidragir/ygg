@@ -2,6 +2,7 @@
 # Yggdrasil configuration manager — module containers (RFC-059): compose stack discovery
 
 use pkg.nu [run-with-timeout]
+use progress.nu [progress-clear-line]
 use state.nu [load-state, save-state]
 
 # Whitelist of container runtimes (docker compose / podman compose)
@@ -209,7 +210,8 @@ export def run-compose [
     argv: list<string>,
     timeout: int,
     --dry-run,
-    --sandbox: string = ""
+    --sandbox: string = "",
+    --label: string = ""
 ]: nothing -> record<status: string, stderr: string> {
     if $dry_run { return { status: "dry_run", stderr: "" } }
     let mock_log = ($env.YGG_MOCK_PKG_LOG? | default "")
@@ -224,7 +226,7 @@ export def run-compose [
         }
         return { status: "ok", stderr: "" }
     }
-    let r = (run-with-timeout $argv $timeout)
+    let r = (run-with-timeout $argv $timeout --label $label)
     if $r.exit_code == 0 { { status: "ok", stderr: "" } } else { { status: "failed", stderr: ($r.stderr | str trim) } }
 }
 
@@ -339,6 +341,7 @@ export def run-container-step [
         if $r.status != "ok" {
             let msg = $"[ygg] Container runtime '($r.runtime)' unavailable \(($r.status)\): ($r.detail). Start the daemon / install docker-compose v2 and rerun 'ygg apply'."
             if $strict { error make { msg: $msg } }
+            progress-clear-line
             print -e $msg
         }
     }
@@ -352,7 +355,7 @@ export def run-container-step [
             $results = ($results | append (do $mk $c (skipped-status-of $r.status) ""))
             continue
         }
-        let res = (run-compose (build-compose-argv $r.runtime "down" $c.stack) $timeout --sandbox $sandbox)
+        let res = (run-compose (build-compose-argv $r.runtime "down" $c.stack) $timeout --sandbox $sandbox --label $"[containers] down ($c.module)/($c.project)")
         $results = ($results | append (do $mk $c $res.status $res.stderr))
         if $res.status == "ok" {
             $new_entries = ($new_entries | where { |e| not ($e.module == $c.module and $e.project == $c.project) })
@@ -365,7 +368,7 @@ export def run-container-step [
             $results = ($results | append (do $mk $c (skipped-status-of $r.status) ""))
             continue
         }
-        let res = (run-compose (build-compose-argv $r.runtime "up" $c.stack) $timeout --sandbox $sandbox)
+        let res = (run-compose (build-compose-argv $r.runtime "up" $c.stack) $timeout --sandbox $sandbox --label $"[containers] up ($c.module)/($c.project)")
         $results = ($results | append (do $mk $c $res.status $res.stderr))
         if $res.status == "ok" {
             let s = $c.stack
@@ -418,6 +421,7 @@ export def ask-containers [name: string, rels: list<string>]: nothing -> bool {
 
 def container-warn-down [rt: string, project: string, why: string]: nothing -> nothing {
     let r = if $rt == "" { "docker" } else { $rt }
+    progress-clear-line
     print -e $"[ygg] Could not stop containers of project '($project)' \(($why)\). Run manually: ($r) compose -p ($project) down"
 }
 
@@ -480,7 +484,7 @@ export def upgrade-containers [
         let pre_steps = (["pull"] | append (if (stack-has-build $s.file) { ["build"] } else { [] }))
         mut res = { status: "ok", stderr: "" }
         for a in $pre_steps {
-            $res = (run-compose (build-compose-argv $rt $a $s) $timeout --sandbox $sandbox)
+            $res = (run-compose (build-compose-argv $rt $a $s) $timeout --sandbox $sandbox --label $"[containers] ($a) ($s.module)/($s.project)")
             if $res.status != "ok" { break }
         }
         if $res.status == "ok" {
@@ -496,10 +500,10 @@ export def upgrade-containers [
                 $rt
             }
             if $res.status == "ok" {
-                $res = (run-compose (build-compose-argv $down_rt "down" $s) $timeout --sandbox $sandbox)
+                $res = (run-compose (build-compose-argv $down_rt "down" $s) $timeout --sandbox $sandbox --label $"[containers] down ($s.module)/($s.project)")
             }
             if $res.status == "ok" {
-                $res = (run-compose (build-compose-argv $rt "up" $s) $timeout --sandbox $sandbox)
+                $res = (run-compose (build-compose-argv $rt "up" $s) $timeout --sandbox $sandbox --label $"[containers] up ($s.module)/($s.project)")
             }
         }
         $results = ($results | append (do $mk $s $res.status $res.stderr))
@@ -542,7 +546,7 @@ export def down-module-stacks [
             $results = ($results | append { module: $module, project: $e.project, status: $"skipped_($det.status)", stderr: "" })
             continue
         }
-        let res = (run-compose (build-compose-argv $det.runtime "down" { project: $e.project, file: ($e.file? | default ""), override: ($e.override? | default "") }) $timeout --sandbox $sandbox)
+        let res = (run-compose (build-compose-argv $det.runtime "down" { project: $e.project, file: ($e.file? | default ""), override: ($e.override? | default "") }) $timeout --sandbox $sandbox --label $"[containers] down ($module)/($e.project)")
         if $res.status != "ok" {
             container-warn-down $det.runtime $e.project (if $res.stderr == "" { $res.status } else { $res.stderr })
         }

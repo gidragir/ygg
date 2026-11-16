@@ -97,6 +97,17 @@ if $res.exit_code != 0 {
 
 Каждый тест обязан работать внутри `with-temp-ygg`, создающего уникальную папку через `mktemp -d -t ygg-test.XXXXXX`, выставляющего `YGG_HOME` и `YGG_SANDBOX` в `with-env` и гарантированно удаляющего временную папку в блоке `try { ... } catch { |e| rm -rf $tmp; error make { msg: $e.msg } }`.
 
+* **Параллелизм `tests/run.nu` (`par-each --threads 4`) и `$nu.temp-dir`:** `mktemp -t` использует `$nu.temp-dir`, который кешируется при старте `nu`. Не проверяй глобальный `$nu.temp-dir` на отсутствие `ygg-proc-*` — запускай тестируемую команду в дочернем `^nu` с `TMPDIR`/`TEMP`/`TMP` на каталог `with-temp-ygg`:
+  ```nushell
+  # ✅ ПРАВИЛЬНО: изолированный temp-dir для проверки очистки временных файлов
+  with-temp-ygg { |tmp|
+      with-env { TMPDIR: $tmp, TEMP: $tmp, TMP: $tmp } {
+          ^nu -I $src_dir -c '...' | complete
+          assert equal (ls $tmp | where { |f| ($f.name | path basename) starts-with "ygg-proc-" } | length) 0
+      }
+  }
+  ```
+
 ## 7. Квадратные скобки и строковая интерполяция (`$"..."` vs конкатенация)
 
 В Nushell внутри `$"..."` квадратные скобки `[` парсятся парсером как открывающийся разделитель выражений/индексов, а не литерал. При передаче команд с типами PowerShell/.NET (например, `[bool]`, `[System.IO.FileAttributes]::ReparsePoint`) интерполяция падает с `nu::parser::unclosed_delimiter`.
@@ -244,4 +255,68 @@ for pid in $pids {
     try { ^kill -9 $pid | complete | ignore } catch { }
 }
 ```
+
+## 19. Кроссплатформенность фич `ygg` и внешних утилит (No Unix-Only Assumptions)
+
+`ygg` — кроссплатформенный менеджер (Linux, Windows 11/Server Non-Admin, macOS).
+* **Не проектируй ядро и модульные паттерны вокруг Unix-only механизмов** (`systemd`, `dockcheck`, `podman-auto-update`, `bash`-скрипты, `/var/run/docker.sock` как единственный транспорт).
+* Любая автоматизация в ядре `ygg`, `setup.nu` и `bin/` реализуется на кроссплатформенном Nushell либо через кроссплатформенные CLI, работающие одинаково на Linux, Windows и macOS. Платформозависимые шаги изолируются через `$nu.os-info.name` или `[scope.linux]` / `[scope.windows]`.
+
+## 20. Файловое перенаправление внешних команд (`o>` / `e>` / `o+e>`) и `job spawn`
+
+В Nushell 0.116 редирект вывода внешней команды в файл (`o> $out e> $err` или `o+e> $log`) **не подавляет исключение** при ненулевом коде выхода (в отличие от `| complete`). Внутри `job spawn` неперехваченное исключение прерывает job до `job send`, из-за чего родительский `job recv` зависает до таймаута (или навсегда при `timeout <= 0`).
+
+* **Всегда оборачивай редирект в `try/catch` и разделяй `stdout`/`stderr` через `o>` и `e>`**, в ветке `try` возвращай `exit_code: 0` явно (в Nu 0.116 успешный запуск с `o>`/`e>` **не сбрасывает** унаследованный `$env.LAST_EXIT_CODE` после предшествующего `error make`), а ошибку запуска отсутствующего бинарника проверяй через `which` (в `catch` при `External command failed` переменная `$env.LAST_EXIT_CODE` равна `1`, а не `127`, и файлы вывода пусты):
+  ```nushell
+  # ❌ НЕПРАВИЛЬНО: падает на exit_code != 0 до `job send`, сливает stderr в stdout, теряет code=127
+  job spawn {
+      ^$bin ...$args o+e> $tmp_log
+      { exit_code: $env.LAST_EXIT_CODE } | job send 0 --tag $tag
+  }
+
+  # ✅ ПРАВИЛЬНО: раздельные потоки + явный 0 в try + защита job send + явный 127 при отсутствии бинарника
+  job spawn {
+      let r = (try {
+          ^$bin ...$args o> $out_log e> $err_log
+          { exit_code: 0, spawn_err: "" }
+      } catch { |e|
+          let raw_code = ($env.LAST_EXIT_CODE? | default 1)
+          let code = if $raw_code == 0 { 1 } else { $raw_code }
+          let missing = (which $bin | is-empty)
+          let spawn_err = if (not $missing) and ($e.msg == "External command had a non-zero exit code") { "" } else { $e.msg }
+          { exit_code: (if $missing { 127 } else { $code }), spawn_err: $spawn_err }
+      })
+      $r | job send 0 --tag $tag
+  }
+  ```
+
+## 21. Прогресс подпроцессов при редиректе в файл (non-TTY), `\r`-строки и `mktemp`
+
+При перенаправлении `stdout`/`stderr` в обычный файл (без TTY/PTY) дочерние CLI меняют поведение:
+1. **`git` подавляет прогресс:** `git clone`, `git fetch`, `git pull` на не-TTY `stderr` не печатают проценты передачи объектов без явного флага `--progress`.
+2. **Буферизация `stdout`:** C `stdio` / Python при записи `stdout` в файл переходят на блочную буферизацию (4–8 КБ); `stderr` остаётся небуферизованным. Для Python/Compose передавай `PYTHONUNBUFFERED=1` / `COMPOSE_PROGRESS=plain`.
+3. **Разбор `\r`-перезаписей:** встроенный `ansi strip` (и удаление `\r`) съедает возвраты каретки. Инструменты (`git --progress`, `curl`, `uv`) обновляют строку через `\r` без `\n` — если вызвать `ansi strip` или удалить `\r` до сплита, все тики склеятся и обрезка по ширине покажет самый старый кадр:
+   ```nushell
+   # ✅ ПРАВИЛЬНО: сплит по [\r\n]+ СТРОГО ДО `ansi strip`
+   let last_line = ($tail_text
+       | split row --regex '[\r\n]+'
+       | each { |l| $l | ansi strip | str trim }
+       | where { |l| $l != "" }
+       | last | default "")
+   ```
+4. **Кроссплатформенный `mktemp` в Nu 0.116 (uutils):** шаблон при `-t` обязан содержать минимум три `X`, а расширение задаётся через `--suffix`:
+   ```nushell
+   let tmp_log = (mktemp -t --suffix .log ygg-proc-XXXXXX)
+   ```
+5. **Ширина терминала и хвост лога:** в Nu нет seek по файлу и `tail` на Windows; ширину читай через `try { (term size).columns } catch { 80 }` с нижней границей (clamp), а при побайтовом чтении хвоста учитывай границы UTF-8 (`decode` / потеря неполных байт в начале среза).
+6. **Подсчёт ширины и обрезка UTF-8 строк (`--grapheme-clusters`):** в Nu 0.116 `str length` и `str substring` по умолчанию работают **по байтам** (не по символам), что завышает длину и разрезает многобайтные символы (`⠋`, кириллица, эмодзи) с появлением `\u{fffd}`. Для UI/прогресса всегда используй графемы:
+   ```nushell
+   # ❌ НЕПРАВИЛЬНО: байтовый срез рвёт многобайтовый UTF-8
+   "⠋🚀тест" | str substring 0..<2 # -> "\u{fffd}"
+
+   # ✅ ПРАВИЛЬНО: графемный подсчёт и срез
+   let len = ($text | str length --grapheme-clusters)
+   let head = ($text | str substring --grapheme-clusters 0..<$cut)
+   ```
+
 

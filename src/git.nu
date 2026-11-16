@@ -5,6 +5,7 @@ use manifest.nu [load-container-settings, load-host-config, save-host-config, lo
 use link.nu [unlink-module, is-link-or-junction, remove-link-only, backup-with-notice, link-target-matches]
 use state.nu [detect-host-os, load-state, ensure-ygg-dirs, to-win32-path]
 use container.nu [down-module-stacks, discover-stacks, detect-container-runtime, list-running-projects, container-status-label]
+use pkg.nu [run-with-timeout]
 
 # Raise when a real (non-link) Git module directory has uncommitted changes.
 # Shared guard of `add` (replacing the module) and `remove`.
@@ -82,7 +83,11 @@ def stage-module [ygg_home: string, source: string, scopes: list<string>, force:
             ($tmp_parent | path join $"clone-(random chars --length 8)")
         }
 
-        let clone_res = (^git clone $git_url $tmp_clone | complete)
+        let clone_res = if $read_only {
+            run-with-timeout ["git" "clone" $git_url $tmp_clone] 0
+        } else {
+            run-with-timeout ["git" "clone" "--progress" $git_url $tmp_clone] 0 --label $"[git] clone ($source)"
+        }
         if $clone_res.exit_code != 0 {
             discard-staged-module { tmp_clone: $tmp_clone }
             error make { msg: $"Failed to clone '($source)': ($clone_res.stderr)" }
@@ -241,7 +246,8 @@ export def checkout-module-ref [mod_path: string, ref: string, rev: string]: not
     if ($dirty.exit_code != 0) or ($dirty.stdout | str trim | is-not-empty) {
         return { status: "error", message: $"module has uncommitted changes in '($mod_path)'", head: (do $head_of) }
     }
-    let fetch = (^git -C $mod_path fetch --all --tags | complete)
+    let mod_label = ($mod_path | path basename)
+    let fetch = (run-with-timeout ["git" "-C" $mod_path "fetch" "--progress" "--all" "--tags"] 0 --label $"[git] fetch ($mod_label)")
     if $fetch.exit_code != 0 {
         return { status: "error", message: $"git fetch failed: ($fetch.stderr | str trim)", head: (do $head_of) }
     }
@@ -253,7 +259,11 @@ export def checkout-module-ref [mod_path: string, ref: string, rev: string]: not
         [[checkout --detach $ref]]
     }
     for step in $steps {
-        let res = (^git -C $mod_path ...$step | complete)
+        let res = if ($step | first) == "pull" {
+            run-with-timeout ["git" "-C" $mod_path "pull" "--progress" "--rebase"] 0 --label $"[git] pull ($mod_label)"
+        } else {
+            ^git -C $mod_path ...$step | complete
+        }
         if $res.exit_code != 0 {
             if ($step | first) == "pull" {
                 ^git -C $mod_path rebase --abort | complete | ignore
@@ -322,7 +332,7 @@ export def update-module [ygg_home: string, name: string]: nothing -> record {
         let r = (checkout-module-ref $mod_path $pin_ref $pin_rev)
         { ok: ($r.status == "ok"), stderr: $r.message }
     } else {
-        let r = (^git -C $mod_path pull --rebase | complete)
+        let r = (run-with-timeout ["git" "-C" $mod_path "pull" "--progress" "--rebase"] 0 --label $"[git] pull ($mod_path | path basename)")
         { ok: ($r.exit_code == 0), stderr: $r.stderr }
     }
     if not $upd.ok {

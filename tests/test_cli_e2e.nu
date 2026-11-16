@@ -1806,3 +1806,62 @@ export def test_cli_status_shows_containers_column [] {
         }
     }
 }
+
+export def test_cli_progress_phases_and_readonly_silence [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "prog-mod")
+        mkdir $mod_src $sb ($home | path join "modules")
+        'name = "prog-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[links]
+"a.conf" = "~/.config/prog/a.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "a=1\n" | save -f ($mod_src | path join "a.conf")
+        test-link-dir $mod_src ($home | path join "modules" "prog-mod")
+        "[[modules]]\nname = \"prog-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+
+        # Локальный bare git-репозиторий для проверки молчания `add --dry-run`
+        let bare = ($home | path join "dry-git.git")
+        let work = ($home | path join "dry-git-work")
+        ^git init --bare -b main $bare
+        ^git clone $bare $work
+        ^git -C $work config user.email "t@t.local"
+        ^git -C $work config user.name "Tester"
+        $"name = \"dry-git\"\nos = [\"linux\", \"windows\", \"macos\", \"cachyos\"]\n" | save -f ($work | path join "ygg.toml")
+        ^git -C $work add .
+        ^git -C $work commit -m "init"
+        ^git -C $work push -u origin main
+
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr, YGG_MOCK_PKG_LOG: ($home | path join "pkg.log") } {
+            # Read-only / dry-run команды не выводят прогресс
+            for cmd in [["diff"], ["apply", "--dry-run", "--sandbox", $sb], ["add", $bare, "--dry-run", "--sandbox", $sb], ["status", "--json"], ["doctor", "--json", "--sandbox", $sb]] {
+                let r = (^nu $ygg_bin ...$cmd | complete)
+                assert equal $r.exit_code 0 $r.stderr
+                assert not ($r.stdout | str contains "[links]")
+                assert not ($r.stderr | str contains "[links]")
+                assert not ($r.stderr | str contains "[git]")
+                assert not ($r.stderr | str contains "[preflight]")
+                assert not ($r.stderr | str contains "\x1b[")
+            }
+
+            # Реальный apply выводит фазы прогресса в stderr и чистый stdout
+            let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            assert ($ap.stdout | str contains "Applied 1 module")
+            assert ($ap.stderr | str contains "[preflight]")
+            assert ($ap.stderr | str contains "[links]")
+            assert ($ap.stderr | str contains "[finalize]")
+            assert not ($ap.stderr | str contains "\x1b[")
+
+            # Реальный remove выводит фазу в stderr и чистый stdout
+            let rm_res = (^nu $ygg_bin remove "prog-mod" | complete)
+            assert equal $rm_res.exit_code 0 $rm_res.stderr
+            assert ($rm_res.stdout | str contains "Removed module prog-mod")
+            assert ($rm_res.stderr | str contains "[ygg]")
+        }
+    }
+}

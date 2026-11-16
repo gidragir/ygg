@@ -2,6 +2,9 @@
 # Yggdrasil configuration manager — Package providers driver
 
 use state.nu [detect-host-os, get-ygg-home, load-state, save-state, expand-target-path]
+use progress.nu [is-tty-progress, term-columns, read-progress-tail, progress-clear-line, format-progress-line, format-progress-done]
+
+const SPINNER_FRAMES = ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
 
 # RFC-005: winget "already installed" / "no applicable upgrade" exit codes count as success
 const WINGET_OK_CODES = [0, -1978335135, -1978335189]
@@ -81,32 +84,143 @@ def kill-job-tree [jid: int]: nothing -> nothing {
 # Run an external command (argv form) with an optional timeout in seconds (<= 0: no timeout,
 # runs inline without `job spawn`). On timeout the process tree is killed and
 # { exit_code: 124, timed_out: true } is returned.
-export def run-with-timeout [argv: list<string>, timeout_sec: int]: nothing -> record {
+export def run-with-timeout [
+    argv: list<string>
+    timeout_sec: int
+    --label: string = ""
+    --no-tty-progress
+]: nothing -> record {
     let bin = ($argv | first)
     let args = ($argv | skip 1)
-    if $timeout_sec <= 0 {
+    if $label == "" {
+        if $timeout_sec <= 0 {
+            return (try {
+                ^$bin ...$args | complete
+            } catch { |e|
+                { exit_code: 127, stdout: "", stderr: $e.msg }
+            } | insert timed_out false)
+        }
+        # A unique tag is required: a killed job still delivers its result later, and an
+        # untagged `job recv` in the next call would receive that stale message.
+        let tag = (random int 1..1000000000)
+        let jid = (job spawn {
+            let r = (try {
+                ^$bin ...$args | complete
+            } catch { |e|
+                { exit_code: 127, stdout: "", stderr: $e.msg }
+            })
+            $r | job send 0 --tag $tag
+        })
         return (try {
-            ^$bin ...$args | complete
-        } catch { |e|
-            { exit_code: 127, stdout: "", stderr: $e.msg }
-        } | insert timed_out false)
+            job recv --tag $tag --timeout ($timeout_sec * 1sec) | insert timed_out false
+        } catch {
+            kill-job-tree $jid
+            { exit_code: 124, stdout: "", stderr: $"timed out after ($timeout_sec)s", timed_out: true }
+        })
     }
-    # A unique tag is required: a killed job still delivers its result later, and an
-    # untagged `job recv` in the next call would receive that stale message.
+
+    let use_tty = (not $no_tty_progress) and (is-tty-progress)
+    let out_log = (mktemp -t --suffix .log ygg-proc-XXXXXX)
+    let err_log = (mktemp -t --suffix .log ygg-proc-XXXXXX)
     let tag = (random int 1..1000000000)
+    let start_ts = (date now)
+
+    if not $use_tty {
+        print -e $"($label)..."
+    }
+
     let jid = (job spawn {
-        let r = (try {
-            ^$bin ...$args | complete
-        } catch { |e|
-            { exit_code: 127, stdout: "", stderr: $e.msg }
+        let r = (with-env {
+            PYTHONUNBUFFERED: ($env.PYTHONUNBUFFERED? | default "1")
+            COMPOSE_PROGRESS: ($env.COMPOSE_PROGRESS? | default "plain")
+        } {
+            try {
+                ^$bin ...$args o> $out_log e> $err_log
+                { exit_code: 0, spawn_err: "" }
+            } catch { |e|
+                let missing = (which $bin | is-empty)
+                let code = ($env.LAST_EXIT_CODE? | default 1)
+                let spawn_err = if (not $missing) and ($e.msg == "External command had a non-zero exit code") { "" } else { $e.msg }
+                {
+                    exit_code: (if $missing { 127 } else if $code == 0 { 1 } else { $code })
+                    spawn_err: $spawn_err
+                }
+            }
         })
         $r | job send 0 --tag $tag
     })
+
+    mut res: any = null
+    mut timed_out = false
+    mut tick = 0
+
     try {
-        job recv --tag $tag --timeout ($timeout_sec * 1sec) | insert timed_out false
-    } catch {
+        loop {
+            let msg = (try {
+                job recv --tag $tag --timeout 250ms
+            } catch {
+                null
+            })
+            if $msg != null {
+                $res = $msg
+                break
+            }
+            let elapsed_dur = ((date now) - $start_ts)
+            let elapsed_sec = ($elapsed_dur / 1sec | math floor | into int)
+            if ($timeout_sec > 0) and ($elapsed_sec >= $timeout_sec) {
+                $timed_out = true
+                kill-job-tree $jid
+                break
+            }
+            if $use_tty {
+                let spinner = ($SPINNER_FRAMES | get ($tick mod ($SPINNER_FRAMES | length)))
+                let tail = (read-progress-tail $err_log $out_log)
+                let line = (format-progress-line $spinner $label $tail $elapsed_sec (term-columns))
+                print -e -n $"\r\x1b[2K($line)"
+            }
+            $tick = $tick + 1
+        }
+    } catch { |e|
         kill-job-tree $jid
-        { exit_code: 124, stdout: "", stderr: $"timed out after ($timeout_sec)s", timed_out: true }
+        progress-clear-line
+        try { rm -f $out_log } catch { }
+        try { rm -f $err_log } catch { }
+        error make $e
+    }
+
+    let stdout_str = (try { open --raw $out_log } catch { "" })
+    let raw_stderr = (try { open --raw $err_log } catch { "" })
+    try { rm -f $out_log } catch { }
+    try { rm -f $err_log } catch { }
+
+    let elapsed_float = (((date now) - $start_ts) / 1sec)
+    if $use_tty {
+        progress-clear-line
+    }
+
+    if $timed_out {
+        print -e (format-progress-done "timeout" $label $elapsed_float)
+        let timeout_msg = $"timed out after ($timeout_sec)s"
+        let trimmed_err = ($raw_stderr | str trim -r)
+        return {
+            exit_code: 124
+            stdout: $stdout_str
+            stderr: (if $trimmed_err != "" { $"($trimmed_err)\n($timeout_msg)" } else { $timeout_msg })
+            timed_out: true
+        }
+    }
+
+    let exit_code = ($res.exit_code? | default 1)
+    let spawn_err = ($res.spawn_err? | default "")
+    let stderr_str = if $raw_stderr != "" { $raw_stderr } else { $spawn_err }
+    let status = if $exit_code == 0 { "ok" } else { "fail" }
+    print -e (format-progress-done $status $label $elapsed_float)
+
+    {
+        exit_code: $exit_code
+        stdout: $stdout_str
+        stderr: $stderr_str
+        timed_out: false
     }
 }
 
@@ -360,6 +474,23 @@ def provider-prep-argvs [mgr: string, sandbox: string]: nothing -> list<list<str
     | each { |p| [mise trust --yes $p] }
 }
 
+# Warm up sudo before starting live TTY progress; returns true when --no-tty-progress is needed
+export def prepare-sudo-for-progress [needs_sudo: bool, interactive_prompt_risk: bool]: nothing -> bool {
+    if (is-mock-mode) or (($env.YGG_NONINTERACTIVE? | default "") == "1") or (not (is-terminal --stdin)) {
+        return false
+    }
+    if $needs_sudo and ($nu.os-info.family != "windows") {
+        let cached = (try { (^sudo -n true | complete).exit_code == 0 } catch { false })
+        if not $cached {
+            progress-clear-line
+            try { ^sudo -v } catch { }
+            let ok_after = (try { (^sudo -n true | complete).exit_code == 0 } catch { false })
+            if not $ok_after { return true }
+        }
+    }
+    $interactive_prompt_risk
+}
+
 # Run (or mock-log) provider preparation; failures are warnings only
 def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: nothing -> list<string> {
     mut done = []
@@ -368,8 +499,9 @@ def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: n
         if (is-mock-mode) {
             $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
         } else {
-            let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout })
+            let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout --label $"[pkg] ($mgr): trust" })
             if ($r.exit_code != 0) {
+                progress-clear-line
                 print -e $"[ygg] Warning: '($cmd_str)' failed: ($r.stderr | str trim)"
             }
         }
@@ -379,7 +511,7 @@ def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: n
 }
 
 # Execute one install invocation (mock-aware). Returns { ok, reason, stderr }
-def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, timeout: int]: nothing -> record {
+def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, timeout: int, --no-tty-progress]: nothing -> record {
     let cmd_str = ($argv | str join " ")
     if (is-mock-mode) {
         let mock_fails = (csv-env "YGG_MOCK_PKG_FAIL")
@@ -392,7 +524,8 @@ def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, t
         $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
         return { ok: true, reason: "", stderr: "" }
     }
-    let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout })
+    let label = $"[pkg] ($mgr): ($inv_pkgs | str join ', ')"
+    let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout --label $label --no-tty-progress=$no_tty_progress })
     if $r.timed_out {
         return { ok: false, reason: "timeout", stderr: $r.stderr }
     }
@@ -535,7 +668,8 @@ export def install-packages [
         mut mgr_failed = false
         for argv in $argvs {
             let inv_pkgs = (argv-pkgs $mgr $argv $todo)
-            let r = (run-install-argv $mgr $argv $inv_pkgs $timeout)
+            let no_tty = (prepare-sudo-for-progress ($mgr in $SUDO_MGRS) ($mgr == "paru"))
+            let r = (run-install-argv $mgr $argv $inv_pkgs $timeout --no-tty-progress=$no_tty)
             if $r.ok {
                 $executed = ($executed | append ($argv | str join " "))
             } else {
@@ -701,20 +835,23 @@ export def prune-unused-packages [
                 $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
             } else {
                 let timeout = (default-pkg-timeout $mgr)
-                let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout })
+                let no_tty = (prepare-sudo-for-progress ($mgr in $SUDO_MGRS) ($mgr == "paru"))
+                let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout --label $"[pkg] ($mgr): prune ($pkg)" --no-tty-progress=$no_tty })
                 if ($r.exit_code == 0) {
                     $pruned_this_mgr = ($pruned_this_mgr | append $pkg)
                     $executed = ($executed | append $cmd_str)
                     if ($unuse_argv | is-not-empty) {
-                        let r_unuse = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $unuse_argv) $timeout })
+                        let r_unuse = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $unuse_argv) $timeout --label $"[pkg] ($mgr): unuse ($pkg)" })
                         if ($r_unuse.exit_code == 0) {
                             $executed = ($executed | append ($unuse_argv | str join " "))
                         } else {
+                            progress-clear-line
                             print -e $"[ygg] Warning: Failed to unuse '($pkg)' with '($mgr)': ($r_unuse.stderr | str trim)"
                         }
                     }
                 } else {
                     let err_msg = $"Failed to prune '($pkg)' with '($mgr)': ($r.stderr | str trim)"
+                    progress-clear-line
                     print -e $"[ygg] Warning: ($err_msg)"
                     $failed = ($failed | append $"($mgr): ($pkg) - ($r.stderr | str trim)")
                 }

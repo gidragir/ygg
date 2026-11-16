@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-15",
+  "updated_at": "2026-11-16",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml",
@@ -40,7 +40,7 @@
     {
       "id": "docs",
       "name": "Docs",
-      "summary": "Модуль и компоненты директории `docs` (13 файлов)",
+      "summary": "Модуль и компоненты директории `docs` (15 файлов)",
       "l1_path": "subsystems/docs.md",
       "tags": [
         "Generic / Multi-language",
@@ -59,7 +59,9 @@
         "docs/specs/2026-11-08-ygg-engine-improvements-and-hardening.md",
         "docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md",
         "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md",
-        "docs/specs/2026-11-15-ygg-module-containers-design.md"
+        "docs/specs/2026-11-15-ygg-module-containers-design.md",
+        "docs/specs/2026-11-16-ygg-live-progress-design.md",
+        "docs/superpowers/plans/2026-11-16-ygg-live-progress.md"
       ],
       "files": [
         {
@@ -112,6 +114,14 @@
         },
         {
           "path": "docs/specs/2026-11-15-ygg-module-containers-design.md",
+          "is_entrypoint": false
+        },
+        {
+          "path": "docs/specs/2026-11-16-ygg-live-progress-design.md",
+          "is_entrypoint": false
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-16-ygg-live-progress.md",
           "is_entrypoint": false
         }
       ],
@@ -287,8 +297,7 @@
         "export def discard-staged-module [prep: record]: nothing -> nothing",
         "def stage-module [ygg_home: string, source: string, scopes: list<string>, force: bool, read_only: bool]: nothing -> record",
         "export def register-staged-module [ygg_home: string, prep: record, --force]: nothing -> record",
-        "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force, --read-only # never write into YGG_HOME(...); implies --dry-run ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>",
-        "export def remove-module [ygg_home: string, name: string, --sandbox: string = \"\"]: nothing -> nothing"
+        "export def add-module [ ygg_home: string, source: string, --scopes: list<string> = [], --dry-run, --force, --read-only # never write into YGG_HOME(...); implies --dry-run ]: nothing -> record<name: string, path: string, scopes: list<string>, tmp_clone: string>"
       ],
       "summary_source": "heuristic"
     },
@@ -369,7 +378,7 @@
         }
       ],
       "key_symbols": [
-        "export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu * export use container.nu *"
+        "export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu * export use container.nu * export use progress.nu *"
       ],
       "summary_source": "heuristic"
     },
@@ -397,11 +406,38 @@
         "def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string>",
         "def default-pkg-timeout [mgr: string]: nothing -> int",
         "def kill-job-tree [jid: int]: nothing -> nothing",
-        "export def run-with-timeout [argv: list<string>, timeout_sec: int]: nothing -> record",
-        "export def allowed-package-managers [host_os: record]: nothing -> list<string>",
-        "export def missing-package-managers [plan: record]: nothing -> list<string>",
-        "def is-mock-mode []: nothing -> bool",
-        "def csv-env [name: string]: nothing -> list<string>"
+        "export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = \"\" --no-tty-progress ]: nothing -> record"
+      ],
+      "summary_source": "heuristic"
+    },
+    {
+      "id": "src_progress",
+      "name": "Progress",
+      "summary": "Модуль и компоненты директории `src/progress` (1 файлов)",
+      "l1_path": "subsystems/src_progress.md",
+      "tags": [
+        "Generic / Multi-language",
+        "src_progress"
+      ],
+      "key_files": [
+        "src/progress.nu"
+      ],
+      "files": [
+        {
+          "path": "src/progress.nu",
+          "is_entrypoint": false
+        }
+      ],
+      "key_symbols": [
+        "export def is-tty-progress []: nothing -> bool",
+        "export def term-columns []: nothing -> int",
+        "export def sanitize-log-line [line: string]: nothing -> string",
+        "export def read-last-log-line [path: string]: nothing -> string",
+        "export def read-progress-tail [err_path: string, out_path: string]: nothing -> string",
+        "export def progress-clear-line []: nothing -> nothing",
+        "export def format-progress-line [ spinner: string label: string tail: string elapsed_sec: int width: int ]: nothing -> string",
+        "export def format-progress-done [ status: string label: string elapsed_sec: float ]: nothing -> string",
+        "export def progress-step [phase: string, msg: string]: nothing -> nothing"
       ],
       "summary_source": "heuristic"
     },
@@ -482,6 +518,7 @@
         "tests/test_manifest.nu",
         "tests/test_phase2_modules.nu",
         "tests/test_pkg_git.nu",
+        "tests/test_progress.nu",
         "tests/test_release.nu",
         "tests/test_sdk.nu",
         "tests/test_state.nu"
@@ -525,6 +562,10 @@
         },
         {
           "path": "tests/test_pkg_git.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_progress.nu",
           "is_entrypoint": false
         },
         {

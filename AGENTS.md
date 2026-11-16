@@ -18,6 +18,8 @@
 * **План реализации Фазы 4:** [docs/plans/2026-11-10-ygg-phase4-implementation-plan.md](docs/plans/2026-11-10-ygg-phase4-implementation-plan.md)
 * **Спецификация контейнеров модулей (RFC-059):** [docs/specs/2026-11-15-ygg-module-containers-design.md](docs/specs/2026-11-15-ygg-module-containers-design.md)
 * **План реализации контейнеров модулей:** [docs/plans/2026-11-15-ygg-module-containers-plan.md](docs/plans/2026-11-15-ygg-module-containers-plan.md)
+* **Спецификация живого прогресса (RFC-060):** [docs/specs/2026-11-16-ygg-live-progress-design.md](docs/specs/2026-11-16-ygg-live-progress-design.md)
+* **План реализации живого прогресса:** [docs/superpowers/plans/2026-11-16-ygg-live-progress.md](docs/superpowers/plans/2026-11-16-ygg-live-progress.md)
 * **Навыки разработки:**
   - Разработка на Nushell: [.agents/skills/nushell-ygg-dev/SKILL.md](.agents/skills/nushell-ygg-dev/SKILL.md)
   - Тестирование и верификация модулей dotfiles: [.agents/skills/ygg-module-verification/SKILL.md](.agents/skills/ygg-module-verification/SKILL.md)
@@ -30,7 +32,9 @@
    * Ни один тест и ни один отладочный запуск `ygg` в рамках разработки не имеют права читать или модифицировать реальные `~/.ygg`, `~/.config` или `$HOME` рабочей станции.
    * Все тесты обязаны выполняться строго внутри временных каталогов (`with-temp-ygg`), все пути в тестах производны от его аргумента `home`; литеральных `/tmp/...` в `tests/` нет. `with-temp-ygg` задаёт `YGG_HOME`, `YGG_SANDBOX` и `YGG_MOCK_PKG_LOG = ""`; тест, которому нужен мок, задаёт путь лога явно внутри своего временного каталога.
    * `tests/run.nu` запускает каждый тест с очищенным окружением: все унаследованные `YGG_*` скрыты, кроме `YGG_RUN_HOST_E2E`.
+   * **Параллельная изоляция (`par-each --threads 4`):** тесты, проверяющие отсутствие остаточных временных файлов от `mktemp -t`, обязаны запускать проверяемый код в дочернем `^nu` с переопределёнными `TMPDIR`/`TEMP`/`TMP` внутри `with-temp-ygg` и не могут полагаться на глобальный `$nu.temp-dir`. При падении теста запрещено списывать сбой на гонку без проверки воспроизведения через `--filter <name>`.
    * Команды `ygg doctor`, `ygg diff` и `ygg status` строго read-only: им запрещено вызывать `ensure-ygg-dirs`, `mkdir` или `save`.
+   * Статусный/прогресс-вывод CLI направляется строго в `stderr`, отключает управляющие последовательности при отсутствии TTY (`not (is-terminal --stderr)`), `TERM == "dumb"` или `NO_COLOR`, и полностью подавляется во **всех** `--dry-run`/`--read-only` сценариях (включая `add --dry-run`, `upgrade --dry-run`, `apply --dry-run`), `ygg diff`, `ygg status`, `ygg doctor` (запрещены `progress-step`, `--label`, `--progress` и создание `ygg-proc-*.log`).
 
 2. **Чистота ядра `ygg` от личных репозиториев:**
    * Движок `ygg` не должен содержать захардкоженных имён пользовательских модулей (`omni-dotfiles`, `ai-dotfiles`, `hermes` и т.п.) или сторонних утилит (`chezmoi`, `sops`). Вся логика строится строго вокруг контракта `host.toml` и модульного `ygg.toml`.
@@ -44,7 +48,8 @@
    * **Блокировка и журнал:** мутирующие команды берут атомарную advisory-блокировку `$YGG_HOME/.state/host.lock` (`--no-lock` отключает её для песочниц); `apply` ведёт журнал v2 (статус сбоя, восстановление roll-forward повторным выполнением), `doctor --fix` работает под той же блокировкой.
    * **Секреты:** значения внешних секретов не материализуются на диск по умолчанию (ленивое разрешение); схемы секретов читаются только из `secrets.toml` и проверяются до мутаций.
 
-4. **Кроссплатформенность и Windows Non-Admin:**
+4. **Кроссплатформенность и Windows Non-Admin (Обязательный архитектурный гейт):**
+   * **Запрет Unix-only решений в общем контуре:** любые новые фичи ядра `ygg`, модульные паттерны и рекомендуемые внешние CLI-утилиты обязаны работать на всех целевых ОС (**Linux, Windows 11/Server Non-Admin, macOS**). Предлагать или зашивать Unix-only инструменты (`systemd`, `dockcheck`, `podman-auto-update`, `bash`-скрипты) как универсальное решение запрещено — платформозависимые механизмы допустимы строго внутри `[scope.linux]` / `[scope.unix]` при наличии явного эквивалента для `[scope.windows]` либо через единый кроссплатформенный слой (Nushell, кроссплатформенный CLI).
    * Для каталогов на Windows каскадный fallback: `mklink /J` (Junction) -> `mklink /D` (Symlink) -> `cp -r` (`dir_copy`).
    * Для одиночных файлов и секции `[save]` — 3-way hash sync копирование.
    * Для скриптов в `bin/` — автогенерация парных `.cmd`-шиммов с изолирующим `setlocal`.
@@ -54,8 +59,15 @@
    * Предварительная проверка пакетов Arch/CachyOS через `pacman -T` и проверка доступности sudo без пароля в неинтерактивном режиме.
    * Завершение дерева процессов по таймауту (`kill-job-tree` считывает PID до `job kill`).
    * Кэширование хэшей наборов пакетов в `state.hashes` (пропуск при повторном запуске без изменений).
+   * **Контракт `run-with-timeout` и интерактивный ввод:** обёртка сохраняет раздельность `stdout`/`stderr`, не подменяет пустой `stderr` запущенной команды строкой `"External command had a non-zero exit code"`, возвращает `exit_code: 127` при отсутствии бинарника и не считает ненулевой код однозначным провалом до проверки вызывающим кодом (например, `WINGET_OK_CODES`). При таймауте (`exit_code: 124`) сохраняется и накопленный `stderr`, и сообщение о таймауте; при прерывании (`Ctrl+C`) или таймауте гарантированно вызывается `kill-job-tree` и удаляются временные файлы из системного tmp.
+   * **Защита интерактивного `sudo`:** `sudo-available` при TTY `stdin` возвращает `true` даже без кэшированного пароля; перерисовка `\r`-прогресса не должна запускаться поверх команд с возможным запросом пароля (`sudo`, `paru`) без предварительной валидации `sudo -v` или отключения тикера.
 
-6. **Навигация по коду и дрейф через `context-init`:**
+6. **Контейнеры модулей (RFC-059):**
+   * **Декларативность и Compose v2+:** модули объявляют стеки стандартным `compose.yml` (автообнаружение в корне) или `[containers].files` / `[scope.<name>.containers].files`; поддерживается только провайдер Compose v2+ (`docker compose` / `podman compose` с `docker-compose` v2+).
+   * **Защита данных:** ни одна команда ядра не передаёт `-v`, `--volumes` или `--rmi`. Все команды рантайма строятся строго как `list<string>` (argv), пути нормализуются через `path expand -n`.
+   * **Моки в тестах и песочнице:** без `YGG_MOCK_PKG_LOG` в песочнице (`YGG_SANDBOX`) команды контейнеров возвращают `skipped_sandbox`. Для тестов: `YGG_MOCK_CONTAINER_FAIL`, `YGG_MOCK_CONTAINER_STATUS` (`no_runtime` | `daemon_down`), `YGG_MOCK_CONTAINER_RUNNING`, и `YGG_NONINTERACTIVE=1` при `ygg add` без `--containers`/`--no-containers`.
+
+7. **Навигация по коду и дрейф через `context-init`:**
    * Вся навигация по подсистемам репозитория выполняется через MCP `context-init` (`context_get_subsystems`, `context_pack`). Прямое рекурсивное вычитывание файлов ядра запрещено.
    * Перед сдачей задач обязателен аудит дрейфа через `context_check`.
 
@@ -74,17 +86,23 @@
 
 ### ⚡ MCP-First Protocol (context-init)
 
+Во все вызовы передавайте `"path": "<repo_root>"`.
+
 1. `context_get_subsystems` — карта подсистем проекта (L0).
 2. `context_get_subsystem(subsystem_id)` — компактная L1-карточка подсистемы.
-3. `context_pack(subsystem_id, compress=true)` — AST-сжатый код подсистемы.
-4. `context_check` — проверка архитектурного дрейфа перед сдачей задачи.
+3. `context_pack(subsystem_id, mode="toc")` — символы со строками; `context_pack(subsystem_id, compress=true)` — AST-сжатый код (`style="compact"` по умолчанию).
+4. `context_pack(subsystem_id, files=["<file>"], compress=false)` — точный код нужных файлов.
+5. `context_check` — проверка архитектурного дрейфа перед сдачей задачи.
 
-Без доступа к MCP (субагенты, скрипты): `rtk context-init pack <subsystem_id> --compress` и `rtk context-init check --compact`.
+Ответ с `truncated: true` — повторите вызов с `cursor` из футера или сузьте `files`.
+
+Без доступа к MCP (субагенты, скрипты): `rtk context-init pack <subsystem_id> --compress --max-lines 200` (`--toc`, `--files <f> --no-compress`, `--cursor "cur_..."`) и `rtk context-init check --compact`.
 
 ### 📦 Доступные подсистемы:
 - `bin` (Bin) — Модуль и компоненты директории `bin` (1 файлов)
-- `docs` (Docs) — Модуль и компоненты директории `docs` (11 файлов)
+- `docs` (Docs) — Модуль и компоненты директории `docs` (15 файлов)
 - `scripts` (Scripts) — Модуль и компоненты директории `scripts` (3 файлов)
+- `src_container` (Container) — Модуль и компоненты директории `src/container` (1 файлов)
 - `src_doctor` (Doctor) — Модуль и компоненты директории `src/doctor` (1 файлов)
 - `src_env` (Env) — Модуль и компоненты директории `src/env` (1 файлов)
 - `src_git` (Git) — Модуль и компоненты директории `src/git` (1 файлов)
@@ -92,6 +110,7 @@
 - `src_manifest` (Manifest) — Модуль и компоненты директории `src/manifest` (1 файлов)
 - `src_mod` (Mod) — Модуль и компоненты директории `src/mod` (1 файлов)
 - `src_pkg` (Pkg) — Модуль и компоненты директории `src/pkg` (1 файлов)
+- `src_progress` (Progress) — Модуль и компоненты директории `src/progress` (1 файлов)
 - `src_sdk` (Sdk) — Модуль и компоненты директории `src/sdk` (1 файлов)
 - `src_state` (State) — Модуль и компоненты директории `src/state` (1 файлов)
 - `tests` (Tests) — Тесты проекта

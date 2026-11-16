@@ -3,7 +3,7 @@
 
 use ../src *
 
-const YGG_VERSION = "0.1.1"
+const YGG_VERSION = "0.2.0"
 
 # Print ygg version (with short git commit when run from a git checkout)
 def "main version" [] {
@@ -141,6 +141,7 @@ def "main add" [
 
         # RFC-012: stage first (no change to modules/ or host.toml), check the plan with the module
         # as a virtual entry, and register only after pre-flight passed (RFC-020).
+        if not $dry_run { progress-step "ygg" $"adding ($clean_source)" }
         let prep0 = (add-module $ygg_home $clean_source --scopes $all_scopes --dry-run --read-only=$dry_run --force=$force)
         let extra0 = [{ name: $prep0.name, path: $prep0.path, scopes: $all_scopes }]
 
@@ -198,11 +199,13 @@ def "main add" [
         }
 
         let add_res = (register-staged-module $ygg_home $prep --force=$force)
+        progress-clear-line
         print $"Added module ($add_res.name)"
 
         apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox
         release-host-lock $lock_file
     } catch { |e|
+        progress-clear-line
         release-host-lock $lock_file
         error make $e
     }
@@ -226,10 +229,13 @@ def "main remove" [
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
     try {
+        progress-step "ygg" $"removing ($name)"
         remove-module $ygg_home $name --sandbox $sandbox
+        progress-clear-line
         print $"Removed module ($name)"
         release-host-lock $lock_file
     } catch { |e|
+        progress-clear-line
         release-host-lock $lock_file
         error make $e
     }
@@ -322,10 +328,12 @@ def "main upgrade" [
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "upgrade" --no-lock=$no_lock)
     let results = (try {
+        progress-step "containers" "upgrading stacks"
         let r = (upgrade-containers $ygg_home (resolve-effective-plan $ygg_home) $modules --sandbox $sandbox)
         release-host-lock $lock_file
         $r
     } catch { |e|
+        progress-clear-line
         release-host-lock $lock_file
         error make $e
     })
@@ -391,6 +399,7 @@ def apply-plan [
     # On a real run the shadowing warning is printed later by apply-links.
     let resolved = (resolve-link-targets $plan --sandbox=$effective_sandbox)
     let ops = (compute-link-ops $ygg_home $resolved --force=$force --sandbox=$effective_sandbox)
+    if not $dry_run { progress-step "preflight" "checking plan" }
     let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --quiet=(not $dry_run) --sandbox=$effective_sandbox)
     if ($problems | is-not-empty) {
         error make { msg: (format-preflight-errors $problems) }
@@ -491,6 +500,7 @@ def apply-plan [
 
         # 3. Deploy links and file copies (PRUNE first; per-link failures are collected)
         record-journal-step $ygg_home "links" "IN_PROGRESS"
+        progress-step "links" "applying symlinks and copies"
         let link_res = (apply-links $ygg_home $plan --force=$force --sandbox=$effective_sandbox)
         if ($link_res.failed | is-not-empty) {
             record-journal-step $ygg_home "links" "FAILED"
@@ -534,6 +544,7 @@ def apply-plan [
             record-journal-step $ygg_home "containers" "COMMITTED"
         }
 
+        progress-clear-line
         print $"Applied ($mod_count) module\(s\)."
 
         for f in $link_res.failed {
@@ -563,6 +574,7 @@ def apply-plan [
         }
 
         # 7. Finalize (RFC-043)
+        progress-step "finalize" "finalizing state"
         record-journal-step $ygg_home "finalize" "IN_PROGRESS"
         # Rotate old backups and garbage collect orphaned hashes (RFC-028)
         let host_cfg = (try { load-host-config $ygg_home } catch { {} })
@@ -581,6 +593,7 @@ def apply-plan [
         # Commit WAL transaction on clean completion (RFC-043)
         commit-journal-transaction $ygg_home
     } catch { |e|
+        progress-clear-line
         fail-journal-transaction $ygg_home ($e.msg? | default ($e | to text))
         error make $e
     }
@@ -606,6 +619,7 @@ def "main update" [
 
     let lock_file = (acquire-host-lock $ygg_home "update" --no-lock=$no_lock)
     try {
+        progress-step "git" "updating modules"
         let results = (update-modules $ygg_home)
         let failed = ($results | where { |r| $r.status in ["conflict", "error"] })
         if ($failed | is-not-empty) {
@@ -619,6 +633,7 @@ def "main update" [
         apply-plan
         release-host-lock $lock_file
     } catch { |e|
+        progress-clear-line
         release-host-lock $lock_file
         error make $e
     }
