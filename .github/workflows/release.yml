@@ -55,6 +55,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # Release notes = this version's section of CHANGELOG.md (git-cliff, cliff.toml),
+      # not --generate-notes, which only lists merged PRs and misses commits pushed to main
+      - name: Generate release notes
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -69,4 +84,4 @@ jobs:
           if [ "$PRERELEASE" = "true" ]; then
             flags+=(--prerelease)
           fi
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --generate-notes "${flags[@]}"
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" --notes-file RELEASE_NOTES.md "${flags[@]}"
