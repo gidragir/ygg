@@ -1,0 +1,57 @@
+name: Bug
+description: ygg fails, crashes, or does something wrong
+title: "<command>: <what goes wrong>"
+labels: ["type:bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ygg version`
+      placeholder: ygg 0.2.0 (commit 25d6426)
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      multiple: true
+      options:
+        - windows
+        - linux
+        - macos
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: ygg apply -f
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal module/host setup. Use `~` instead of absolute home paths.
+      placeholder: |
+        1. links.toml: `"foo" = "~/.config/foo"` (source `foo` missing)
+        2. `ygg add <module>`
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Error text or relevant output. No secrets, tokens or host.toml contents.
+      render: text

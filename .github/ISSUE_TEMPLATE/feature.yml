@@ -1,0 +1,24 @@
+name: Feature
+description: A new command, flag, manifest section or SDK helper
+title: "<area>: <capability>"
+labels: ["type:feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: The situation where ygg falls short today (what you had to do by hand).
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: Command/flag/section shape. Alternatives are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: platforms
+    attributes:
+      label: Cross-platform notes
+      description: How it works on Linux, Windows (non-admin) and macOS. Unix-only solutions need a Windows equivalent.
