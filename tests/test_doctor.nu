@@ -630,6 +630,14 @@ export def test_doctor_windows_acl_unreadable_warns [] {
     }
 }
 
+# regression: #19
+export def test_select_powershell_prefers_pwsh_and_hides_module_path_for_winps [] {
+    assert equal (select-powershell true true) { bin: "pwsh", hide_module_path: false }
+    assert equal (select-powershell true false) { bin: "pwsh", hide_module_path: false }
+    assert equal (select-powershell false true) { bin: "powershell.exe", hide_module_path: true }
+    assert equal (select-powershell false false) { bin: "", hide_module_path: false }
+}
+
 export def test_windows_acl_sid_parser_case_and_bom [] {
     assert (is-windows-acl-insecure "\u{feff}s-1-1-0|Read|allow")
 }
