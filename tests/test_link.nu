@@ -1284,3 +1284,33 @@ export def test_classify_fs_error_locked_samples [] {
     assert equal (classify-fs-error "No such file or directory (os error 2)") { kind: "other", hint: "" }
     assert ((classify-fs-error "(os error 32)").hint | str contains "re-run ygg apply")
 }
+
+# regression: #22
+export def test_probe_locked_targets_mock [] {
+    with-temp-ygg { |home|
+        let a = ($home | path join "a"); mkdir $a
+        let b = ($home | path join "b.txt"); "x" | save -f $b
+        let c = ($home | path join "c"); mkdir $c
+        let ops = [
+            { op: "BACKUP_REPLACE", dest: $a, module: "m", key: "ka" }
+            { op: "BACKUP_REPLACE", dest: $b, module: "m", key: "kb" }
+            { op: "BACKUP_REPLACE", dest: $c, module: "m", key: "kc" }
+            { op: "LINK", dest: ($home | path join "none"), module: "m", key: "kn" }
+        ]
+        let res = (with-env { YGG_MOCK_LOCKED_PATHS: $" ($a) ,,($b),($home | path join 'none')" } { probe-locked-targets $ops })
+        assert equal ($res | get key | sort) ["ka", "kb"]
+        assert ($res | all { |p| $p.reason == "target_locked" })
+        assert (($a | path exists) and ($b | path exists))
+        assert (ls $home | where name =~ 'ygg-probe' | is-empty)
+    }
+}
+
+export def test_probe_locked_targets_real_rename_restores [] {
+    with-temp-ygg { |home|
+        let d = ($home | path join "d"); mkdir $d; "keep" | save -f ($d | path join "f.txt")
+        let res = (with-env { YGG_HOST_OS_OVERRIDE: "windows" } { probe-locked-targets [{ op: "BACKUP_REPLACE", dest: $d, module: "m", key: "k" }] })
+        assert equal $res []
+        assert equal (open --raw ($d | path join "f.txt")) "keep"
+        assert (ls $home | where name =~ 'ygg-probe' | is-empty)
+    }
+}

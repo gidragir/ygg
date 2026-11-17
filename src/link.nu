@@ -590,6 +590,62 @@ def append-lock-hint [dest: string, err: string, dir_target: bool]: nothing -> s
     }
 }
 
+# Probe BACKUP_REPLACE targets for active file/directory locks on Windows before mutating the host (#22)
+export def probe-locked-targets [ops: table]: nothing -> list<record<module: string, key: string, reason: string, detail: string>> {
+    let mock_raw = ($env.YGG_MOCK_LOCKED_PATHS? | default "")
+    let has_mock = (($mock_raw | str trim) != "")
+    if (not $has_mock) and (not (fs-windows)) {
+        return []
+    }
+    let mock_list = if $has_mock {
+        $mock_raw | split row "," | each { |p| $p | str trim } | where { |p| $p != "" } | each { |p| normalize-case $p }
+    } else {
+        []
+    }
+    mut problems = []
+    for row in ($ops | where { |o| $o.op == "BACKUP_REPLACE" }) {
+        let dest = $row.dest
+        let pt = (try { $dest | path type } catch { null })
+        if ($pt not-in ["file", "dir"]) or (is-link-or-junction $dest) {
+            continue
+        }
+        if $has_mock {
+            if ((normalize-case $dest) in $mock_list) {
+                $problems = ($problems | append {
+                    module: $row.module
+                    key: $row.key
+                    reason: "target_locked"
+                    detail: ("'" + $dest + "' is in use by another process (mock) — close the program using it and re-run ygg apply")
+                })
+            }
+            continue
+        }
+        let probe = ($dest + ".ygg-probe-" + (random chars --length 8))
+        let mv_err = (try {
+            mv $dest $probe
+            ""
+        } catch { |e|
+            $e.msg | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default "locked" | str trim
+        })
+        if $mv_err != "" {
+            $problems = ($problems | append {
+                module: $row.module
+                key: $row.key
+                reason: "target_locked"
+                detail: ("'" + $dest + "' is in use by another process (" + $mv_err + ") — close the program using it and re-run ygg apply")
+            })
+            continue
+        }
+        try {
+            mv $probe $dest
+        } catch { |e|
+            let back_err = ($e.msg | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default $e.msg | str trim)
+            error make { msg: ("lock probe: '" + $dest + "' is now at '" + $probe + "' and could not be moved back (" + $back_err + "); restore it manually: move \"" + $probe + "\" \"" + $dest + "\"") }
+        }
+    }
+    $problems
+}
+
 export def apply-links [
     ygg_home: string,
     plan: record,
