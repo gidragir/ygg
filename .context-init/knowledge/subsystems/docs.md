@@ -2,8 +2,8 @@
 directory: docs
 source:
   kind: git
-  blob_sha: e4c4b66aba182072d4edd1d04f2c925bdb39a9bd
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  blob_sha: 07c58eecf92449b418152fe32aefea2da40b0bba
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -26,7 +26,6 @@ freshness:
 
 | Файл | Статус |
 | :--- | :--- |
-| `docs/bugs/2026-11-12-phase4-open-defects.md` | Исходный код |
 | `docs/plans/2026-11-07-ygg-phase1-engine.md` | Исходный код |
 | `docs/plans/2026-11-08-ygg-engine-improvements-and-hardening.md` | Исходный код |
 | `docs/plans/2026-11-08-ygg-phase2-engine-fixes.md` | Исходный код |
@@ -39,8 +38,9 @@ freshness:
 | `docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md` | Исходный код |
 | `docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md` | Исходный код |
 | `docs/specs/2026-11-15-ygg-module-containers-design.md` | Исходный код |
-| `docs/specs/2026-11-16-ygg-live-progress-design.md` | Исходный код |
+| `docs/specs/2026-11-17-ygg-module-lint-and-ci-design.md` | Исходный код |
 | `docs/superpowers/plans/2026-11-16-ygg-live-progress.md` | Исходный код |
+| `docs/superpowers/plans/2026-11-17-ygg-apply-output-and-windows-fixes.md` | Исходный код |
 
 ## 🔑 Ключевой контракт и экспорты
 ```text
@@ -58,5 +58,5 @@ export def test_load_host_config_rejects_broken_toml []
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

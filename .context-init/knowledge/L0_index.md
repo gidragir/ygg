@@ -1,6 +1,6 @@
 # 🗺 Карта архитектуры: ygg (L0)
 
-> **Стек:** Generic / Multi-language | **Обновлено:** 2026-11-16
+> **Стек:** Generic / Multi-language | **Обновлено:** 2026-11-17
 > **Описание:** > **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**
 
 ## 🚪 Точки входа (Root Entrypoints)
@@ -8,6 +8,9 @@
 
 ## ⚡️ Быстрые команды
 ```bash
+# Тесты
+rtk mise run test
+
 ```
 
 ## 🧩 Каталог подсистем (L1)
@@ -19,6 +22,7 @@
 | **Scripts** | Модуль и компоненты директории `scripts` (3 файлов) | `-` | [subsystems/scripts.md](subsystems/scripts.md) |
 | **Container** | Модуль и компоненты директории `src/container` (1 файлов) | `-` | [subsystems/src_container.md](subsystems/src_container.md) |
 | **Doctor** | Модуль и компоненты директории `src/doctor` (1 файлов) | `-` | [subsystems/src_doctor.md](subsystems/src_doctor.md) |
+| **Engine** | Модуль и компоненты директории `src/engine` (1 файлов) | `-` | [subsystems/src_engine.md](subsystems/src_engine.md) |
 | **Env** | Модуль и компоненты директории `src/env` (1 файлов) | `-` | [subsystems/src_env.md](subsystems/src_env.md) |
 | **Git** | Модуль и компоненты директории `src/git` (1 файлов) | `-` | [subsystems/src_git.md](subsystems/src_git.md) |
 | **Link** | Модуль и компоненты директории `src/link` (1 файлов) | `-` | [subsystems/src_link.md](subsystems/src_link.md) |

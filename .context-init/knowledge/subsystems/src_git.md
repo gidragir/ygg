@@ -3,7 +3,7 @@ directory: src/git.nu
 source:
   kind: git
   blob_sha: 2140e150f8d2e3e70ad36c80787f62bb1bd6dc4d
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -41,5 +41,5 @@ export def add-module [ ygg_home: string, source: string, --scopes: list<string>
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

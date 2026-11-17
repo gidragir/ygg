@@ -3,7 +3,7 @@ directory: src/manifest.nu
 source:
   kind: git
   blob_sha: 977d2ff0be78d3d99ea4aa8356453bf45e448616
-  commit_sha: dadd7fbef08ba0f3acd485efe55cd76931159055
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -39,5 +39,5 @@ export def load-module-manifest [mod_dir: string]: nothing -> record
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

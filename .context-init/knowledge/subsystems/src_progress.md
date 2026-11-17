@@ -2,8 +2,8 @@
 directory: src/progress.nu
 source:
   kind: git
-  blob_sha: 9cc65c797f84d44e2636af17e490f31166708a09
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  blob_sha: 5b168b05996f988f1c47690a1f50c22ac90a196a
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -39,9 +39,10 @@ export def progress-clear-line []: nothing -> nothing
 export def format-progress-line [ spinner: string label: string tail: string elapsed_sec: int width: int ]: nothing -> string
 export def format-progress-done [ status: string label: string elapsed_sec: float ]: nothing -> string
 export def progress-step [phase: string, msg: string]: nothing -> nothing
+export def hook-warnings [hooks: list<record>]: nothing -> list<record<source: string, module: string, item: string, message: string>>
 ```
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

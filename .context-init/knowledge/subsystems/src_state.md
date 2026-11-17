@@ -2,8 +2,8 @@
 directory: src/state.nu
 source:
   kind: git
-  blob_sha: 86ccce518c5ac3ee0f04998281cd4b9763f43aaf
-  commit_sha: dadd7fbef08ba0f3acd485efe55cd76931159055
+  blob_sha: 0d71e0cf7201616b31121c575c3bb89070865b90
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -37,10 +37,11 @@ export def load-state [ygg_home: string]: nothing -> record
 export def save-state [ygg_home: string, state: record]: nothing -> nothing
 export def fs-windows []: nothing -> bool
 export def detect-host-os []: nothing -> record<os: string, distro: string, auto_scopes: list<string>>
+def is-path-under [path: string, base: string]: nothing -> bool
 export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothing -> string
 ```
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

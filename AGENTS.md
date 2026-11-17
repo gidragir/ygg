@@ -120,6 +120,7 @@
 - `scripts` (Scripts) — Модуль и компоненты директории `scripts` (3 файлов)
 - `src_container` (Container) — Модуль и компоненты директории `src/container` (1 файлов)
 - `src_doctor` (Doctor) — Модуль и компоненты директории `src/doctor` (1 файлов)
+- `src_engine` (Engine) — Модуль и компоненты директории `src/engine` (1 файлов)
 - `src_env` (Env) — Модуль и компоненты директории `src/env` (1 файлов)
 - `src_git` (Git) — Модуль и компоненты директории `src/git` (1 файлов)
 - `src_link` (Link) — Модуль и компоненты директории `src/link` (1 файлов)

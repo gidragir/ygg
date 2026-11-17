@@ -3,12 +3,20 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-16",
+  "updated_at": "2026-11-17",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml"
   ],
-  "commands": {},
+  "commands": {
+    "test": "rtk mise run test",
+    "custom": {
+      "test-phase2": "rtk mise run test-phase2",
+      "release-tag": "rtk mise run release-tag",
+      "release": "rtk mise run release",
+      "changelog": "rtk mise run changelog"
+    }
+  },
   "subsystems": [
     {
       "id": "bin",
@@ -46,7 +54,6 @@
         "docs"
       ],
       "key_files": [
-        "docs/bugs/2026-11-12-phase4-open-defects.md",
         "docs/plans/2026-11-07-ygg-phase1-engine.md",
         "docs/plans/2026-11-08-ygg-engine-improvements-and-hardening.md",
         "docs/plans/2026-11-08-ygg-phase2-engine-fixes.md",
@@ -59,14 +66,11 @@
         "docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md",
         "docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md",
         "docs/specs/2026-11-15-ygg-module-containers-design.md",
-        "docs/specs/2026-11-16-ygg-live-progress-design.md",
-        "docs/superpowers/plans/2026-11-16-ygg-live-progress.md"
+        "docs/specs/2026-11-17-ygg-module-lint-and-ci-design.md",
+        "docs/superpowers/plans/2026-11-16-ygg-live-progress.md",
+        "docs/superpowers/plans/2026-11-17-ygg-apply-output-and-windows-fixes.md"
       ],
       "files": [
-        {
-          "path": "docs/bugs/2026-11-12-phase4-open-defects.md",
-          "is_entrypoint": false
-        },
         {
           "path": "docs/plans/2026-11-07-ygg-phase1-engine.md",
           "is_entrypoint": false
@@ -116,11 +120,15 @@
           "is_entrypoint": false
         },
         {
-          "path": "docs/specs/2026-11-16-ygg-live-progress-design.md",
+          "path": "docs/specs/2026-11-17-ygg-module-lint-and-ci-design.md",
           "is_entrypoint": false
         },
         {
           "path": "docs/superpowers/plans/2026-11-16-ygg-live-progress.md",
+          "is_entrypoint": false
+        },
+        {
+          "path": "docs/superpowers/plans/2026-11-17-ygg-apply-output-and-windows-fixes.md",
           "is_entrypoint": false
         }
       ],
@@ -168,10 +176,15 @@
       ],
       "key_symbols": [
         "export PATH=\"$HOME/.local/bin:$PATH\" # 2. Check or install mise(...) if ! command -v mise >/dev/null 2>&1; then echo \"==> mise not found, installing mise (user-space)...\" curl -fsSL https://mise.run | sh fi # Activate mise shims in current subshell if command -v mise >/dev/nul...",
-        "export def read-ygg-version [file: string]: nothing -> string",
-        "export def release-tag-error [tag: string, version: string]: nothing -> string",
+        "export use ../src/engine.nu [read-ygg-version] const SEMVER = '^(...)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(-[0-9A-Za-z.-]+)?$' # \"\" when `tag` is a v<semver> tag for `version`, otherwise the reason it is not export def release-tag-error [tag: string, version: string]: nothing -> string",
         "export def is-prerelease [tag: string]: nothing -> bool",
-        "def main [tag: string]"
+        "export def normalize-version [raw: string]: nothing -> string",
+        "export def set-ygg-version [content: string, version: string]: nothing -> string",
+        "def repo-root []: nothing -> string",
+        "def git [root: string, ...args: string]: nothing -> record",
+        "def git-ok [root: string, ...args: string]: nothing -> string",
+        "def fail [msg: string]",
+        "def assert-clean [root: string]"
       ],
       "summary_source": "heuristic"
     },
@@ -235,7 +248,37 @@
         "def check-state-orphans [state: record, host_modules: list<string>]: nothing -> list<record>",
         "def check-sync [state: record]: nothing -> list<record>",
         "export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool",
-        "def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string>"
+        "export def select-powershell [has_pwsh: bool, has_winps: bool]: nothing -> record<bin: string, hide_module_path: bool>"
+      ],
+      "summary_source": "heuristic"
+    },
+    {
+      "id": "src_engine",
+      "name": "Engine",
+      "summary": "Модуль и компоненты директории `src/engine` (1 файлов)",
+      "l1_path": "subsystems/src_engine.md",
+      "tags": [
+        "Generic / Multi-language",
+        "src_engine"
+      ],
+      "key_files": [
+        "src/engine.nu"
+      ],
+      "files": [
+        {
+          "path": "src/engine.nu",
+          "is_entrypoint": false
+        }
+      ],
+      "key_symbols": [
+        "export def read-ygg-version [file: string]: nothing -> string",
+        "export def latest-stable-tag [tags: list<string>]: nothing -> string",
+        "export def parse-remote-tags [output: string]: nothing -> list<string>",
+        "def git-out [dir: string, ...args: string]: nothing -> record",
+        "def engine-version-or-unknown [engine_dir: string]: nothing -> string",
+        "def assert-engine-checkout [engine_dir: string]: nothing -> nothing",
+        "export def engine-check-update [engine_dir: string]: nothing -> record<current: string, latest: string, update_available: bool>",
+        "export def engine-self-update [ engine_dir: string, --channel: string = \"stable\" # stable: latest v<semver> tag; main: tip of origin/main ]: nothing -> record<status: string, channel: string, ref: string, from: string, to: string>"
       ],
       "summary_source": "heuristic"
     },
@@ -377,7 +420,7 @@
         }
       ],
       "key_symbols": [
-        "export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu * export use container.nu * export use progress.nu *"
+        "export use state.nu * export use manifest.nu * export use link.nu * export use sdk.nu * export use env.nu * export use pkg.nu * export use git.nu * export use doctor.nu * export use container.nu * export use progress.nu * export use engine.nu *"
       ],
       "summary_source": "heuristic"
     },
@@ -405,7 +448,7 @@
         "def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string>",
         "def default-pkg-timeout [mgr: string]: nothing -> int",
         "def kill-job-tree [jid: int]: nothing -> nothing",
-        "export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = \"\" --no-tty-progress ]: nothing -> record"
+        "export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = \"\" --no-tty-progress --soft-fail ]: nothing -> record"
       ],
       "summary_source": "heuristic"
     },
@@ -436,7 +479,8 @@
         "export def progress-clear-line []: nothing -> nothing",
         "export def format-progress-line [ spinner: string label: string tail: string elapsed_sec: int width: int ]: nothing -> string",
         "export def format-progress-done [ status: string label: string elapsed_sec: float ]: nothing -> string",
-        "export def progress-step [phase: string, msg: string]: nothing -> nothing"
+        "export def progress-step [phase: string, msg: string]: nothing -> nothing",
+        "export def hook-warnings [hooks: list<record>]: nothing -> list<record<source: string, module: string, item: string, message: string>>"
       ],
       "summary_source": "heuristic"
     },
@@ -492,6 +536,7 @@
         "export def save-state [ygg_home: string, state: record]: nothing -> nothing",
         "export def fs-windows []: nothing -> bool",
         "export def detect-host-os []: nothing -> record<os: string, distro: string, auto_scopes: list<string>>",
+        "def is-path-under [path: string, base: string]: nothing -> bool",
         "export def expand-target-path [raw_path: string, --sandbox: string = \"\"]: nothing -> string"
       ],
       "summary_source": "heuristic"
@@ -507,40 +552,49 @@
         "tests"
       ],
       "key_files": [
-        "tests/helpers.nu",
-        "tests/run.nu",
-        "tests/test_cli_e2e.nu",
         "tests/test_container.nu",
         "tests/test_doctor.nu",
+        "tests/test_e2e_apply.nu",
+        "tests/test_e2e_cli_core.nu",
+        "tests/test_e2e_completions.nu",
+        "tests/test_e2e_containers.nu",
+        "tests/test_e2e_modules.nu",
         "tests/test_env.nu",
         "tests/test_link.nu",
         "tests/test_manifest.nu",
         "tests/test_phase2_modules.nu",
         "tests/test_pkg_git.nu",
         "tests/test_progress.nu",
-        "tests/test_release.nu",
         "tests/test_sdk.nu",
         "tests/test_state.nu"
       ],
       "files": [
-        {
-          "path": "tests/helpers.nu",
-          "is_entrypoint": false
-        },
-        {
-          "path": "tests/run.nu",
-          "is_entrypoint": false
-        },
-        {
-          "path": "tests/test_cli_e2e.nu",
-          "is_entrypoint": false
-        },
         {
           "path": "tests/test_container.nu",
           "is_entrypoint": false
         },
         {
           "path": "tests/test_doctor.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_e2e_apply.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_e2e_cli_core.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_e2e_completions.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_e2e_containers.nu",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/test_e2e_modules.nu",
           "is_entrypoint": false
         },
         {
@@ -565,10 +619,6 @@
         },
         {
           "path": "tests/test_progress.nu",
-          "is_entrypoint": false
-        },
-        {
-          "path": "tests/test_release.nu",
           "is_entrypoint": false
         },
         {

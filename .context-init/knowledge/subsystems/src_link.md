@@ -2,8 +2,8 @@
 directory: src/link.nu
 source:
   kind: git
-  blob_sha: 58cd6a2034647dd98a13fee4ae5fda044b5ebb58
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  blob_sha: 83547a4bbb09f518ae7d83f9b6326ac6b3a17862
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -43,5 +43,5 @@ export def resolve-link-targets [ plan: record, --sandbox: string = "" ]: nothin
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

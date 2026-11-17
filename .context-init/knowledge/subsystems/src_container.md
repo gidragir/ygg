@@ -3,7 +3,7 @@ directory: src/container.nu
 source:
   kind: git
   blob_sha: fc49fca40f40661e16999ad9a4e93bc40cbd6305
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -44,5 +44,5 @@ def probe-runtime [rt: string]: nothing -> record<runtime: string, status: strin
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

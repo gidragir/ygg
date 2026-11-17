@@ -2,15 +2,15 @@
 directory: tests
 source:
   kind: git
-  blob_sha: df44403422ddcb3698c94b7e5fc3a6872d92ac04
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  blob_sha: 1b24506f9f1fd12af2304ead7eb8c58eb12c3971
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
   model: none
 freshness:
-  total_entries: 14
-  sampled_entries: 14
+  total_entries: 15
+  sampled_entries: 15
   unsampled_entries: 0
   pending_child_changes: 0
 ---
@@ -26,22 +26,23 @@ freshness:
 
 | Файл | Статус |
 | :--- | :--- |
-| `tests/helpers.nu` | Исходный код |
-| `tests/run.nu` | Исходный код |
-| `tests/test_cli_e2e.nu` | Исходный код |
 | `tests/test_container.nu` | Исходный код |
 | `tests/test_doctor.nu` | Исходный код |
+| `tests/test_e2e_apply.nu` | Исходный код |
+| `tests/test_e2e_cli_core.nu` | Исходный код |
+| `tests/test_e2e_completions.nu` | Исходный код |
+| `tests/test_e2e_containers.nu` | Исходный код |
+| `tests/test_e2e_modules.nu` | Исходный код |
 | `tests/test_env.nu` | Исходный код |
 | `tests/test_link.nu` | Исходный код |
 | `tests/test_manifest.nu` | Исходный код |
 | `tests/test_phase2_modules.nu` | Исходный код |
 | `tests/test_pkg_git.nu` | Исходный код |
 | `tests/test_progress.nu` | Исходный код |
-| `tests/test_release.nu` | Исходный код |
 | `tests/test_sdk.nu` | Исходный код |
 | `tests/test_state.nu` | Исходный код |
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

@@ -2,8 +2,8 @@
 directory: src/sdk.nu
 source:
   kind: git
-  blob_sha: 2c3ec05e1c8be65e77981dc1fc0633732e721780
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  blob_sha: 838e226257e422871d9f2141398f8658a1eaa0d1
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -38,5 +38,5 @@ export def merge-json [ src_fragment: string, dest_json: string, --mode: string 
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

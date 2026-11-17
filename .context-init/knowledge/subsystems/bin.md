@@ -2,8 +2,8 @@
 directory: bin/ygg.nu
 source:
   kind: git
-  blob_sha: 1021c47e5374159174352b003b8959c4d21fe1da
-  commit_sha: 23920184815ab8144336b355ca51148c6577d991
+  blob_sha: 676c563c99167dc1303c8f39b46f547d73857553
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -38,5 +38,5 @@ def "main add" [ source: string, # Local directory or git URL of the module(...)
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```

@@ -3,7 +3,7 @@ directory: src/env.nu
 source:
   kind: git
   blob_sha: c4b9b010e78cf763001e08d43c38bdf9fd309274
-  commit_sha: e1466886272809a25ea67f71ff1481772a1c14a2
+  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
 generated_by:
   component: context-init
   role: update
@@ -44,5 +44,5 @@ export def secret-provider-argv [kind: string, ref: string]: nothing -> list<str
 
 ## 🧪 Запуск и тестирование
 ```bash
-# Проверьте общие тесты проекта
+rtk mise run test
 ```
