@@ -3,7 +3,7 @@
 
 use ../src *
 
-const YGG_VERSION = "0.2.0"
+const YGG_VERSION = "0.3.0"
 
 # Print ygg version (with short git commit when run from a git checkout)
 def "main version" [] {
