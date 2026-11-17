@@ -161,6 +161,20 @@ export def detect-host-os []: nothing -> record<os: string, distro: string, auto
     }
 }
 
+def is-path-under [path: string, base: string]: nothing -> bool {
+    if ($base == "") {
+        return false
+    }
+    let sep = (char path_sep)
+    let p_norm = if ($nu.os-info.family == "windows") { ($path | str lowercase) } else { $path }
+    let b_raw = if ($nu.os-info.family == "windows") { ($base | str lowercase) } else { $base }
+    let b_clean = ($b_raw | str trim -r -c "/" | str trim -r -c "\\")
+    if ($b_clean == "") or ($b_clean =~ '^[a-z]:$') {
+        return false
+    }
+    ($p_norm == $b_clean) or ($p_norm | str starts-with $"($b_clean)($sep)")
+}
+
 # Expand target paths with support for ~, $APPDATA, $LOCALAPPDATA, $DOCUMENTS
 # and full re-rooting inside sandbox when specified or YGG_SANDBOX is set
 export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothing -> string {
@@ -236,7 +250,26 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
     if ($sb != "") {
         let home = ("~" | path expand)
         let exp = ($raw_path | path expand -n)
-        if ($exp | str starts-with $home) {
+        let sb_exp = ($sb | path expand -n)
+        let ygg_home_exp = if (($env.YGG_HOME? | default "") != "") {
+            ($env.YGG_HOME | path expand -n)
+        } else {
+            ""
+        }
+        let temp_bases = ([
+            ($env.TEMP? | default ""),
+            ($env.TMP? | default ""),
+            ($env.TMPDIR? | default ""),
+            ($env.RUNNER_TEMP? | default "")
+        ] | where { |d| $d != "" } | each { |d| $d | path expand -n } | uniq)
+
+        let in_excluded_base = (
+            (is-path-under $exp $sb_exp)
+            or (is-path-under $exp $ygg_home_exp)
+            or ($temp_bases | any { |t| is-path-under $exp $t })
+        )
+
+        if (not $in_excluded_base) and (is-path-under $exp $home) {
             let rel = ($exp | str substring (($home | str length)..) | str trim -c "/" | str trim -c "\\")
             return ($sb | path join $rel)
         }

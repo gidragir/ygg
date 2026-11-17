@@ -1,7 +1,7 @@
 # tests/test_state.nu
 use std/assert
 use ../src/state.nu *
-use helpers.nu [with-temp-ygg]
+use helpers.nu [with-temp-ygg, test-link-dir]
 
 export def test_state_roundtrip_and_dirs [] {
     with-temp-ygg { |home|
@@ -111,7 +111,7 @@ export def test_to_win32_path_preserves_symlink_and_replaces_slashes [] {
         let real_dir = ($home | path join "real_dir")
         let link_dir = ($home | path join "lnk")
         mkdir $real_dir
-        ^ln -s $real_dir $link_dir
+        test-link-dir $real_dir $link_dir
 
         let win_p = (to-win32-path $link_dir)
         assert (not ($win_p | str contains "/"))

@@ -74,3 +74,31 @@ export def test-dangling-link [target: string, dest: string]: nothing -> nothing
 export def safe-glob [pattern: string]: nothing -> list<string> {
     glob ($pattern | str replace --all '\' '/')
 }
+
+export def snapshot-tree [root: string]: nothing -> list<string> {
+    if not ($root | path exists) {
+        return []
+    }
+    mut out = []
+    for it in (ls -la $root | sort-by name) {
+        let rel = ($it.name | path relative-to $root)
+        if ($it.type == "symlink") {
+            $out = ($out | append $"L ($rel) -> ($it.target)")
+        } else if ($it.type == "dir") {
+            $out = ($out | append $"D ($rel) ($it.mode? | default '')")
+            $out = ($out | append (snapshot-tree $it.name | each { |l| $l | str replace --regex '^(\w) ' ('$1 ' + $rel + '/') }))
+        } else {
+            $out = ($out | append $"F ($rel) ($it.mode? | default '') (open --raw $it.name | hash sha256)")
+        }
+    }
+    $out
+}
+
+export def snapshot-all [home: string, sb: string]: nothing -> record {
+    let state_file = ($home | path join ".state" "state.json")
+    {
+        sandbox: (snapshot-tree $sb),
+        state: (if ($state_file | path exists) { open --raw $state_file | hash sha256 } else { "" }),
+        backups: (snapshot-tree ($home | path join ".state" "backups"))
+    }
+}
