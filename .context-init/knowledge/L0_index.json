@@ -6,8 +6,7 @@
   "updated_at": "2026-11-16",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
-    "mise.toml",
-    "justfile"
+    "mise.toml"
   ],
   "commands": {},
   "subsystems": [

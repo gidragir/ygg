@@ -27,16 +27,11 @@ jobs:
         with:
           version: '0.116.1'
 
-      - name: Setup Just
-        uses: extractions/setup-just@v4
-
       - name: Verify tools
-        run: |
-          nu --version
-          just --version
+        run: nu --version
 
       - name: Run test suite
-        run: just test
+        run: nu tests/run.nu
 
       - name: Verify core purity
         shell: nu {0}

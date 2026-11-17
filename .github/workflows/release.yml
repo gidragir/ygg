@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes a GitHub Release for a pushed v<semver> tag after the full test matrix passes.
-# Steps: bump YGG_VERSION in bin/ygg.nu, run `just changelog`, merge to main, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+# Steps: bump YGG_VERSION in bin/ygg.nu, run `mise run changelog`, merge to main, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
 on:
   push:
     tags: [ "v*" ]

@@ -5,7 +5,6 @@
 
 ## 🚪 Точки входа (Root Entrypoints)
 - `mise.toml`
-- `justfile`
 
 ## ⚡️ Быстрые команды
 ```bash

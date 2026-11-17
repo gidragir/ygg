@@ -79,5 +79,5 @@ rtk nu tests/test_phase2_modules.nu
 Перед фиксацией любых изменений в ядре `ygg`:
 
 ```bash
-rtk just test
+rtk mise run test
 ```
