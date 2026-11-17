@@ -10,5 +10,6 @@
 | Корректность и безопасность (RFC-041..058) | [2026-11-10-ygg-phase4-correctness-and-security-hardening](specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md) | [фаза 4](plans/2026-11-10-ygg-phase4-implementation-plan.md) |
 | Контейнеры модулей (RFC-059) | [2026-11-15-ygg-module-containers-design](specs/2026-11-15-ygg-module-containers-design.md) | [контейнеры](plans/2026-11-15-ygg-module-containers-plan.md) |
 | Живой прогресс (RFC-060) | [2026-11-16-ygg-live-progress-design](specs/2026-11-16-ygg-live-progress-design.md) | [прогресс](superpowers/plans/2026-11-16-ygg-live-progress.md) ([промпт](superpowers/prompts/2026-11-16-ygg-live-progress-prompt.md), [отчёт](superpowers/reports/2026-11-16-rfc060-live-progress-report.md)) |
+| Проверка модулей: `ygg lint` и CI модулей (RFC-062) | [2026-11-17-ygg-module-lint-and-ci-design](specs/2026-11-17-ygg-module-lint-and-ci-design.md) | — |
 
 Журнал изменений — [CHANGELOG.md](../CHANGELOG.md), собирается `mise run changelog` из коммитов.
