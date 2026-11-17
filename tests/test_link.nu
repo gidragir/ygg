@@ -1274,3 +1274,13 @@ os = ["linux"]
         assert (is-link-or-junction $dir_dest)
     }
 }
+
+# regression: #22
+export def test_classify_fs_error_locked_samples [] {
+    assert equal (classify-fs-error "The process cannot access the file because it is being used by another process. (os error 32)").kind "locked"
+    assert equal (classify-fs-error "lock violation (os error 33)").kind "locked"
+    assert equal (classify-fs-error "Access is denied. (os error 5)").kind "other"
+    assert equal (classify-fs-error "Access is denied. (os error 5)" --dir-target).kind "locked"
+    assert equal (classify-fs-error "No such file or directory (os error 2)") { kind: "other", hint: "" }
+    assert ((classify-fs-error "(os error 32)").hint | str contains "re-run ygg apply")
+}
