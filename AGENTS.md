@@ -23,7 +23,7 @@
 * **Навыки разработки:**
   - Разработка на Nushell: [.agents/skills/nushell-ygg-dev/SKILL.md](.agents/skills/nushell-ygg-dev/SKILL.md)
   - Тестирование и верификация модулей dotfiles: [.agents/skills/ygg-module-verification/SKILL.md](.agents/skills/ygg-module-verification/SKILL.md)
-  - Фиксация проблем в GitHub Issues и поиск истории перед фиксом: [.agents/skills/ygg-report/SKILL.md](.agents/skills/ygg-report/SKILL.md)
+  - Фиксация проблем в GitHub Issues: [.agents/skills/ygg-report/SKILL.md](.agents/skills/ygg-report/SKILL.md)
 * **Журнал изменений:** [CHANGELOG.md](CHANGELOG.md) — генерируется `mise run changelog` (git-cliff, [cliff.toml](cliff.toml)), руками не правится.
 
 ---
@@ -31,8 +31,9 @@
 ## 🐞 1a. Баги, бэклог и история решений
 
 * **Бэклог — GitHub Issues** (`gidragir/ygg`, публичный). Новые наблюдения, ошибки и идеи заводятся через навык `ygg-report` (атомарные issues, метки `type:*` / `area:*` / `os:*`, нормализация приватных путей, создание только после подтверждения пользователя). Офлайн — `docs/bugs/inbox.md` (в `.gitignore`).
-* **Перед фиксом или спекой** по issue `#N` или области `area:X` агент читает историю: `gh issue view N --comments`, `gh issue list --state all --label area:X`, `git log --grep "#N"`. Спека по issue указывает его в шапке (`Issues: #N`).
-* **DoD фикса:** регрессионный тест с комментарием `# regression: #N` и коммит с футером `Fixes #N` (не в заголовке). `CHANGELOG.md` собирается из коммитов перед релизом.
+* **Выбор задачи:** доска `ygg project` (#5) — `gh project item-list 5 --owner gidragir --format json --limit 100`, сначала меньший `Priority`, затем меньший `Size`.
+* **Перед фиксом или спекой** по issue `#N` или области `area:X` агент читает историю: `gh issue view N --comments`, `gh issue list --state all --label area:X`, `git log --grep "#N"`, `git log --oneline -- src/<file>.nu`, `rg -n "regression: #" tests`. Спека по issue указывает его в шапке (`Issues: #N`).
+* **DoD фикса:** регрессионный тест с комментарием `# regression: #N` и коммит с футером `Fixes #N` — только в футере, иначе git-cliff не подставит ссылку; несколько issue — по строке на каждый, упоминание без закрытия — `Refs #N`. `CHANGELOG.md` руками не правится: перед релизом его собирает `mise run changelog`.
 
 ### 🔀 Регламент работы с PR и тестами
 
