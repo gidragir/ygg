@@ -3,8 +3,17 @@ name: CI
 on:
   push:
     branches: [ main, "feat/*", "fix/*", "stage*" ]
+    # Docs-only changes do not need the test matrix; release.yml (workflow_call) still runs it in full
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.context-init/**'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - '.context-init/**'
   # Reused by release.yml: a tag is published only after the full matrix passes
   workflow_call:
 
