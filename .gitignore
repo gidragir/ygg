@@ -27,3 +27,6 @@ kanban.db
 
 # Local bug inbox (offline capture for the ygg-report skill; triaged into GitHub Issues)
 docs/bugs/
+
+# Local Claude Code junction to .agents/skills (not portable, not committed)
+.claude/
