@@ -91,7 +91,17 @@ export def test_merge_json_missing_and_symlink_target [] {
         '{"plugins":{"a":true},"ui":{"font":14}}' | save -f $frag
         '{"session":"secret-token","ui":{"theme":"dark"}}' | save -f $dummy
         mkdir ($live | path dirname)
-        ^ln -s $dummy $live
+        if ($nu.os-info.family == "windows") {
+            let win_live = ($live | path expand -n | str replace --all "/" "\\")
+            let win_dummy = ($dummy | path expand -n | str replace --all "/" "\\")
+            let res = (^cmd /c mklink $win_live $win_dummy | complete)
+            if $res.exit_code != 0 {
+                # Non-Admin Windows without Developer Mode cannot create file symlinks
+                return
+            }
+        } else {
+            ^ln -s $dummy $live
+        }
 
         merge-json $frag $live --mode "0600"
         assert equal (($live | path type)) "file"

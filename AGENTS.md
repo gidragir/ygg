@@ -34,6 +34,22 @@
 * **Перед фиксом или спекой** по issue `#N` или области `area:X` агент читает историю: `gh issue view N --comments`, `gh issue list --state all --label area:X`, `git log --grep "#N"`. Спека по issue указывает его в шапке (`Issues: #N`).
 * **DoD фикса:** регрессионный тест с комментарием `# regression: #N` и коммит с футером `Fixes #N` (не в заголовке). `CHANGELOG.md` собирается из коммитов перед релизом.
 
+### 🔀 Регламент работы с PR и тестами
+
+* **Проверка CI после создания PR:** сразу после `gh pr create` запускать `gh pr checks --watch` (или проверять статус CI), чтобы ловить платформенные отличия (`windows-latest` ACL, `ENOTDIR` на Linux/macOS) в том же цикле.
+* **Точечный прогон при правках `apply-plan`:** при изменениях в `apply-plan` / `apply` прогонять не только `--filter test_cli`, но и `--filter test_apply` (а перед финализацией — полный `mise run test`). E2E-тесты разнесены по доменам в `tests/test_e2e_*.nu`.
+
+### 🌿 Git-процесс: ветки, PR и завершение задачи
+
+* **Имя ветки — [Conventional Branch 1.0](https://conventional-branch.github.io/):** `<type>/<description>`, только `a-z`, `0-9`, `-` (без `_`, заглавных, пробелов, двойных и концевых дефисов; точки — только в версии `release/`).
+  * `type`: `feat` (или `feature`), `fix` (или `bugfix`), `hotfix`, `release`, `chore`. Документация, CI, тесты и рефакторинг идут в `chore/`.
+  * Номер issue — с префиксом `issue-`: `fix/issue-8-apply-summary`, `feat/issue-15-init-scaffold`. Без issue — только описание: `chore/split-e2e-tests`. Релиз — `release/v0.4.0`.
+  * Каталог worktree повторяет ветку с `-` вместо `/`: `.worktrees/fix-issue-8-apply-summary`.
+* **Одна ветка = один issue = один PR.** Коммит закрывает issue футером `Fixes #N`, тело PR — `Closes #N`. Issue закрывается только merge'ем PR: открытый PR — открытый issue, это норма.
+* **Старт задачи:** `git fetch origin`, затем `git worktree add .worktrees/<dir> -b <branch> origin/main`. Основная рабочая копия (корень репозитория) остаётся на `main`.
+* **Завершение задачи — обязательный последний шаг перед итоговым сообщением**, после `git push`, `gh pr create` и `gh pr checks --watch`: в основной рабочей копии выполнить `git switch main` и `git pull --ff-only origin main`. Задача не сдана, пока основная копия не стоит на обновлённом `main`. В итоговом сообщении указать ветку, PR и то, что `main` обновлён.
+* **После merge PR** (на GitHub включено автоудаление веток, `deleteBranchOnMerge`): `git worktree remove .worktrees/<dir>`, `git branch -d <branch>`, `git fetch --prune`, `git pull --ff-only`. В начале каждой задачи проверить `git worktree list` и `git branch --merged main` и убрать хвосты уже влитых веток.
+
 ---
 
 ## 🔒 2. Жёсткие инварианты безопасности и архитектуры

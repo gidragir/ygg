@@ -1114,8 +1114,8 @@ export def test_is_dir_consistent_for_symlinked_dir_sources [] {
         let m = ($home | path join "modules" "m")
         mkdir ($m | path join "realdir") ($m | path join "g")
         "x\n" | save -f ($m | path join "realdir" "x.txt")
-        ^ln -s ($m | path join "realdir") ($m | path join "g" "linked")
-        ^ln -s ($m | path join "realdir") ($m | path join "explicit")
+        test-link-dir ($m | path join "realdir") ($m | path join "g" "linked")
+        test-link-dir ($m | path join "realdir") ($m | path join "explicit")
         "name = \"m\"\nos = [\"linux\", \"windows\", \"macos\"]\n[links]\n\"g/*\" = \"~/.config/g/*\"\n\"explicit\" = \"~/.config/explicit\"\n" | save -f ($m | path join "ygg.toml")
         "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
         let t = (resolve-link-targets (resolve-effective-plan $home) --sandbox $sb).targets

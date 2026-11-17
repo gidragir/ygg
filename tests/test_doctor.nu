@@ -120,8 +120,9 @@ export def test_doctor_orphan_link_and_state_orphan [] {
             test-dangling-link ($home | path join "gone-1") ($cfg | path join "stale.conf")
             test-dangling-link ($home | path join "gone-2") ($sb | path join ".local" "bin" "old-tool")
             test-dangling-link ($home | path join "gone-3") ($sb | path join ".stale-rc")
-            # A valid unmanaged symlink is not an orphan
-            ^ln -s ($cfg | path join "a.conf") ($cfg | path join "alias.conf")
+            # A valid unmanaged symlink/junction is not an orphan
+            mkdir ($cfg | path join "real-dir")
+            test-link-dir ($cfg | path join "real-dir") ($cfg | path join "alias-dir")
             # Depth 1 only: a dangling link two levels below ~/.config is not scanned
             mkdir ($cfg | path join "deep" "er")
             test-dangling-link ($home | path join "gone-4") ($cfg | path join "deep" "er" "x")
