@@ -6,24 +6,14 @@
 
 ---
 
-## 📌 1. Документация и спецификация
+## 📌 1. Документация, навыки, команды
 
-* **Базовая архитектурная спецификация:** [docs/specs/2026-11-07-modular-omni-architecture-design.md](docs/specs/2026-11-07-modular-omni-architecture-design.md)
-* **Спецификация улучшений и стабилизации ядра (RFC-001..025):** [docs/specs/2026-11-08-ygg-engine-improvements-and-hardening.md](docs/specs/2026-11-08-ygg-engine-improvements-and-hardening.md)
-* **План реализации ядра Фазы 1:** [docs/plans/2026-11-07-ygg-phase1-engine.md](docs/plans/2026-11-07-ygg-phase1-engine.md)
-* **План реализации улучшений Фазы 2:** [docs/plans/2026-11-08-ygg-engine-improvements-and-hardening.md](docs/plans/2026-11-08-ygg-engine-improvements-and-hardening.md)
-* **Спецификация Фазы 3 (RFC-026..040):** [docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md](docs/specs/2026-11-08-ygg-phase3-resilience-and-ecosystem.md)
-* **План реализации Фазы 3:** [docs/plans/2026-11-08-ygg-phase3-implementation-plan.md](docs/plans/2026-11-08-ygg-phase3-implementation-plan.md)
-* **Спецификация Фазы 4 — корректность и безопасность (RFC-041..058):** [docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md](docs/specs/2026-11-10-ygg-phase4-correctness-and-security-hardening.md)
-* **План реализации Фазы 4:** [docs/plans/2026-11-10-ygg-phase4-implementation-plan.md](docs/plans/2026-11-10-ygg-phase4-implementation-plan.md)
-* **Спецификация контейнеров модулей (RFC-059):** [docs/specs/2026-11-15-ygg-module-containers-design.md](docs/specs/2026-11-15-ygg-module-containers-design.md)
-* **План реализации контейнеров модулей:** [docs/plans/2026-11-15-ygg-module-containers-plan.md](docs/plans/2026-11-15-ygg-module-containers-plan.md)
-* **Спецификация живого прогресса (RFC-060):** [docs/specs/2026-11-16-ygg-live-progress-design.md](docs/specs/2026-11-16-ygg-live-progress-design.md)
-* **План реализации живого прогресса:** [docs/superpowers/plans/2026-11-16-ygg-live-progress.md](docs/superpowers/plans/2026-11-16-ygg-live-progress.md)
-* **Навыки разработки:**
-  - Разработка на Nushell: [.agents/skills/nushell-ygg-dev/SKILL.md](.agents/skills/nushell-ygg-dev/SKILL.md)
-  - Тестирование и верификация модулей dotfiles: [.agents/skills/ygg-module-verification/SKILL.md](.agents/skills/ygg-module-verification/SKILL.md)
-  - Фиксация проблем в GitHub Issues: [.agents/skills/ygg-report/SKILL.md](.agents/skills/ygg-report/SKILL.md)
+* **Спецификации и планы:** индекс — [docs/README.md](docs/README.md). Базовая архитектура — [docs/specs/2026-11-07-modular-omni-architecture-design.md](docs/specs/2026-11-07-modular-omni-architecture-design.md).
+* **Навыки разработки** (`.agents/skills/`):
+  - `nushell-ygg-dev` — любая правка `.nu` в `src/`, `bin/`, `tests/`;
+  - `ygg-module-verification` — проверка модуля в одноразовой песочнице;
+  - `ygg-report` — заметки и ошибки → GitHub Issues.
+* **Тесты:** `mise run test` (весь набор), `nu tests/run.nu --filter <имя>` (точечно).
 * **Журнал изменений:** [CHANGELOG.md](CHANGELOG.md) — генерируется `mise run changelog` (git-cliff, [cliff.toml](cliff.toml)), руками не правится.
 
 ---
@@ -59,7 +49,7 @@
    * Ни один тест и ни один отладочный запуск `ygg` в рамках разработки не имеют права читать или модифицировать реальные `~/.ygg`, `~/.config` или `$HOME` рабочей станции.
    * Все тесты обязаны выполняться строго внутри временных каталогов (`with-temp-ygg`), все пути в тестах производны от его аргумента `home`; литеральных `/tmp/...` в `tests/` нет. `with-temp-ygg` задаёт `YGG_HOME`, `YGG_SANDBOX` и `YGG_MOCK_PKG_LOG = ""`; тест, которому нужен мок, задаёт путь лога явно внутри своего временного каталога.
    * `tests/run.nu` запускает каждый тест с очищенным окружением: все унаследованные `YGG_*` скрыты, кроме `YGG_RUN_HOST_E2E`.
-   * **Параллельная изоляция (`par-each --threads 4`):** тесты, проверяющие отсутствие остаточных временных файлов от `mktemp -t`, обязаны запускать проверяемый код в дочернем `^nu` с переопределёнными `TMPDIR`/`TEMP`/`TMP` внутри `with-temp-ygg` и не могут полагаться на глобальный `$nu.temp-dir`. При падении теста запрещено списывать сбой на гонку без проверки воспроизведения через `--filter <name>`.
+   * **Параллельный прогон (`par-each --threads 4`):** тест на отсутствие временных файлов запускает код в дочернем `^nu` со своими `TMPDIR`/`TEMP`/`TMP` (навык `nushell-ygg-dev`, `references/testing.md`). Падение теста нельзя списывать на гонку, не воспроизведя его через `--filter <name>`.
    * Команды `ygg doctor`, `ygg diff` и `ygg status` строго read-only: им запрещено вызывать `ensure-ygg-dirs`, `mkdir` или `save`.
    * Статусный/прогресс-вывод CLI направляется строго в `stderr`, отключает управляющие последовательности при отсутствии TTY (`not (is-terminal --stderr)`), `TERM == "dumb"` или `NO_COLOR`, и полностью подавляется во **всех** `--dry-run`/`--read-only` сценариях (включая `add --dry-run`, `upgrade --dry-run`, `apply --dry-run`), `ygg diff`, `ygg status`, `ygg doctor` (запрещены `progress-step`, `--label`, `--progress` и создание `ygg-proc-*.log`).
 
@@ -86,7 +76,7 @@
    * Предварительная проверка пакетов Arch/CachyOS через `pacman -T` и проверка доступности sudo без пароля в неинтерактивном режиме.
    * Завершение дерева процессов по таймауту (`kill-job-tree` считывает PID до `job kill`).
    * Кэширование хэшей наборов пакетов в `state.hashes` (пропуск при повторном запуске без изменений).
-   * **Контракт `run-with-timeout` и интерактивный ввод:** обёртка сохраняет раздельность `stdout`/`stderr`, не подменяет пустой `stderr` запущенной команды строкой `"External command had a non-zero exit code"`, возвращает `exit_code: 127` при отсутствии бинарника и не считает ненулевой код однозначным провалом до проверки вызывающим кодом (например, `WINGET_OK_CODES`). При таймауте (`exit_code: 124`) сохраняется и накопленный `stderr`, и сообщение о таймауте; при прерывании (`Ctrl+C`) или таймауте гарантированно вызывается `kill-job-tree` и удаляются временные файлы из системного tmp.
+   * **`run-with-timeout`** сохраняет раздельные `stdout`/`stderr`, возвращает 127 при отсутствии бинарника и 124 при таймауте, гарантированно вызывает `kill-job-tree` и чистит temp; ненулевой код проверяет вызывающий код (`WINGET_OK_CODES`). Полный контракт — навык `nushell-ygg-dev`, `references/processes.md` §7.
    * **Защита интерактивного `sudo`:** `sudo-available` при TTY `stdin` возвращает `true` даже без кэшированного пароля; перерисовка `\r`-прогресса не должна запускаться поверх команд с возможным запросом пароля (`sudo`, `paru`) без предварительной валидации `sudo -v` или отключения тикера.
 
 6. **Контейнеры модулей (RFC-059):**
@@ -94,9 +84,7 @@
    * **Защита данных:** ни одна команда ядра не передаёт `-v`, `--volumes` или `--rmi`. Все команды рантайма строятся строго как `list<string>` (argv), пути нормализуются через `path expand -n`.
    * **Моки в тестах и песочнице:** без `YGG_MOCK_PKG_LOG` в песочнице (`YGG_SANDBOX`) команды контейнеров возвращают `skipped_sandbox`. Для тестов: `YGG_MOCK_CONTAINER_FAIL`, `YGG_MOCK_CONTAINER_STATUS` (`no_runtime` | `daemon_down`), `YGG_MOCK_CONTAINER_RUNNING`, и `YGG_NONINTERACTIVE=1` при `ygg add` без `--containers`/`--no-containers`.
 
-7. **Навигация по коду и дрейф через `context-init`:**
-   * Вся навигация по подсистемам репозитория выполняется через MCP `context-init` (`context_get_subsystems`, `context_pack`). Прямое рекурсивное вычитывание файлов ядра запрещено.
-   * Перед сдачей задач обязателен аудит дрейфа через `context_check`.
+7. **Навигация по коду и дрейф через `context-init`:** если доступен MCP `context-init` или CLI `context-init`, навигация и проверка дрейфа перед сдачей идут через него (раздел «Архитектурная карта» ниже), а не через рекурсивное чтение файлов ядра. Без них — точечный поиск (`rg`, Grep/Glob) и чтение только нужных файлов; в итоговом сообщении указать, что `context_check` не выполнялся.
 
 ---
 

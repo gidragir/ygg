@@ -19,6 +19,7 @@ description: Use when writing, reviewing or debugging Nushell (.nu) code of the 
 | Редирект `o>`/`e>` внутри `job spawn` | `try/catch`, явный `exit_code: 0` в `try`, 127 через `which`, иначе `job recv` виснет | [processes](references/processes.md) §5 |
 | Утилиты, принимающие один пакет (winget, uv tool) | цикл по одному пакету, `which`-guard до вызова | [processes](references/processes.md) §2–3 |
 | Убить job по таймауту | снять PID до `job kill` (`kill-job-tree`) | [processes](references/processes.md) §4 |
+| Правка `run-with-timeout` | коды 127/124, раздельные потоки, уборка temp | [processes](references/processes.md) §7 |
 | Лог подпроцесса, `\r`-прогресс, `mktemp` | сплит по `[\r\n]+` до `ansi strip`; `mktemp -t --suffix .log ygg-proc-XXXXXX` | [processes](references/processes.md) §6 |
 | Есть ли путь / ссылка | `path type` (lstat), а не `path exists`: битая ссылка даёт `false` | [filesystem](references/filesystem.md) §1 |
 | Путь может содержать `*` или `?` | проверить строку до `path exists`/`path type`: на Windows `invalid_filename` | [filesystem](references/filesystem.md) §3 |
