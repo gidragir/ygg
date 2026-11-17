@@ -275,8 +275,7 @@ export def to-win32-path [p: string]: nothing -> string {
 
 # Restrict file permissions to current user only (0600 on Unix, inheritance reset & owner:F on Windows) (RFC-049)
 export def restrict-file-access [path: string]: nothing -> bool {
-    let host_os = (detect-host-os)
-    let is_windows = ($host_os.os == "windows")
+    let is_windows = (fs-windows)
     if $is_windows {
         let win_path = (to-win32-path $path)
         let user = ($env.USERNAME? | default ($env.USER? | default ""))

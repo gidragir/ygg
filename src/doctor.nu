@@ -139,22 +139,39 @@ export def is-windows-acl-insecure [acl_lines: string]: nothing -> bool {
     }
 }
 
-# Read ACL of a file as "SID|Rights|Type" lines via PowerShell; ok=false when it cannot be read
-def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string> {
-    if (($env.YGG_MOCK_WINDOWS_ACL_FAIL? | default "") == "1") {
-        return { ok: false, out: "" }
+# Select PowerShell binary and whether PSModulePath must be hidden for Windows PowerShell 5.1
+export def select-powershell [has_pwsh: bool, has_winps: bool]: nothing -> record<bin: string, hide_module_path: bool> {
+    if $has_pwsh {
+        { bin: "pwsh", hide_module_path: false }
+    } else if $has_winps {
+        { bin: "powershell.exe", hide_module_path: true }
+    } else {
+        { bin: "", hide_module_path: false }
     }
-    let ps = (if (which powershell.exe | is-not-empty) { "powershell.exe" } else if (which pwsh | is-not-empty) { "pwsh" } else { "" })
-    if $ps == "" {
-        return { ok: false, out: "" }
+}
+
+# Read ACL of a file as "SID|Rights|Type" lines via PowerShell; ok=false when it cannot be read
+def read-windows-acl [path: string]: nothing -> record<ok: bool, out: string, err: string> {
+    if (($env.YGG_MOCK_WINDOWS_ACL_FAIL? | default "") == "1") {
+        return { ok: false, out: "", err: "" }
+    }
+    let sel = (select-powershell (which pwsh | is-not-empty) (which powershell.exe | is-not-empty))
+    if $sel.bin == "" {
+        return { ok: false, out: "", err: "PowerShell not found" }
     }
     let script = "$p = $env:YGG_ACL_PATH; (Get-Acl -LiteralPath $p).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value + '|' + $_.FileSystemRights + '|' + $_.AccessControlType }"
     let win = (to-win32-path $path)
-    let r = (try { with-env { YGG_ACL_PATH: $win } { ^$ps -NoProfile -NonInteractive -Command $script | complete } } catch { null })
-    if ($r == null) or ($r.exit_code != 0) {
-        { ok: false, out: "" }
+    let r = (try {
+        do {
+            if $sel.hide_module_path { hide-env -i PSModulePath }
+            with-env { YGG_ACL_PATH: $win } { ^($sel.bin) -NoProfile -NonInteractive -Command $script | complete }
+        }
+    } catch { |e| { exit_code: 1, stdout: "", stderr: $e.msg } })
+    if $r.exit_code != 0 {
+        let first_err = ($r.stderr | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default "" | str trim)
+        { ok: false, out: "", err: $first_err }
     } else {
-        { ok: true, out: $r.stdout }
+        { ok: true, out: $r.stdout, err: "" }
     }
 }
 
@@ -194,6 +211,7 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
             let mock_insecure = (($env.YGG_MOCK_WINDOWS_INSECURE_ACL? | default "") == "1")
             let mock_output = ($env.YGG_MOCK_WINDOWS_ICACLS_OUTPUT? | default "")
             mut unreadable = false
+            mut unreadable_err = ""
             let is_insecure = if $mock_insecure {
                 true
             } else if ($mock_output != "") {
@@ -201,10 +219,12 @@ export def check-perms [ygg_home: string, plan: record, sb: string]: nothing -> 
             } else {
                 let acl = (read-windows-acl $real)
                 $unreadable = (not $acl.ok)
+                $unreadable_err = $acl.err
                 is-windows-acl-insecure $acl.out
             }
             if $unreadable {
-                $rows = ($rows | append (finding "acl_unreadable" "warn" $f "cannot read Windows ACL (PowerShell failed or unavailable)" "check PowerShell availability and execution policy, then re-run ygg doctor"))
+                let msg = "cannot read Windows ACL (PowerShell failed or unavailable)" + (if $unreadable_err != "" { $": ($unreadable_err)" } else { "" })
+                $rows = ($rows | append (finding "acl_unreadable" "warn" $f $msg "check PowerShell availability and execution policy, then re-run ygg doctor"))
             }
             if $is_insecure {
                 $rows = ($rows | append (finding "perm" "error" $f "insecure Windows ACL: readable by Users/Everyone" $"icacls '($f)' /inheritance:r /grant:r \"${env:USERNAME}:F\""))
