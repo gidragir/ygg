@@ -1,5 +1,5 @@
 # git-cliff config: CHANGELOG.md is generated from conventional commits.
-# Regenerate before tagging a release: `just changelog`.
+# Regenerate before tagging a release: `mise run changelog`.
 # Issue references come from the commit footer (`Fixes #12`, `Closes #12`, `Refs #12`).
 
 [changelog]

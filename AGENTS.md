@@ -1,7 +1,7 @@
 # 🤖 AGENTS.md — Архитектурное руководство репозитория `ygg`
 
 > **Назначение:** Независимый кроссплатформенный CLI-менеджер модулей конфигураций (`ygg` — от *Yggdrasil*).  
-> **Рантайм:** Nushell (`nu >= 0.116`), `TOML`, `git`, `just` (`set shell := ["nu", "-c"]`).  
+> **Рантайм:** Nushell (`nu >= 0.116`), `TOML`, `git`. Задачи разработки — `mise run <task>` ([mise.toml](mise.toml)).  
 > **Целевые ОС:** Linux (CachyOS / Arch и др.), Windows 11 / Server (Non-Admin, без Developer Mode), macOS.
 
 ---
@@ -24,7 +24,7 @@
   - Разработка на Nushell: [.agents/skills/nushell-ygg-dev/SKILL.md](.agents/skills/nushell-ygg-dev/SKILL.md)
   - Тестирование и верификация модулей dotfiles: [.agents/skills/ygg-module-verification/SKILL.md](.agents/skills/ygg-module-verification/SKILL.md)
   - Фиксация проблем в GitHub Issues и поиск истории перед фиксом: [.agents/skills/ygg-report/SKILL.md](.agents/skills/ygg-report/SKILL.md)
-* **Журнал изменений:** [CHANGELOG.md](CHANGELOG.md) — генерируется `just changelog` (git-cliff, [cliff.toml](cliff.toml)), руками не правится.
+* **Журнал изменений:** [CHANGELOG.md](CHANGELOG.md) — генерируется `mise run changelog` (git-cliff, [cliff.toml](cliff.toml)), руками не правится.
 
 ---
 

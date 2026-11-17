@@ -219,8 +219,8 @@ Run the automated test suite:
 # Using Nushell directly
 nu tests/run.nu
 
-# Or via justfile
-just test
+# Or via mise task
+mise run test
 ```
 
 For Windows verification, run inside isolated Windows Sandbox:

@@ -1,4 +1,17 @@
 [tools]
 nushell = "latest"
-just = "latest"
 git-cliff = "latest"
+
+[tasks.test]
+description = "Run the full engine test suite"
+run = "nu tests/run.nu"
+
+[tasks.test-phase2]
+description = "Run Stage 2 sandbox verification against migrated Phase 2 module worktrees"
+usage = 'arg "[target]" default="all"'
+shell = "nu -c"
+run = "nu tests/test_phase2_modules.nu $env.usage_target"
+
+[tasks.changelog]
+description = "Regenerate CHANGELOG.md from conventional commits (run before tagging a release)"
+run = "git-cliff -o CHANGELOG.md"
