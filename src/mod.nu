@@ -11,3 +11,4 @@ export use git.nu *
 export use doctor.nu *
 export use container.nu *
 export use progress.nu *
+export use engine.nu *

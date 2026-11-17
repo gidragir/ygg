@@ -48,8 +48,18 @@ if (-not $NuCmd) {
 }
 
 # 3. Clone or update ygg engine into ~/.ygg/.engine
+#    $env:YGG_CHANNEL = "stable" (default): latest v<semver> release tag; "main": tip of main
 $YggHome = if ($env:YGG_HOME) { $env:YGG_HOME } else { Join-Path $UserHome ".ygg" }
 $EngineDir = Join-Path $YggHome ".engine"
+$Channel = if ($env:YGG_CHANNEL) { $env:YGG_CHANNEL } else { "stable" }
+if ($Channel -notin @("stable", "main")) {
+    throw "YGG_CHANNEL must be 'stable' or 'main' (got '$Channel')."
+}
+
+function Invoke-Git {
+    git @args
+    if ($LASTEXITCODE -ne 0) { throw "git $($args -join ' ') failed with exit code $LASTEXITCODE" }
+}
 
 if (-not (Test-Path $YggHome)) {
     New-Item -ItemType Directory -Force -Path $YggHome | Out-Null
@@ -60,10 +70,30 @@ if (-not (Test-Path (Join-Path $EngineDir ".git"))) {
     if (Test-Path $EngineDir) {
         Remove-Item -Recurse -Force $EngineDir
     }
-    git clone https://github.com/gidragir/ygg.git $EngineDir
+    Invoke-Git clone --quiet https://github.com/gidragir/ygg.git $EngineDir
+} elseif (git -C $EngineDir status --porcelain --untracked-files=no) {
+    Write-Host "==> $EngineDir has uncommitted changes, leaving the engine as is." -ForegroundColor Yellow
+    $Channel = "keep"
 } else {
     Write-Host "==> Updating existing ygg engine in $EngineDir..." -ForegroundColor Green
-    git -C $EngineDir pull --rebase
+    Invoke-Git -C $EngineDir fetch --quiet --tags --force origin
+}
+
+if ($Channel -eq "stable") {
+    $Tag = git -C $EngineDir tag --list "v*" --sort=v:refname |
+        Where-Object { $_ -match '^v\d+\.\d+\.\d+$' } | Select-Object -Last 1
+    if ($Tag) {
+        Write-Host "==> Using ygg release $Tag" -ForegroundColor Green
+        Invoke-Git -C $EngineDir -c advice.detachedHead=false checkout --quiet --detach $Tag
+    } else {
+        Write-Host "==> No ygg release tags found, falling back to main." -ForegroundColor Yellow
+        $Channel = "main"
+    }
+}
+if ($Channel -eq "main") {
+    Write-Host "==> Using ygg main branch" -ForegroundColor Green
+    Invoke-Git -C $EngineDir checkout --quiet main
+    Invoke-Git -C $EngineDir merge --quiet --ff-only origin/main
 }
 
 # 4. Copy Windows batch shim to ~/.local/bin/ygg.cmd

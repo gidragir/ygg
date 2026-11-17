@@ -2,7 +2,7 @@
 # Tests for scripts/release.nu: tag/version consistency checked by the release workflow
 
 use std/assert
-use ../scripts/release.nu [read-ygg-version, release-tag-error, is-prerelease]
+use ../scripts/release.nu [read-ygg-version, release-tag-error, is-prerelease, normalize-version, set-ygg-version]
 use helpers.nu [with-temp-ygg]
 
 export def test_read_ygg_version_parses_const [] {
@@ -44,4 +44,26 @@ export def test_release_tag_error_rejects_mismatch_and_bad_format [] {
 export def test_is_prerelease_detects_suffix [] {
     assert (is-prerelease "v1.0.0-rc.1")
     assert (not (is-prerelease "v1.0.0"))
+}
+
+export def test_normalize_version_strips_v_and_validates [] {
+    assert equal (normalize-version "v0.3.0") "0.3.0"
+    assert equal (normalize-version " 1.0.0-rc.1
+") "1.0.0-rc.1"
+    let failed = (try { normalize-version "0.3"; false } catch { true })
+    assert $failed "a non-semver version must be rejected"
+}
+
+export def test_set_ygg_version_replaces_only_the_const [] {
+    let src = "use ../src *
+
+const YGG_VERSION = \"0.2.0\"
+# YGG_VERSION is the single source
+"
+    let out = (set-ygg-version $src "0.3.0")
+    assert ($out | str contains 'const YGG_VERSION = "0.3.0"')
+    assert ($out | str contains "# YGG_VERSION is the single source")
+    assert equal ($out | lines | length) ($src | lines | length)
+    let failed = (try { set-ygg-version "def main [] {}" "0.3.0"; false } catch { true })
+    assert $failed "content without YGG_VERSION must be rejected"
 }

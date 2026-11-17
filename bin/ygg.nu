@@ -41,6 +41,7 @@ def main [
     print "  ygg clean [--backups] [--hashes] [--dry-run] [--no-lock]  Clean old backups and orphaned state hashes"
     print "  ygg status [--json]                      Display module sync and git status table"
     print "  ygg doctor [--json] [--fix] [-y] [--ack-shadow]  Host audit & self-healing (exit code 1 on errors)"
+    print "  ygg self-update [--channel <c>] [--check] [--no-lock]  Update the ygg engine to the latest release (or main)"
     print "  ygg completions <shell>                  Generate shell completions (nu, zsh, bash, fish, ps1)"
     print "  ygg version                              Print version (also --version / -v)"
     print ""
@@ -632,6 +633,42 @@ def "main update" [
 
         apply-plan
         release-host-lock $lock_file
+    } catch { |e|
+        progress-clear-line
+        release-host-lock $lock_file
+        error make $e
+    }
+}
+
+# Update the ygg engine checkout to the latest stable release or the tip of main
+def "main self-update" [
+    --channel: string = "stable", # Release channel: stable (latest v<semver> tag) or main (tip of main)
+    --check, # Only report whether a newer stable release exists; change nothing
+    --no-lock # Do not take the host lock
+] {
+    let engine_dir = ($env.FILE_PWD? | default "." | path dirname)
+    if $check {
+        let r = (engine-check-update $engine_dir)
+        if $r.latest == "" {
+            print $"ygg ($r.current): no stable releases published yet"
+        } else if $r.update_available {
+            print $"ygg ($r.current): release ($r.latest) is available, run `ygg self-update`"
+        } else {
+            print $"ygg ($r.current): up to date"
+        }
+        return
+    }
+
+    let ygg_home = (get-ygg-home)
+    let lock_file = (acquire-host-lock $ygg_home "self-update" --no-lock=$no_lock)
+    try {
+        let r = (engine-self-update $engine_dir --channel $channel)
+        release-host-lock $lock_file
+        if $r.status == "up_to_date" {
+            print $"ygg ($r.to) is already at ($r.ref)"
+        } else {
+            print $"ygg updated: ($r.from) -> ($r.to) \(($r.ref)\)"
+        }
     } catch { |e|
         progress-clear-line
         release-host-lock $lock_file

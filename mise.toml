@@ -13,5 +13,18 @@ shell = "nu -c"
 run = "nu tests/test_phase2_modules.nu $env.usage_target"
 
 [tasks.changelog]
-description = "Regenerate CHANGELOG.md from conventional commits (run before tagging a release)"
+description = "Regenerate CHANGELOG.md from conventional commits (preview; `release` does this itself)"
 run = "git-cliff -o CHANGELOG.md"
+
+[tasks.release]
+description = "Bump YGG_VERSION, regenerate CHANGELOG.md and commit; on main also tag (version from commits unless given)"
+usage = '''
+flag "--dry-run" help="Print the plan without changing anything"
+arg "[version]" default="" help="Explicit version, e.g. 0.3.0 (default: computed by git-cliff)"
+'''
+shell = "nu -c"
+run = "nu scripts/release.nu prepare --dry-run=(($env.usage_dry_run? | default 'false') == 'true') ($env.usage_version? | default '')"
+
+[tasks.release-tag]
+description = "Tag main's HEAD with YGG_VERSION after a release PR is merged"
+run = "nu scripts/release.nu tag"

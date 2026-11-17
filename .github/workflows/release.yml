@@ -1,7 +1,7 @@
 name: Release
 
 # Publishes a GitHub Release for a pushed v<semver> tag after the full test matrix passes.
-# Steps: bump YGG_VERSION in bin/ygg.nu, run `mise run changelog`, merge to main, then `git tag vX.Y.Z && git push origin vX.Y.Z`.
+# Tags are prepared locally: `mise run release` (bump YGG_VERSION, CHANGELOG.md, commit, tag on main), see README "Releasing".
 on:
   push:
     tags: [ "v*" ]
@@ -34,7 +34,7 @@ jobs:
         id: check
         env:
           TAG: ${{ github.ref_name }}
-        run: nu scripts/release.nu "$TAG"
+        run: nu scripts/release.nu verify "$TAG"
 
       - name: Tagged commit is on main
         run: |

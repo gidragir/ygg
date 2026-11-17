@@ -1,5 +1,5 @@
 # git-cliff config: CHANGELOG.md is generated from conventional commits.
-# Regenerate before tagging a release: `mise run changelog`.
+# Preview: `mise run changelog`. `mise run release` regenerates it and takes the next version from `git-cliff --bumped-version` (see [bump]).
 # Issue references come from the commit footer (`Fixes #12`, `Closes #12`, `Refs #12`).
 
 [changelog]
@@ -44,3 +44,8 @@ commit_parsers = [
   { message = "^chore", skip = true },
   { message = "^Merge", skip = true },
 ]
+
+[bump]
+# Pre-1.0: feat bumps minor, fix/perf bump patch, a breaking change bumps minor (not 1.0.0)
+features_always_bump_minor = true
+breaking_always_bump_major = false
