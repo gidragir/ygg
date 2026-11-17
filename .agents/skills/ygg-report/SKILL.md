@@ -1,6 +1,6 @@
 ---
 name: ygg-report
-description: Use when the user shares observations, errors or improvement ideas from using ygg (raw notes, a session recap, a pasted stack trace, docs/bugs/inbox.md) and wants them recorded, or says "заведи issue", "зафиксируй проблему", "разбери inbox"; also when starting a fix or spec that references a GitHub issue (#N) and prior history of that area is needed.
+description: Use when the user shares observations, errors or improvement ideas from using ygg (raw notes, a session recap, a pasted stack trace, docs/bugs/inbox.md) and wants them recorded, or says "заведи issue", "зафиксируй проблему", "разбери inbox"; also when prioritizing or picking tasks from the project board, or when starting a fix or spec that references a GitHub issue (#N) and prior history of that area is needed.
 ---
 
 # Фиксация проблем ygg в GitHub Issues
@@ -64,15 +64,15 @@ gh issue list --repo gidragir/ygg --state all --search "on_change hook warning" 
 
 ### Шаг 5. Показать план и ждать подтверждения
 
-Создание issue — публикация. Перед любым `gh issue create`/`gh issue comment` покажи таблицу и дождись явного «да»:
+Создание issue — публикация. Перед любым `gh issue create`/`gh issue comment` покажи таблицу с предлагаемыми `Priority` (`P0` блокеры/баги `apply`/`doctor`, `P1` важные UX/диагностика/целостность, `P2` улучшения/фичи) и `Size` (`XS` точечная правка, `S` один модуль, `M` несколько модулей/новая подкоманда, `L`/`XL` крупная фича/новая секция манифеста) и дождись явного «да»:
 
-| # | Тип | Заголовок | Метки | Действие |
-|---|---|---|---|---|
-| 1 | ux | `apply: summary printed before finalize, hook warnings get lost` | `type:ux area:cli` | создать |
-| 2 | bug | `doctor: acl_unreadable false positives for .state/env on Windows` | `type:bug area:doctor os:windows` | создать |
-| 3 | — | `ygg init` — что делает (справка) | — | не issue: ответ на вопрос |
+| # | Тип | Заголовок | Метки | Priority | Size | Действие |
+|---|---|---|---|---|---|---|
+| 1 | ux | `apply: summary printed before finalize, hook warnings get lost` | `type:ux area:cli` | `P0` | `S` | создать |
+| 2 | bug | `doctor: acl_unreadable false positives for .state/env on Windows` | `type:bug area:doctor os:windows` | `P0` | `S` | создать |
+| 3 | — | `ygg init` — что делает (справка) | — | — | — | не issue: ответ на вопрос |
 
-### Шаг 6. Создать
+### Шаг 6. Создать и добавить на доску
 
 Заголовок и тело — на английском (как README и коммиты). Заголовок: `<command или area>: <суть>`. Тело — секции соответствующей формы из `.github/ISSUE_TEMPLATE/` (без них агент, ищущий историю, не найдёт воспроизведение):
 
@@ -83,9 +83,12 @@ gh issue list --repo gidragir/ygg --state all --search "on_change hook warning" 
 Неизвестное поле — `_unknown_`, не выдумывать. Тело пиши во временный файл в scratchpad (UTF-8) и передавай через `--body-file`: так не ломаются кавычки и кодировка на Windows.
 
 ```bash
-gh issue create --repo gidragir/ygg --title "doctor: acl_unreadable false positives for .state/env on Windows" \
-  --label type:bug --label area:doctor --label os:windows --body-file "$SCRATCH/issue-2.md"
+url=$(gh issue create --repo gidragir/ygg --title "doctor: acl_unreadable false positives for .state/env on Windows" \
+  --label type:bug --label area:doctor --label os:windows --body-file "$SCRATCH/issue-2.md")
+gh project item-add 5 --owner gidragir --url "$url"
 ```
+
+Для выставления `Priority` и `Size` на доске `ygg project` (`#5`, владелец `gidragir`) получи ID полей и опций через `gh project field-list 5 --owner gidragir --format json` и обнови карточку через `gh project item-edit --project-id <proj-id> --id <item-id> --field-id <field-id> --single-select-option-id <opt-id>`. Если `gh project` сообщает о нехватке скоупа `project`, нужен `gh auth refresh -s project` (переменная `GITHUB_TOKEN` в окружении перекрывает keyring и мешает `refresh` — её нужно предварительно убрать).
 
 После создания выведи список `#N — заголовок`. Обработанные пункты удали из `docs/bugs/inbox.md`, если источник — он.
 
@@ -95,9 +98,10 @@ gh issue create --repo gidragir/ygg --title "doctor: acl_unreadable false positi
 
 ## Режим 2. История перед фиксом или спекой
 
-Перед работой над issue `#N` или над областью `area:X`:
+Для выбора следующей задачи с доски `ygg project` (`Priority board`) и проверки истории перед работой над issue `#N` или областью `area:X`:
 
 ```bash
+gh project item-list 5 --owner gidragir --format json --limit 100   # задачи по Priority и Size
 gh issue view N --repo gidragir/ygg --comments
 gh issue list --repo gidragir/ygg --state all --label area:X --json number,title,state
 git log --oneline --grep "#N"            # коммиты, закрывшие или упомянувшие issue
@@ -111,7 +115,7 @@ rg -n "regression: #" tests               # регрессионные тест�
 
 1. Регрессионный тест в `tests/`, над ним комментарий `# regression: #N`.
 2. Коммит фикса с футером `Fixes #N` (несколько: `Fixes #12` и `Fixes #15` отдельными строками). Упоминание без закрытия — `Refs #N`.
-3. `CHANGELOG.md` не правится руками: перед релизом `just changelog` (git-cliff) собирает его из коммитов и подставляет ссылки на issues из футеров.
+3. `CHANGELOG.md` не правится руками: перед релизом `mise run changelog` (git-cliff) собирает его из коммитов и подставляет ссылки на issues из футеров.
 
 ## Частые ошибки
 
