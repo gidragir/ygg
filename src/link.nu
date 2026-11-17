@@ -620,9 +620,10 @@ export def probe-locked-targets [ops: table]: nothing -> list<record<module: str
             }
             continue
         }
-        let probe = ($dest + ".ygg-probe-" + (random chars --length 8))
+        let clean_dest = ($dest | str replace --regex '(?<=[^:/\\])[/\\]+$' '')
+        let probe = ($clean_dest + ".ygg-probe-" + (random chars --length 8))
         let mv_err = (try {
-            mv $dest $probe
+            mv $clean_dest $probe
             ""
         } catch { |e|
             $e.msg | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default "locked" | str trim
@@ -637,10 +638,10 @@ export def probe-locked-targets [ops: table]: nothing -> list<record<module: str
             continue
         }
         try {
-            mv $probe $dest
+            mv $probe $clean_dest
         } catch { |e|
             let back_err = ($e.msg | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default $e.msg | str trim)
-            error make { msg: ("lock probe: '" + $dest + "' is now at '" + $probe + "' and could not be moved back (" + $back_err + "); restore it manually: move \"" + $probe + "\" \"" + $dest + "\"") }
+            error make { msg: ("lock probe: '" + $clean_dest + "' is now at '" + $probe + "' and could not be moved back (" + $back_err + "); restore it manually: move \"" + $probe + "\" \"" + $clean_dest + "\"") }
         }
     }
     $problems

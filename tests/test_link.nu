@@ -1308,7 +1308,18 @@ export def test_probe_locked_targets_mock [] {
 export def test_probe_locked_targets_real_rename_restores [] {
     with-temp-ygg { |home|
         let d = ($home | path join "d"); mkdir $d; "keep" | save -f ($d | path join "f.txt")
-        let res = (with-env { YGG_HOST_OS_OVERRIDE: "windows" } { probe-locked-targets [{ op: "BACKUP_REPLACE", dest: $d, module: "m", key: "k" }] })
+        let res = (with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_LOCKED_PATHS: "" } { probe-locked-targets [{ op: "BACKUP_REPLACE", dest: $d, module: "m", key: "k" }] })
+        assert equal $res []
+        assert equal (open --raw ($d | path join "f.txt")) "keep"
+        assert (ls $home | where name =~ 'ygg-probe' | is-empty)
+    }
+}
+
+# regression: #22
+export def test_probe_locked_targets_trailing_slash [] {
+    with-temp-ygg { |home|
+        let d = ($home | path join "d_slash"); mkdir $d; "keep" | save -f ($d | path join "f.txt")
+        let res = (with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_LOCKED_PATHS: "" } { probe-locked-targets [{ op: "BACKUP_REPLACE", dest: ($d + "/"), module: "m", key: "k" }] })
         assert equal $res []
         assert equal (open --raw ($d | path join "f.txt")) "keep"
         assert (ls $home | where name =~ 'ygg-probe' | is-empty)
