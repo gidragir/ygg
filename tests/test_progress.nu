@@ -111,6 +111,15 @@ export def test_run_with_timeout_label_plain_and_no_color [] {
     assert not ($sub.stderr | str contains "\x1b[")
 }
 
+# regression: #9
+export def test_run_with_timeout_soft_fail_prints_warn [] {
+    let src_dir = if ("src/mod.nu" | path exists) { "src" } else { "../src" }
+    let sub = (^nu -I $src_dir -c 'use mod.nu *; with-env { NO_COLOR: "1" } { let r = (run-with-timeout ["nu" "-c" "exit 1"] 10 --label "[hooks] demo" --soft-fail); print $r.exit_code }' | complete)
+    assert ($sub.stderr | str contains "[warn] [hooks] demo (")
+    assert not ($sub.stderr | str contains "[fail]")
+    assert equal ($sub.stdout | str trim) "1"
+}
+
 export def test_run_with_timeout_label_cr_stream_and_no_timeout [] {
     # timeout_sec = 0 с --label != "" должен работать через job spawn без таймаута
     let res = (run-with-timeout ["nu" "-c" "print -e -n 'step 1\rstep 2\rstep 3\n'"] 0 --label "[git] clone" --no-tty-progress)

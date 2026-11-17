@@ -89,6 +89,7 @@ export def run-with-timeout [
     timeout_sec: int
     --label: string = ""
     --no-tty-progress
+    --soft-fail
 ]: nothing -> record {
     let bin = ($argv | first)
     let args = ($argv | skip 1)
@@ -213,7 +214,7 @@ export def run-with-timeout [
     let exit_code = ($res.exit_code? | default 1)
     let spawn_err = ($res.spawn_err? | default "")
     let stderr_str = if $raw_stderr != "" { $raw_stderr } else { $spawn_err }
-    let status = if $exit_code == 0 { "ok" } else { "fail" }
+    let status = if $exit_code == 0 { "ok" } else if $soft_fail { "warn" } else { "fail" }
     print -e (format-progress-done $status $label $elapsed_float)
 
     {
