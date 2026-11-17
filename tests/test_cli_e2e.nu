@@ -215,7 +215,7 @@ export def test_apply_fails_after_completing_when_package_manager_fails [] {
             let res = (^nu $ygg_bin apply --sandbox $sb | complete)
             assert ($res.exit_code != 0)
             assert ($res.stderr | str contains "pacman")
-            assert ($res.stdout | str contains "Applied 1 module")
+            assert not ($res.stdout | str contains "Applied")
             let target_link = ($sb | path join ".config" "conf")
             assert ($target_link | path exists)
         }
