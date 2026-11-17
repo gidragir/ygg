@@ -120,6 +120,28 @@ export def test_run_with_timeout_soft_fail_prints_warn [] {
     assert equal ($sub.stdout | str trim) "1"
 }
 
+export def test_hook_warnings_first_line_and_per_key [] {
+    let hooks = [
+        { module: "hm", keys: ["a", "b"], cmd: "x", status: "failed", stderr: "boom\nsecond line" }
+        { module: "hm", keys: ["c"], cmd: "y", status: "ok", stderr: "" }
+    ]
+    let w = (hook-warnings $hooks)
+    assert equal ($w | length) 2
+    assert equal ($w | get item) ["a", "b"]
+    assert ($w | all { |r| $r.message == "boom" and $r.source == "on_change" and $r.module == "hm" })
+}
+
+export def test_format_apply_summary_variants [] {
+    assert equal (format-apply-summary 2 []) { stdout: "Applied 2 module(s).", stderr: "" }
+    let w = [{ source: "on_change", module: "hm", item: "a", message: "boom" }]
+    let s = (format-apply-summary 1 $w)
+    assert equal $s.stdout "Applied 1 module(s) with 1 warning(s)."
+    assert ($s.stderr | str contains "[ygg] Warnings:\n  - on_change 'a' (hm): boom")
+    assert not ($s.stderr | str contains "ygg remove")
+    let s2 = (format-apply-summary 1 $w --added-module "hm")
+    assert ($s2.stderr | str ends-with "`ygg remove hm` to roll back")
+}
+
 export def test_run_with_timeout_label_cr_stream_and_no_timeout [] {
     # timeout_sec = 0 с --label != "" должен работать через job spawn без таймаута
     let res = (run-with-timeout ["nu" "-c" "print -e -n 'step 1\rstep 2\rstep 3\n'"] 0 --label "[git] clone" --no-tty-progress)
