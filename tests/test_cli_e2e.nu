@@ -215,7 +215,7 @@ export def test_apply_fails_after_completing_when_package_manager_fails [] {
             let res = (^nu $ygg_bin apply --sandbox $sb | complete)
             assert ($res.exit_code != 0)
             assert ($res.stderr | str contains "pacman")
-            assert ($res.stdout | str contains "Applied 1 module")
+            assert not ($res.stdout | str contains "Applied")
             let target_link = ($sb | path join ".config" "conf")
             assert ($target_link | path exists)
         }
@@ -494,6 +494,91 @@ pacman = ["curl"]
     }
 }
 
+# regression: #8
+export def test_apply_summary_is_last_and_counts_hook_warnings [] {
+    with-temp-ygg { |home|
+        let ygg_home = ($home | path join "ygg")
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "hm")
+        mkdir $ygg_home $sb ($mod_src | path join "cfg")
+        "modules = []\n" | save -f ($ygg_home | path join "host.toml")
+        "a = 1\n" | save -f ($mod_src | path join "cfg" "a.conf")
+        'name = "hm"
+os = ["linux", "windows", "macos", "cachyos"]
+[links."cfg/a.conf"]
+target = "~/.config/hm/a.conf"
+on_change = "reload-a"
+' | save -f ($mod_src | path join "ygg.toml")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let log1 = ($home | path join "add.log")
+        with-env {
+            YGG_HOME: $ygg_home
+            YGG_SANDBOX: $sb
+            YGG_HOST_OS_OVERRIDE: "cachyos"
+            YGG_MOCK_PKG_LOG: ($home | path join "pkg.log")
+            YGG_MOCK_HOOK_FAIL: "reload-a"
+            YGG_NONINTERACTIVE: "1"
+        } {
+            ^nu $ygg_bin add $mod_src --sandbox $sb o+e> $log1
+            let out = (open --raw $log1 | lines)
+            let i_fin = ($out | enumerate | where { |it| $it.item | str contains "[finalize]" } | get -o 0.index | default (-1))
+            let i_app = ($out | enumerate | where { |it| $it.item == "Applied 1 module(s) with 1 warning(s)." } | get -o 0.index | default (-1))
+            assert ($i_fin >= 0) "Expected [finalize] in output"
+            assert ($i_app > $i_fin) "Expected Applied summary after [finalize]"
+            let full = (open --raw $log1)
+            assert ($full | str contains "  - on_change 'cfg/a.conf' (hm): mock hook failure")
+            assert ($full | str contains "`ygg remove hm` to roll back")
+
+            let res2 = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $res2.exit_code 0
+            assert equal ($res2.stdout | lines | last) "Applied 1 module(s) with 1 warning(s)."
+            assert not ($res2.stderr | str contains "ygg remove")
+        }
+    }
+}
+
+export def test_apply_link_error_prints_no_applied [] {
+    with-temp-ygg { |home|
+        let ygg_home = ($home | path join "ygg")
+        let sb = ($home | path join "sb")
+        let mod_src = ($ygg_home | path join "modules" "hm")
+        mkdir $ygg_home $sb ($mod_src | path join "cfg")
+        "a = 1\n" | save -f ($mod_src | path join "cfg" "a.conf")
+        'name = "hm"
+os = ["linux", "windows", "macos", "cachyos"]
+[links]
+"cfg/a.conf" = "~/.config/hm/a.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "[[modules]]\nname = \"hm\"\n" | save -f ($ygg_home | path join "host.toml")
+        # On Windows, a regular file at ~/.config/hm makes mkdir of parent fail in apply-links.
+        # On Unix, chmod 555 on ~/.config/hm makes ln -s fail in apply-links (a regular file would ENOTDIR earlier in compute-link-ops).
+        let hm_dir = ($sb | path join ".config" "hm")
+        mkdir ($sb | path join ".config")
+        if $nu.os-info.family == "windows" {
+            "blocker" | save -f $hm_dir
+        } else {
+            mkdir $hm_dir
+            ^chmod 555 $hm_dir
+        }
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env {
+            YGG_HOME: $ygg_home
+            YGG_SANDBOX: $sb
+            YGG_HOST_OS_OVERRIDE: "cachyos"
+            YGG_MOCK_PKG_LOG: ($home | path join "pkg.log")
+        } {
+            ^nu $ygg_bin apply --sandbox $sb | complete
+        })
+        if $nu.os-info.family != "windows" {
+            ^chmod 755 $hm_dir
+        }
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "[ygg] Error: failed to link")
+        assert not ($res.stdout | str contains "Applied")
+    }
+}
+
 # Create a bare git repo in `home` whose single commit holds `files` (relative path -> content)
 def make-bare-module [home: string, name: string, files: record]: nothing -> string {
     let bare = ($home | path join $"($name).git")
@@ -677,7 +762,7 @@ mise = ["ripgrep"]
             assert ($f.exit_code != 0)
             assert ($f.stderr | str contains "cargo")
             assert ($f.stderr | str contains "bat")
-            assert ($f.stdout | str contains "Applied 1 module")
+            assert not ($f.stdout | str contains "Applied")
         }
     }
 }

@@ -500,7 +500,7 @@ export def run-link-hooks [
         } else if ($sb != "") {
             { status: "skipped_sandbox", stderr: "" }
         } else {
-            let res = (run-with-timeout ["nu", "-c", $cmd] 30 --label $"[hooks] ($modules): ($keys | str join ', ')")
+            let res = (run-with-timeout ["nu", "-c", $cmd] 30 --label $"[hooks] ($modules): ($keys | str join ', ')" --soft-fail)
             if $res.exit_code == 0 {
                 { status: "ok", stderr: "" }
             } else {

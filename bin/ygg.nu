@@ -207,7 +207,7 @@ def "main add" [
         progress-clear-line
         print $"Added module ($add_res.name)"
 
-        apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox
+        apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --added-module=$add_res.name
         release-host-lock $lock_file
     } catch { |e|
         progress-clear-line
@@ -369,7 +369,8 @@ def apply-plan [
     --prune-packages,
     --force-system-prune,
     --containers-enable: list<string> = [],
-    --containers-disable: list<string> = []
+    --containers-disable: list<string> = [],
+    --added-module: string = ""
 ] {
     assert-pkg-flags $pkg $skip_packages
     let effective_sandbox = if ($sandbox != "") {
@@ -532,7 +533,7 @@ def apply-plan [
         record-journal-step $ygg_home "setup" "COMMITTED"
 
         # on_change hooks of links (RFC-015): last step; a failing hook only warns
-        run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox | ignore
+        let hooks = (run-link-hooks $ygg_home $resolved.targets $ops --force=$force --sandbox=$effective_sandbox)
 
         # 6. Declarative services management (RFC-037 / RFC-043)
         record-journal-step $ygg_home "services" "IN_PROGRESS"
@@ -554,9 +555,6 @@ def apply-plan [
         } else {
             record-journal-step $ygg_home "containers" "COMMITTED"
         }
-
-        progress-clear-line
-        print $"Applied ($mod_count) module\(s\)."
 
         for f in $link_res.failed {
             print -e $"[ygg] Error: failed to link '($f.dest)' -> '($f.src)' \(($f.module)\): ($f.stderr)"
@@ -603,6 +601,13 @@ def apply-plan [
 
         # Commit WAL transaction on clean completion (RFC-043)
         commit-journal-transaction $ygg_home
+
+        progress-clear-line
+        let summary = (format-apply-summary $mod_count (hook-warnings $hooks) --added-module=$added_module)
+        print $summary.stdout
+        if ($summary.stderr != "") {
+            print -e $summary.stderr
+        }
     } catch { |e|
         progress-clear-line
         fail-journal-transaction $ygg_home ($e.msg? | default ($e | to text))

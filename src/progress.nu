@@ -126,3 +126,43 @@ export def progress-step [phase: string, msg: string]: nothing -> nothing {
     progress-clear-line
     print -e $"[($phase)] ($msg)"
 }
+
+# Collect per-key warning records from failed link hooks (RFC-061 #8)
+export def hook-warnings [hooks: list<record>]: nothing -> list<record<source: string, module: string, item: string, message: string>> {
+    mut out = []
+    for h in ($hooks | where { |it| ($it.status? | default "") == "failed" }) {
+        let first_line = ($h.stderr? | default "" | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default "" | str trim)
+        let mod = ($h.module? | default "")
+        for k in ($h.keys? | default []) {
+            $out = ($out | append { source: "on_change", module: $mod, item: $k, message: $first_line })
+        }
+    }
+    $out
+}
+
+# Format the final stdout/stderr summary for `apply-plan` (RFC-061 #8)
+export def format-apply-summary [
+    mod_count: int
+    warnings: list<record>
+    --added-module: string = ""
+]: nothing -> record<stdout: string, stderr: string> {
+    if ($warnings | is-empty) {
+        return {
+            stdout: ("Applied " + ($mod_count | into string) + " module(s).")
+            stderr: ""
+        }
+    }
+    let k = ($warnings | length)
+    let stdout = ("Applied " + ($mod_count | into string) + " module(s) with " + ($k | into string) + " warning(s).")
+    let bullets = ($warnings | each { |w|
+        "  - " + $w.source + " '" + $w.item + "' (" + $w.module + "): " + $w.message
+    } | str join "\n")
+    let rollback = if ($added_module != "") {
+        " · `ygg remove " + $added_module + "` to roll back"
+    } else {
+        ""
+    }
+    let next_line = "[ygg] Next: `ygg apply` re-runs failed hooks · `ygg doctor` to diagnose" + $rollback
+    let stderr = "[ygg] Warnings:\n" + $bullets + "\n" + $next_line
+    { stdout: $stdout, stderr: $stderr }
+}
