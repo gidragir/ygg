@@ -550,9 +550,16 @@ os = ["linux", "windows", "macos", "cachyos"]
 "cfg/a.conf" = "~/.config/hm/a.conf"
 ' | save -f ($mod_src | path join "ygg.toml")
         "[[modules]]\nname = \"hm\"\n" | save -f ($ygg_home | path join "host.toml")
-        # Regular file at ~/.config/hm causes mkdir of parent ~/.config/hm to fail during apply-links
+        # On Windows, a regular file at ~/.config/hm makes mkdir of parent fail in apply-links.
+        # On Unix, chmod 555 on ~/.config/hm makes ln -s fail in apply-links (a regular file would ENOTDIR earlier in compute-link-ops).
+        let hm_dir = ($sb | path join ".config" "hm")
         mkdir ($sb | path join ".config")
-        "blocker" | save -f ($sb | path join ".config" "hm")
+        if $nu.os-info.family == "windows" {
+            "blocker" | save -f $hm_dir
+        } else {
+            mkdir $hm_dir
+            ^chmod 555 $hm_dir
+        }
 
         let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
         let res = (with-env {
@@ -563,6 +570,9 @@ os = ["linux", "windows", "macos", "cachyos"]
         } {
             ^nu $ygg_bin apply --sandbox $sb | complete
         })
+        if $nu.os-info.family != "windows" {
+            ^chmod 755 $hm_dir
+        }
         assert ($res.exit_code != 0)
         assert ($res.stderr | str contains "[ygg] Error: failed to link")
         assert not ($res.stdout | str contains "Applied")
