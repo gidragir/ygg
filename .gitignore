@@ -24,3 +24,6 @@ id_ed25519
 *.db-wal
 state.db
 kanban.db
+
+# Local bug inbox (offline capture for the ygg-report skill; triaged into GitHub Issues)
+docs/bugs/

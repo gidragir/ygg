@@ -1,0 +1,41 @@
+name: UX
+description: ygg works, but its output, messages or workflow are confusing
+title: "<command>: <what is confusing>"
+labels: ["type:ux"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `ygg version`
+      placeholder: ygg 0.2.0 (commit 25d6426)
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      multiple: true
+      options:
+        - windows
+        - linux
+        - macos
+  - type: input
+    id: command
+    attributes:
+      label: Command
+      placeholder: ygg add <module>
+    validations:
+      required: true
+  - type: textarea
+    id: current
+    attributes:
+      label: Current behavior
+      description: What ygg prints or does now, and why it is confusing.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What would make it clear. Several alternatives are fine.
+    validations:
+      required: true

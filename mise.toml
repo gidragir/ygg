@@ -1,3 +1,4 @@
 [tools]
 nushell = "latest"
 just = "latest"
+git-cliff = "latest"
