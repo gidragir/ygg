@@ -565,6 +565,88 @@ export def compute-link-ops [
 # Apply resolved links (RFC-010 priorities) from the operation plan (RFC-011): pre-flight barrier,
 # PRUNE first, idempotent/atomic symlinks (RFC-009), Windows junction fallback (RFC-006), .cmd shims,
 # 3-way copy sync. Per-link failures are collected in `failed` instead of aborting.
+# Classify a filesystem error message to detect Windows file/directory locks (#22)
+export def classify-fs-error [msg: string, --dir-target]: nothing -> record<kind: string, hint: string> {
+    let low = ($msg | str lowercase)
+    let is_locked = (
+        ($low | str contains "os error 32")
+        or ($low | str contains "os error 33")
+        or ($low | str contains "being used by another process")
+        or ($dir_target and ($low | str contains "os error 5"))
+    )
+    if $is_locked {
+        { kind: "locked", hint: "is in use by another process — close it and re-run ygg apply" }
+    } else {
+        { kind: "other", hint: "" }
+    }
+}
+
+def append-lock-hint [dest: string, err: string, dir_target: bool]: nothing -> string {
+    let c = (classify-fs-error $err --dir-target=$dir_target)
+    if $c.kind == "locked" {
+        $err + "\n    '" + $dest + "' " + $c.hint
+    } else {
+        $err
+    }
+}
+
+# Probe BACKUP_REPLACE targets for active file/directory locks on Windows before mutating the host (#22)
+export def probe-locked-targets [ops: table]: nothing -> list<record<module: string, key: string, reason: string, detail: string>> {
+    let mock_raw = ($env.YGG_MOCK_LOCKED_PATHS? | default "")
+    let has_mock = (($mock_raw | str trim) != "")
+    if (not $has_mock) and (not (fs-windows)) {
+        return []
+    }
+    let mock_list = if $has_mock {
+        $mock_raw | split row "," | each { |p| $p | str trim } | where { |p| $p != "" } | each { |p| normalize-case $p }
+    } else {
+        []
+    }
+    mut problems = []
+    for row in ($ops | where { |o| $o.op == "BACKUP_REPLACE" }) {
+        let dest = $row.dest
+        let pt = (try { $dest | path type } catch { null })
+        if ($pt not-in ["file", "dir"]) or (is-link-or-junction $dest) {
+            continue
+        }
+        if $has_mock {
+            if ((normalize-case $dest) in $mock_list) {
+                $problems = ($problems | append {
+                    module: $row.module
+                    key: $row.key
+                    reason: "target_locked"
+                    detail: ("'" + $dest + "' is in use by another process (mock) — close the program using it and re-run ygg apply")
+                })
+            }
+            continue
+        }
+        let clean_dest = ($dest | str replace --regex '(?<=[^:/\\])[/\\]+$' '')
+        let probe = ($clean_dest + ".ygg-probe-" + (random chars --length 8))
+        let mv_err = (try {
+            mv $clean_dest $probe
+            ""
+        } catch { |e|
+            $e.msg | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default "locked" | str trim
+        })
+        if $mv_err != "" {
+            $problems = ($problems | append {
+                module: $row.module
+                key: $row.key
+                reason: "target_locked"
+                detail: ("'" + $dest + "' is in use by another process (" + $mv_err + ") — close the program using it and re-run ygg apply")
+            })
+            continue
+        }
+        try {
+            mv $probe $clean_dest
+        } catch { |e|
+            let back_err = ($e.msg | lines | where { |l| ($l | str trim) != "" } | get -o 0 | default $e.msg | str trim)
+            error make { msg: ("lock probe: '" + $clean_dest + "' is now at '" + $probe + "' and could not be moved back (" + $back_err + "); restore it manually: move \"" + $probe + "\" \"" + $clean_dest + "\"") }
+        }
+    }
+    $problems
+}
+
 export def apply-links [
     ygg_home: string,
     plan: record,
@@ -599,6 +681,7 @@ export def apply-links [
     # 1. PRUNE first, so a dir link -> glob transition does not trip over its own old link
     for o in $prune_ops {
         let dest = $o.dest
+        let dir_target = $is_windows and (($dest | path type) == "dir") and not (is-link-or-junction $dest)
         let link_entry = ($state.links | get -o $dest)
         let err = (try {
             match $o.detail {
@@ -614,7 +697,7 @@ export def apply-links [
             ""
         } catch { |e| $e.msg })
         if ($err != "") {
-            $failed = ($failed | append { dest: $dest, src: $o.src, module: $o.module, stderr: $err })
+            $failed = ($failed | append { dest: $dest, src: $o.src, module: $o.module, stderr: (append-lock-hint $dest $err $dir_target) })
             continue
         }
         if ($link_entry != null) {
@@ -647,6 +730,7 @@ export def apply-links [
         if $is_windows and not $tgt.is_dir {
             # Single file on Windows: 3-way copy sync (a link or directory in the way is replaced first)
             $active_copies = ($active_copies | append $dest)
+            let dir_target = $is_windows and (($dest | path type) == "dir") and not (is-link-or-junction $dest)
             let res = (try {
                 if ($op == "BACKUP_REPLACE") {
                     if (is-link-or-junction $dest) {
@@ -665,7 +749,7 @@ export def apply-links [
                 { err: "", shim: $cmd_shim, copy_record: $p.copy_record }
             } catch { |e| { err: $e.msg, shim: "", copy_record: {} } })
             if ($res.err != "") {
-                $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: $res.err })
+                $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: (append-lock-hint $dest $res.err $dir_target) })
                 continue
             }
             $state.copies = ($state.copies | upsert $dest $res.copy_record)
@@ -690,6 +774,7 @@ export def apply-links [
             }
             $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: $keep_type, cmd_shim: "" })
         } else {
+            let dir_target = $is_windows and (($dest | path type) == "dir") and not (is-link-or-junction $dest)
             let res = (try {
                 if ($op == "BACKUP_REPLACE") {
                     if (is-link-or-junction $dest) {
@@ -719,7 +804,7 @@ export def apply-links [
                 }
             } catch { |e| { ok: false, type: "", stderr: $e.msg } })
             if not $res.ok {
-                $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: $res.stderr })
+                $failed = ($failed | append { dest: $dest, src: $src_path, module: $mod_name, stderr: (append-lock-hint $dest $res.stderr $dir_target) })
                 continue
             }
             $state.links = ($state.links | upsert $dest { module: $mod_name, src: $src_path, type: $res.type, cmd_shim: "" })
@@ -736,6 +821,7 @@ export def apply-links [
     for row in $save_ops {
         let dest_file = $row.dest
         $active_copies = ($active_copies | append $dest_file)
+        let dir_target = $is_windows and (($dest_file | path type) == "dir") and not (is-link-or-junction $dest_file)
         let res = (try {
             let p = (plan-copy-sync $state $row.module $row.src $dest_file $force)
             run-copy-sync $p
@@ -745,7 +831,7 @@ export def apply-links [
             { err: "", copy_record: $p.copy_record }
         } catch { |e| { err: $e.msg, copy_record: {} } })
         if ($res.err != "") {
-            $failed = ($failed | append { dest: $dest_file, src: $row.src, module: $row.module, stderr: $res.err })
+            $failed = ($failed | append { dest: $dest_file, src: $row.src, module: $row.module, stderr: (append-lock-hint $dest_file $res.err $dir_target) })
             continue
         }
         $state.copies = ($state.copies | upsert $dest_file $res.copy_record)

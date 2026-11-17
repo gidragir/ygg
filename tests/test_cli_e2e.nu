@@ -413,6 +413,87 @@ os = ["linux", "windows", "macos", "cachyos"]
     }
 }
 
+# regression: #22
+export def test_apply_locked_target_aborts_before_mutations [] {
+    with-temp-ygg { |home|
+        let ygg_home = ($home | path join "ygg")
+        let sb = ($home | path join "sb")
+        let pkg_log = ($home | path join "pkg.log")
+        let mod_src = ($ygg_home | path join "modules" "lockmod")
+        mkdir $ygg_home $sb ($mod_src | path join "cfg" "app") ($sb | path join ".config" "app")
+        "mod_state\n" | save -f ($mod_src | path join "cfg" "app" "mod.txt")
+        "host_state" | save -f ($sb | path join ".config" "app" "host.txt")
+        'name = "lockmod"
+os = ["linux", "windows", "macos", "cachyos"]
+[packages]
+pacman = ["curl"]
+[links]
+"cfg/app" = "~/.config/app"
+' | save -f ($mod_src | path join "ygg.toml")
+        "[[modules]]\nname = \"lockmod\"\n" | save -f ($ygg_home | path join "host.toml")
+
+        let locked_dest = ($sb | path join ".config" "app")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env {
+            YGG_HOME: $ygg_home
+            YGG_SANDBOX: $sb
+            YGG_HOST_OS_OVERRIDE: "cachyos"
+            YGG_MOCK_PKG_LOG: $pkg_log
+            YGG_MOCK_LOCKED_PATHS: $locked_dest
+        } { ^nu $ygg_bin apply --force --sandbox $sb | complete })
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "(target_locked)")
+        assert ($res.stderr | str contains "re-run ygg apply")
+        assert (not ($pkg_log | path exists))
+        assert equal (open --raw ($sb | path join ".config" "app" "host.txt")) "host_state"
+
+        let res_dry = (with-env {
+            YGG_HOME: $ygg_home
+            YGG_SANDBOX: $sb
+            YGG_HOST_OS_OVERRIDE: "cachyos"
+            YGG_MOCK_PKG_LOG: $pkg_log
+            YGG_MOCK_LOCKED_PATHS: $locked_dest
+        } { ^nu $ygg_bin apply --force --dry-run --sandbox $sb | complete })
+        assert equal $res_dry.exit_code 0 $res_dry.stderr
+        assert (not ($res_dry.stderr | str contains "target_locked"))
+    }
+}
+
+export def test_add_locked_target_does_not_register_module [] {
+    with-temp-ygg { |home|
+        let ygg_home = ($home | path join "ygg")
+        let sb = ($home | path join "sb")
+        let pkg_log = ($home | path join "pkg.log")
+        let mod_src = ($home | path join "lockmod")
+        mkdir $ygg_home $sb ($mod_src | path join "cfg" "app") ($sb | path join ".config" "app")
+        "mod_state\n" | save -f ($mod_src | path join "cfg" "app" "mod.txt")
+        "host_state" | save -f ($sb | path join ".config" "app" "host.txt")
+        'name = "lockmod"
+os = ["linux", "windows", "macos", "cachyos"]
+[packages]
+pacman = ["curl"]
+[links]
+"cfg/app" = "~/.config/app"
+' | save -f ($mod_src | path join "ygg.toml")
+        "modules = []\n" | save -f ($ygg_home | path join "host.toml")
+
+        let locked_dest = ($sb | path join ".config" "app")
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let res = (with-env {
+            YGG_HOME: $ygg_home
+            YGG_SANDBOX: $sb
+            YGG_HOST_OS_OVERRIDE: "cachyos"
+            YGG_MOCK_PKG_LOG: $pkg_log
+            YGG_MOCK_LOCKED_PATHS: $locked_dest
+            YGG_NONINTERACTIVE: "1"
+        } { ^nu $ygg_bin add $mod_src --force --sandbox $sb | complete })
+        assert ($res.exit_code != 0)
+        assert ($res.stderr | str contains "(target_locked)")
+        assert (not ((open --raw ($ygg_home | path join "host.toml")) | str contains "lockmod"))
+        assert (not ($pkg_log | path exists))
+    }
+}
+
 # Create a bare git repo in `home` whose single commit holds `files` (relative path -> content)
 def make-bare-module [home: string, name: string, files: record]: nothing -> string {
     let bare = ($home | path join $"($name).git")

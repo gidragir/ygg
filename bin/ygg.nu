@@ -194,6 +194,10 @@ def "main add" [
             if ($problems | is-not-empty) {
                 error make { msg: (format-preflight-errors $problems) }
             }
+            let locked = (probe-locked-targets $ops)
+            if ($locked | is-not-empty) {
+                error make { msg: (format-preflight-errors $locked) }
+            }
         } catch { |e|
             discard-staged-module $prep
             error make { msg: $e.msg }
@@ -404,6 +408,12 @@ def apply-plan [
     let problems = (preflight-check $ygg_home $plan $resolved $ops --force=$force --quiet=(not $dry_run) --sandbox=$effective_sandbox)
     if ($problems | is-not-empty) {
         error make { msg: (format-preflight-errors $problems) }
+    }
+    if not $dry_run {
+        let locked = (probe-locked-targets $ops)
+        if ($locked | is-not-empty) {
+            error make { msg: (format-preflight-errors $locked) }
+        }
     }
 
     let mod_count = ($plan_mods | length)
