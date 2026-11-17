@@ -1065,26 +1065,31 @@ export def preflight-check [
     }
 
     # 1. Every link candidate of the effective plan (losing candidates too: RFC-020 p.2 "all links")
+    let mod_dirs = ($plan.modules? | default [] | reduce -f {} { |m, acc| $acc | upsert $m.name ($m.dir? | default "") })
     for link in ($plan.links? | default []) {
         let src = $link.src_path
+        let base_rel = (($link.src_rel? | default $link.key) | str replace --regex '/\*$' '')
+        let mod_dir = ($mod_dirs | get -o $link.module | default "")
+        let is_git = ($mod_dir != "") and (($mod_dir | path join ".git" | path exists))
         let exists = if (has-wildcard $src) {
             false
         } else {
             try { ($src | path exists) } catch { false }
         }
         if not $exists {
+            let git_hint = if $is_git { "; check that it is committed and pushed to the module's git repo" } else { "" }
             $problems = ($problems | append {
                 module: $link.module,
                 key: $link.key,
                 reason: "missing_source",
-                detail: $"Source path '($src)' does not exist"
+                detail: ("source '" + $base_rel + "' not found in module (links: '" + $link.key + "' -> '" + ($link.dest_raw? | default "") + "')" + $git_hint)
             })
         } else if (($link.mode? | default "") == "dir") and (($src | path type) != "dir") {
             $problems = ($problems | append {
                 module: $link.module,
                 key: $link.key,
                 reason: "invalid_mode_source",
-                detail: $"mode = \"dir\" requires a directory source, but '($src)' is a ($src | path type)"
+                detail: ("mode = \"dir\" requires a directory source, but '" + $base_rel + "' in module is a " + ($src | path type))
             })
         }
     }
@@ -1132,11 +1137,14 @@ export def preflight-check [
         let confirmed = ((($t.mode? | default "") == "dir") or $force)
         if not $confirmed {
             let glob_key = (($t.key | str trim -r -c "/") + "/*")
+            let mod_dir = ($mod_dirs | get -o $t.module | default "")
+            let rel = if ($mod_dir != "") { try { $t.src | path relative-to $mod_dir } catch { null } } else { null }
+            let src_label = if ($rel != null) { ($t.module + "/" + ($rel | str replace -a "\\" "/")) } else { $t.src }
             $problems = ($problems | append {
                 module: $t.module,
                 key: $t.key,
                 reason: "shadowed_files",
-                detail: ($"directory '($dest)' has ($extra | length) file\(s\) not present in '($t.src)' that the link would hide:\n" + $shown + $more
+                detail: ($"directory '($dest)' has ($extra | length) file\(s\) not present in '($src_label)' that the link would hide:\n" + $shown + $more
                     + "\n    Resolve with one of:\n"
                     + $"      1. link entries individually: \"($glob_key)\" = \"<target>/*\" \(or per-file links\)\n"
                     + "      2. confirm the replacement in the manifest: mode = \"dir\"\n"
