@@ -63,3 +63,23 @@ $merged_env | transpose k v | where { |it| not (($it.v | describe) starts-with "
 let len = ($text | str length --grapheme-clusters)
 let head = ($text | str substring --grapheme-clusters 0..<$cut)
 ```
+
+## 6. Захват `mut`-переменной в замыканиях (`with-env`, `each`)
+
+В Nushell замыкания (`with-env { ... } { ... }`, `each { ... }`) запрещают захват `mut`-переменных на этапе парсинга (`Capture of mutable variable`). Если значение вычисляется через `mut` до входа в блок, затени его неизменяемым `let`:
+
+```nushell
+mut refresh = false
+if $cond { $refresh = true }
+
+# ❌ НЕПРАВИЛЬНО: nu::parser::expected_keyword (Capture of mutable variable)
+with-env { YGG_BACKUP_ID: $bid } {
+    install-packages --refresh=$refresh
+}
+
+# ✅ ПРАВИЛЬНО: затенение через let до замыкания
+let refresh = $refresh
+with-env { YGG_BACKUP_ID: $bid } {
+    install-packages --refresh=$refresh
+}
+```

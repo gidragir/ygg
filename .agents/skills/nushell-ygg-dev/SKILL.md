@@ -30,7 +30,9 @@ description: Use when writing, reviewing or debugging Nushell (.nu) code of the 
 | `$it` в `where { }` | явный параметр `{ \|it\| ... }` | [syntax](references/syntax.md) §4 |
 | Длина и срез строки для UI | `--grapheme-clusters`: по умолчанию счёт в байтах | [syntax](references/syntax.md) §5 |
 | `use`/`source` по переменной | невозможно (parse-time); дочерний `^nu -I` | [syntax](references/syntax.md) §1 |
+| Захват `mut` внутри `with-env` / замыкания | `let x = $x` до блока, иначе `Capture of mutable variable` | [syntax](references/syntax.md) §6 |
 | Секрет в env.nu / zsh / ps1 / dotenv | экранирование под конкретный шелл | [data](references/data.md) §2 |
+| ISO-8601 UTC-метка с суффиксом `Z` | `date to-timezone utc` до `format date`, иначе время локальное | [data](references/data.md) §3 |
 | Тест проверяет очистку temp-файлов | дочерний `^nu` с `TMPDIR`/`TEMP`/`TMP` внутри `with-temp-ygg` | [testing](references/testing.md) |
 
 ## Частые ошибки

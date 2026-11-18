@@ -41,3 +41,15 @@
   let escaped = ($val | str replace --all '\' '\\' | str replace --all "'" "\\'")
   $"($key)='($escaped)'"
   ```
+
+## 3. ISO-8601 UTC-метки времени (`date to-timezone utc`)
+
+`date now | format date "%Y-%m-%dT%H:%M:%SZ"` подставляет **локальное** время с суффиксом `Z`. Для честного UTC всегда переводи таймзону до форматирования:
+
+```nushell
+# ❌ НЕПРАВИЛЬНО: локальное время с буквой Z
+let ts = (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+
+# ✅ ПРАВИЛЬНО: явный перевод в UTC
+let ts = (date now | date to-timezone utc | format date "%Y-%m-%dT%H:%M:%SZ")
+```
