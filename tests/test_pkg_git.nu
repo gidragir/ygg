@@ -1538,3 +1538,83 @@ export def test_run_with_timeout_ok_codes [] {
     assert ($res.stderr | str contains "[ok]")
     assert (not ($res.stderr | str contains "[fail]"))
 }
+
+# regression: #14
+export def test_active_runtime_winget_warning [] {
+    assert equal (active-runtime-winget-warning "Nushell.Nushell" { os: "linux", in_pwsh: true }) ""
+    assert equal (active-runtime-winget-warning "Microsoft.PowerShell" { os: "linux", in_pwsh: true }) ""
+
+    assert ((active-runtime-winget-warning "Nushell.Nushell" { os: "windows", in_pwsh: false }) | str contains "Nushell")
+    assert ((active-runtime-winget-warning "nushell" { os: "windows", in_pwsh: false }) | str contains "Nushell")
+
+    assert ((active-runtime-winget-warning "Microsoft.PowerShell" { os: "windows", in_pwsh: true }) | str contains "pwsh")
+    assert ((active-runtime-winget-warning "Microsoft.PowerShell.Preview" { os: "windows", in_pwsh: true }) | str contains "pwsh")
+    assert equal (active-runtime-winget-warning "Microsoft.PowerShell" { os: "windows", in_pwsh: false }) ""
+
+    assert equal (active-runtime-winget-warning "Git.Git" { os: "windows", in_pwsh: true }) ""
+}
+
+# regression: #14
+export def test_install_packages_failure_includes_exit_code_and_tail [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["linux", "windows", "macos"]
+[packages]
+winget = ["Bad.Pkg"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_PKG_FAIL: "winget:Bad.Pkg" } {
+            let res = (install-packages $home (resolve-effective-plan $home))
+            assert equal ($res.failed | length) 1
+            let f = $res.failed.0
+            assert equal $f.mgr "winget"
+            assert equal $f.pkg "Bad.Pkg"
+            assert equal $f.reason "error"
+            assert equal $f.exit_code 1
+            assert ($f.tail != "")
+        }
+
+        # Verify non-mock run-install-argv propagates exit_code and stdout fallback
+        with-env { YGG_MOCK_PKG_LOG: "" } {
+            let r = (run-install-argv "winget" ["nu" "-c" "print 'winget stdout err'; exit 23"] ["Bad.Pkg"] 10 --no-tty-progress)
+            assert equal $r.ok false
+            assert equal $r.exit_code 23
+            assert equal (format-pkg-failure-tail $r.stderr $r.stdout) "winget stdout err"
+        }
+    }
+}
+
+# regression: #14
+export def test_install_packages_skips_active_runtime_without_caching_hash [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "pkg.log")
+        let m1 = ($home | path join "modules" "m")
+        mkdir $m1
+        'name = "m"
+os = ["linux", "windows", "macos"]
+[packages]
+winget = ["Nushell.Nushell", "Microsoft.PowerShell", "Git.Git"]' | save -f ($m1 | path join "ygg.toml")
+        "[[modules]]\nname = \"m\"\n" | save -f ($home | path join "host.toml")
+
+        with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_PKG_LOG: $log, YGG_MOCK_ACTIVE_RUNTIME: "nu,pwsh" } {
+            let plan = (resolve-effective-plan $home)
+            let dry = (install-packages $home $plan --dry-run)
+            assert equal $dry.warnings []
+            assert equal ($dry.executed | length) 3
+
+            let res = (install-packages $home $plan)
+            assert equal $res.failed []
+            assert equal $res.skipped []
+            assert equal ($res.warnings | length) 2
+            assert equal $res.warnings.0.source "pkg"
+            let logged = (open --raw $log)
+            assert ($logged | str contains "Git.Git")
+            assert (not ($logged | str contains "Nushell.Nushell"))
+            assert (not ($logged | str contains "Microsoft.PowerShell"))
+            assert equal ((load-state $home).hashes? | default {} | get -o "pkg:winget") null
+        }
+    }
+}
