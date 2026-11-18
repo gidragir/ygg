@@ -279,25 +279,123 @@ export def expand-target-path [raw_path: string, --sandbox: string = ""]: nothin
     $raw_path | path expand -n
 }
 
+# Generate a unique backup run identifier (RFC-063)
+export def new-backup-id []: nothing -> string {
+    date now | format date "%Y%m%d_%H%M%S_%f"
+}
+
 # Move regular file or directory to centralized backup directory
-export def backup-existing [ygg_home: string, target_path: string]: nothing -> string {
+export def backup-existing [
+    ygg_home: string,
+    target_path: string,
+    --backup-id: string = ""
+]: nothing -> string {
     let ptype = ($target_path | path type)
     if ($ptype == null) {
         return ""
     }
 
-    let timestamp = (date now | format date "%Y%m%d_%H%M%S_%f")
-    let backup_dir = ($ygg_home | path join ".state" "backups" $timestamp)
+    let env_bid = ($env.YGG_BACKUP_ID? | default "")
+    let bid = if ($backup_id != "") {
+        $backup_id
+    } else if ($env_bid != "") {
+        $env_bid
+    } else {
+        new-backup-id
+    }
+
+    let bkp_root = ($ygg_home | path join ".state" "backups")
+    let backup_dir = ($bkp_root | path join $bid)
 
     # Sanitize path to create relative subpath
     # Remove Windows drive letter prefix (e.g. C:) and leading slashes
     let sanitized = ($target_path | str replace --regex '^[A-Za-z]:' '' | str replace --regex '^[\\/]+' '')
-    let dest_path = ($backup_dir | path join $sanitized)
+    let base_dest = ($backup_dir | path join $sanitized)
+    mut dest_path = $base_dest
+    mut suffix = 1
+    while (($dest_path | path type) != null) {
+        $dest_path = $"($base_dest).($suffix)"
+        $suffix += 1
+    }
 
     mkdir ($dest_path | path dirname)
     mv $target_path $dest_path
 
+    let index_file = ($bkp_root | path join $"($bid).json")
+    let existing = if ($index_file | path exists) {
+        try { open $index_file } catch { null }
+    } else {
+        null
+    }
+    let now_iso = (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+    let is_rec = ($existing != null) and (($existing | describe) starts-with "record")
+    let created_at = if $is_rec { ($existing.created_at? | default $now_iso) } else { $now_iso }
+    let prev_entries = if $is_rec { ($existing.entries? | default []) } else { [] }
+    let entry = {
+        target: $target_path,
+        backup: $dest_path,
+        type: $ptype
+    }
+    {
+        id: $bid,
+        created_at: $created_at,
+        entries: ($prev_entries | append $entry)
+    } | to json -i 2 | save -f $index_file
+
     $dest_path
+}
+
+# Read backup run metadata index for a given backup_id (RFC-063)
+export def read-backup-run [ygg_home: string, backup_id: string]: nothing -> record {
+    let bkp_root = ($ygg_home | path join ".state" "backups")
+    let dir = ($bkp_root | path join $backup_id)
+    let index_file = ($bkp_root | path join $"($backup_id).json")
+    if not ($index_file | path exists) {
+        return { id: $backup_id, dir: $dir, created_at: "", entries: [] }
+    }
+    let data = (try { open $index_file } catch { null })
+    if ($data == null) or (not (($data | describe) starts-with "record")) {
+        return { id: $backup_id, dir: $dir, created_at: "", entries: [] }
+    }
+    {
+        id: ($data.id? | default $backup_id),
+        dir: $dir,
+        created_at: ($data.created_at? | default ""),
+        entries: ($data.entries? | default [])
+    }
+}
+
+# List recent backup runs, newest first (RFC-063)
+export def list-recent-backups [ygg_home: string, --limit: int = 5]: nothing -> list<record> {
+    let bkp_root = ($ygg_home | path join ".state" "backups")
+    if not ($bkp_root | path exists) {
+        return []
+    }
+    let dirs = (try {
+        ls $bkp_root | where type == "dir" | sort-by name --reverse | first $limit
+    } catch { [] })
+    $dirs | each { |d|
+        let bid = ($d.name | path basename)
+        let index_file = ($bkp_root | path join $"($bid).json")
+        if ($index_file | path exists) {
+            let run = (read-backup-run $ygg_home $bid)
+            {
+                id: $bid,
+                dir: $d.name,
+                created_at: $run.created_at,
+                targets: ($run.entries | get target),
+                legacy: false
+            }
+        } else {
+            {
+                id: $bid,
+                dir: $d.name,
+                created_at: "",
+                targets: [],
+                legacy: true
+            }
+        }
+    }
 }
 
 # Convert a path to Windows form for cmd.exe arguments. Uses `path expand -n` so
@@ -758,6 +856,20 @@ export def rotate-backups [
     if not $dry_run {
         for p in $removed {
             try { rm -rf $p } catch { }
+            let idx_file = $"($p).json"
+            if ($idx_file | path exists) {
+                try { rm -f $idx_file } catch { }
+            }
+        }
+        let json_files = (try {
+            ls $bkp_root | where type == "file" | where { |f| ($f.name | str ends-with ".json") }
+        } catch { [] })
+        for jf in $json_files {
+            let stem = ($jf.name | path basename | str replace --regex '\.json$' '')
+            let paired_dir = ($bkp_root | path join $stem)
+            if (($paired_dir | path type) != "dir") {
+                try { rm -f $jf.name } catch { }
+            }
         }
     }
 

@@ -323,3 +323,92 @@ export def test_non_integer_pid_in_journal_and_lock_does_not_throw [] {
         release-host-lock $got
     }
 }
+
+# regression: #10
+export def test_backup_existing_groups_by_env_and_resolves_collisions [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let cfg = ($home | path join "cfg")
+        mkdir $cfg
+        let a = ($cfg | path join "a.conf")
+        let b = ($cfg | path join "b.conf")
+        "first-a" | save -f $a
+        "first-b" | save -f $b
+
+        let bid = "20261117_120000_000001"
+        let bkp_a1 = (with-env { YGG_BACKUP_ID: $bid } { backup-existing $home $a })
+        let bkp_b1 = (with-env { YGG_BACKUP_ID: $bid } { backup-existing $home $b })
+
+        let run_dir = ($home | path join ".state" "backups" $bid)
+        assert ($bkp_a1 | str starts-with $run_dir)
+        assert ($bkp_b1 | str starts-with $run_dir)
+        assert equal (open --raw $bkp_a1) "first-a"
+        assert equal (open --raw $bkp_b1) "first-b"
+
+        # Recreate a.conf and backup again into the same run id -> collision suffix .1
+        "second-a" | save -f $a
+        let bkp_a2 = (with-env { YGG_BACKUP_ID: $bid } { backup-existing $home $a })
+        assert ($bkp_a2 != $bkp_a1)
+        assert ($bkp_a2 | str ends-with ".1")
+        assert equal (open --raw $bkp_a1) "first-a"
+        assert equal (open --raw $bkp_a2) "second-a"
+
+        let run = (read-backup-run $home $bid)
+        assert equal $run.id $bid
+        assert equal ($run.entries | length) 3
+        assert equal ($run.entries | get target) [$a, $b, $a]
+
+        # Explicit --backup-id overrides YGG_BACKUP_ID
+        "third-a" | save -f $a
+        let custom_bid = "20261117_120001_000002"
+        let bkp_a3 = (with-env { YGG_BACKUP_ID: $bid } { backup-existing $home $a --backup-id $custom_bid })
+        assert ($bkp_a3 | str starts-with ($home | path join ".state" "backups" $custom_bid))
+    }
+}
+
+# regression: #10
+export def test_rotate_backups_removes_json_index_and_orphans [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bkp_root = ($home | path join ".state" "backups")
+        for id in ["20261101_000000_000001", "20261102_000000_000001", "20261103_000000_000001"] {
+            mkdir ($bkp_root | path join $id)
+            { id: $id, created_at: "2026-11-01T00:00:00Z", entries: [] } | to json | save -f ($bkp_root | path join $"($id).json")
+        }
+        { id: "orphan", created_at: "2026-11-01T00:00:00Z", entries: [] } | to json | save -f ($bkp_root | path join "orphan.json")
+
+        let removed = (rotate-backups $home --max-count=1 --max-age-days=0)
+        assert equal ($removed | length) 2
+        assert not (($bkp_root | path join "20261101_000000_000001.json") | path exists)
+        assert not (($bkp_root | path join "20261102_000000_000001.json") | path exists)
+        assert (($bkp_root | path join "20261103_000000_000001.json") | path exists)
+        assert not (($bkp_root | path join "orphan.json") | path exists)
+    }
+}
+
+# regression: #10
+export def test_list_recent_backups_handles_indexed_legacy_and_orphan [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bkp_root = ($home | path join ".state" "backups")
+        mkdir ($bkp_root | path join "20261101_000000_000001")
+        mkdir ($bkp_root | path join "20261102_000000_000001")
+        let target_a = ($home | path join "a")
+        let backup_b = ($home | path join "b")
+        {
+            id: "20261102_000000_000001"
+            created_at: "2026-11-02T00:00:00Z"
+            entries: [{ target: $target_a, backup: $backup_b, type: "file" }]
+        } | to json | save -f ($bkp_root | path join "20261102_000000_000001.json")
+        { id: "orphan", created_at: "2026-11-03T00:00:00Z", entries: [] } | to json | save -f ($bkp_root | path join "orphan.json")
+
+        let recent = (list-recent-backups $home --limit 5)
+        assert equal ($recent | length) 2
+        assert equal $recent.0.id "20261102_000000_000001"
+        assert equal $recent.0.legacy false
+        assert equal $recent.0.targets [$target_a]
+        assert equal $recent.1.id "20261101_000000_000001"
+        assert equal $recent.1.legacy true
+        assert equal $recent.1.targets []
+    }
+}
