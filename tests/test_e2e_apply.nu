@@ -127,7 +127,7 @@ niri = "~/.config/niri"
             # 2. Real apply prints the backup notice; the file is at the reported path
             let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
             assert equal $ap.exit_code 0 $ap.stderr
-            let notice = ($ap.stdout | lines | where { |l| $l | str starts-with ("[ygg] Backed up existing '" + $star + "'") })
+            let notice = ($ap.stderr | lines | where { |l| $l | str starts-with ("[ygg] Backed up existing '" + $star + "'") })
             assert equal ($notice | length) 1
             let bkp = ($notice | first | parse --regex "-> '(?P<p>.+)'$" | get 0.p)
             assert equal (open --raw $bkp) "host-version\n"

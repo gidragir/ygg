@@ -800,7 +800,21 @@ def "main status" [
     if $json {
         print ($rows | to json --raw)
     } else {
-        $rows
+        print ($rows | table)
+        let recent = (list-recent-backups $ygg_home --limit 5)
+        if ($recent | is-not-empty) {
+            print "Recent backups (5 max):"
+            for b in $recent {
+                if $b.legacy {
+                    print $"  ($b.id)  \(legacy\)"
+                } else {
+                    let count = ($b.targets | length)
+                    let shown = ($b.targets | first 3 | str join ", ")
+                    let tail = if $count > 3 { $" +($count - 3) more" } else { "" }
+                    print $"  ($b.id)  \(($count) path\(s\)\): ($shown)($tail)"
+                }
+            }
+        }
     }
 }
 
