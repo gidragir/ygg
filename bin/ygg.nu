@@ -203,11 +203,13 @@ def "main add" [
             error make { msg: $e.msg }
         }
 
-        let add_res = (register-staged-module $ygg_home $prep --force=$force)
-        progress-clear-line
-        print $"Added module ($add_res.name)"
+        with-env { YGG_BACKUP_ID: (new-backup-id) } {
+            let add_res = (register-staged-module $ygg_home $prep --force=$force)
+            progress-clear-line
+            print $"Added module ($add_res.name)"
 
-        apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --added-module=$add_res.name
+            apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --added-module=$add_res.name
+        }
         release-host-lock $lock_file
     } catch { |e|
         progress-clear-line
@@ -234,10 +236,17 @@ def "main remove" [
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
     try {
+        let run_backup_id = (new-backup-id)
         progress-step "ygg" $"removing ($name)"
-        remove-module $ygg_home $name --sandbox $sandbox
+        with-env { YGG_BACKUP_ID: $run_backup_id } {
+            remove-module $ygg_home $name --sandbox $sandbox
+        }
         progress-clear-line
         print $"Removed module ($name)"
+        let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $run_backup_id))
+        if ($bkp_summary != "") {
+            print -e $bkp_summary
+        }
         release-host-lock $lock_file
     } catch { |e|
         progress-clear-line
@@ -485,10 +494,18 @@ def apply-plan [
         return
     }
 
-    # Begin WAL transaction (RFC-043)
-    begin-journal-transaction $ygg_home $plan
+    let effective_refresh_packages = $effective_refresh_packages
+    let run_backup_id = if (($env.YGG_BACKUP_ID? | default "") != "") {
+        $env.YGG_BACKUP_ID
+    } else {
+        new-backup-id
+    }
 
-    try {
+    with-env { YGG_BACKUP_ID: $run_backup_id } {
+        # Begin WAL transaction (RFC-043)
+        begin-journal-transaction $ygg_home $plan
+
+        try {
         # 1. Prune unused packages if requested (RFC-030 / RFC-043)
         record-journal-step $ygg_home "prune_packages" "IN_PROGRESS"
         mut prune_res = { executed: [], failed: [], skipped: [] }
@@ -608,10 +625,19 @@ def apply-plan [
         if ($summary.stderr != "") {
             print -e $summary.stderr
         }
+        let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $run_backup_id))
+        if ($bkp_summary != "") {
+            print -e $bkp_summary
+        }
     } catch { |e|
         progress-clear-line
         fail-journal-transaction $ygg_home ($e.msg? | default ($e | to text))
+        let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $run_backup_id))
+        if ($bkp_summary != "") {
+            print -e $bkp_summary
+        }
         error make $e
+    }
     }
 }
 
