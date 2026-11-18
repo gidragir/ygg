@@ -2,7 +2,7 @@
 # Yggdrasil configuration manager — Package providers driver
 
 use state.nu [detect-host-os, get-ygg-home, load-state, save-state, expand-target-path]
-use progress.nu [is-tty-progress, term-columns, read-progress-tail, progress-clear-line, format-progress-line, format-progress-done]
+use progress.nu [is-tty-progress, term-columns, read-progress-tail, progress-clear-line, format-progress-line, format-progress-done, sanitize-log-line]
 
 const SPINNER_FRAMES = ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
 
@@ -90,6 +90,7 @@ export def run-with-timeout [
     --label: string = ""
     --no-tty-progress
     --soft-fail
+    --ok-codes: list<int> = [0]
 ]: nothing -> record {
     let bin = ($argv | first)
     let args = ($argv | skip 1)
@@ -214,7 +215,7 @@ export def run-with-timeout [
     let exit_code = ($res.exit_code? | default 1)
     let spawn_err = ($res.spawn_err? | default "")
     let stderr_str = if $raw_stderr != "" { $raw_stderr } else { $spawn_err }
-    let status = if $exit_code == 0 { "ok" } else if $soft_fail { "warn" } else { "fail" }
+    let status = if ($exit_code in $ok_codes) { "ok" } else if $soft_fail { "warn" } else { "fail" }
     print -e (format-progress-done $status $label $elapsed_float)
 
     {
@@ -509,6 +510,17 @@ def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: n
         $done = ($done | append $cmd_str)
     }
     $done
+}
+
+# Extract sanitized trailing lines from stderr (or stdout if stderr has no non-empty lines)
+export def format-pkg-failure-tail [stderr: string, stdout: string, --max-lines: int = 5]: nothing -> string {
+    let err_lines = ($stderr | split row --regex '[\r\n]+' | each { |l| sanitize-log-line $l } | where { |l| $l != "" })
+    let lines = if ($err_lines | is-not-empty) {
+        $err_lines
+    } else {
+        $stdout | split row --regex '[\r\n]+' | each { |l| sanitize-log-line $l } | where { |l| $l != "" }
+    }
+    if ($lines | is-empty) { "" } else { $lines | last $max_lines | str join "\n" }
 }
 
 # Execute one install invocation (mock-aware). Returns { ok, reason, stderr }

@@ -1519,3 +1519,22 @@ export def test_pkg_prepare_sudo_for_progress [] {
         }
     }
 }
+
+# regression: #14
+export def test_format_pkg_failure_tail [] {
+    assert equal (format-pkg-failure-tail "err line" "out line") "err line"
+    assert equal (format-pkg-failure-tail "\x1b[31m   \x1b[0m\r\n" "out fallback") "out fallback"
+    assert equal (format-pkg-failure-tail "" "\r\x1b[32m  -\r  \\\rFailed to install\nExit code: 1" --max-lines 2) "Failed to install\nExit code: 1"
+    assert equal (format-pkg-failure-tail "1\n2\n3\n4\n5\n6\n7" "") "3\n4\n5\n6\n7"
+    assert equal (format-pkg-failure-tail "" "") ""
+}
+
+# regression: #14
+export def test_run_with_timeout_ok_codes [] {
+    let src_dir = ($env.FILE_PWD | path join "../src" | path expand)
+    let res = (^nu -I $src_dir -c 'use pkg.nu [run-with-timeout]; let r = (run-with-timeout ["nu" "-c" "exit 42"] 10 --label "test" --no-tty-progress --ok-codes [0, 42]); print $"EXIT=($r.exit_code)"' | complete)
+    assert equal $res.exit_code 0 $res.stderr
+    assert ($res.stdout | str contains "EXIT=42")
+    assert ($res.stderr | str contains "[ok]")
+    assert (not ($res.stderr | str contains "[fail]"))
+}
