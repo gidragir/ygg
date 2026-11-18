@@ -594,7 +594,11 @@ def apply-plan [
             $errors = ($errors | append ("Package pruning failed for: " + $failed_pkgs))
         }
         if ($pkg_res.failed | is-not-empty) {
-            let failed_pkgs = ($pkg_res.failed | each { |f| $f.mgr + ": " + $f.pkg + " (" + $f.reason + ")" } | str join ", ")
+            let failed_pkgs = ($pkg_res.failed | each { |f|
+                let meta = $"($f.reason), exit ($f.exit_code? | default 1)"
+                let snippet = if (($f.tail? | default "") != "") { $f.tail | lines | last | str trim } else { "" }
+                if $snippet != "" { $"($f.mgr): ($f.pkg) \(($meta): ($snippet)\)" } else { $"($f.mgr): ($f.pkg) \(($meta)\)" }
+            } | str join ", ")
             $errors = ($errors | append ("Package installation failed for: " + $failed_pkgs))
         }
         if ($link_res.failed | is-not-empty) {
@@ -631,7 +635,8 @@ def apply-plan [
         commit-journal-transaction $ygg_home
 
         progress-clear-line
-        let summary = (format-apply-summary $mod_count (hook-warnings $hooks) --added-module=$added_module)
+        let all_warnings = ((hook-warnings $hooks) | append ($pkg_res.warnings? | default []))
+        let summary = (format-apply-summary $mod_count $all_warnings --added-module=$added_module)
         print $summary.stdout
         if ($summary.stderr != "") {
             print -e $summary.stderr

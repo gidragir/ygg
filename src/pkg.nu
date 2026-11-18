@@ -2,7 +2,7 @@
 # Yggdrasil configuration manager — Package providers driver
 
 use state.nu [detect-host-os, get-ygg-home, load-state, save-state, expand-target-path]
-use progress.nu [is-tty-progress, term-columns, read-progress-tail, progress-clear-line, format-progress-line, format-progress-done]
+use progress.nu [is-tty-progress, term-columns, read-progress-tail, progress-clear-line, format-progress-line, format-progress-done, sanitize-log-line]
 
 const SPINNER_FRAMES = ["⠋" "⠙" "⠹" "⠸" "⠼" "⠴" "⠦" "⠧" "⠇" "⠏"]
 
@@ -90,6 +90,7 @@ export def run-with-timeout [
     --label: string = ""
     --no-tty-progress
     --soft-fail
+    --ok-codes: list<int> = [0]
 ]: nothing -> record {
     let bin = ($argv | first)
     let args = ($argv | skip 1)
@@ -214,7 +215,7 @@ export def run-with-timeout [
     let exit_code = ($res.exit_code? | default 1)
     let spawn_err = ($res.spawn_err? | default "")
     let stderr_str = if $raw_stderr != "" { $raw_stderr } else { $spawn_err }
-    let status = if $exit_code == 0 { "ok" } else if $soft_fail { "warn" } else { "fail" }
+    let status = if ($exit_code in $ok_codes) { "ok" } else if $soft_fail { "warn" } else { "fail" }
     print -e (format-progress-done $status $label $elapsed_float)
 
     {
@@ -511,8 +512,46 @@ def prepare-provider-environment [mgr: string, sandbox: string, timeout: int]: n
     $done
 }
 
-# Execute one install invocation (mock-aware). Returns { ok, reason, stderr }
-def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, timeout: int, --no-tty-progress]: nothing -> record {
+# Extract sanitized trailing lines from stderr (or stdout if stderr has no non-empty lines)
+export def format-pkg-failure-tail [stderr: string, stdout: string, --max-lines: int = 5]: nothing -> string {
+    let err_lines = ($stderr | split row --regex '[\r\n]+' | each { |l| sanitize-log-line $l } | where { |l| $l != "" })
+    let lines = if ($err_lines | is-not-empty) {
+        $err_lines
+    } else {
+        $stdout | split row --regex '[\r\n]+' | each { |l| sanitize-log-line $l } | where { |l| $l != "" }
+    }
+    if ($lines | is-empty) { "" } else { $lines | last $max_lines | str join "\n" }
+}
+
+def detect-pwsh-active []: nothing -> bool {
+    if (is-mock-mode) {
+        "pwsh" in (csv-env "YGG_MOCK_ACTIVE_RUNTIME")
+    } else {
+        try { ps | any { |p| $p.name =~ '(?i)^pwsh(\.exe)?$' } } catch { false }
+    }
+}
+
+# RFC-064: warn and skip in-place winget upgrade when the target runtime (nu/pwsh) is currently active
+export def active-runtime-winget-warning [pkg: string, ctx?: record]: nothing -> string {
+    let os = if ($ctx != null) { ($ctx.os? | default "") } else { (detect-host-os).os }
+    if $os != "windows" {
+        return ""
+    }
+    let norm = ($pkg | str trim | str lowercase)
+    if ($norm in ["nushell.nushell", "nushell"]) {
+        return "Nushell is currently running ygg and cannot be upgraded in-place via winget; run 'winget upgrade Nushell.Nushell' outside nu if needed"
+    }
+    if ($norm in ["microsoft.powershell", "microsoft.powershell.preview"]) {
+        let in_pwsh = if ($ctx != null) { ($ctx.in_pwsh? | default false) } else { detect-pwsh-active }
+        if $in_pwsh {
+            return "PowerShell (pwsh) is currently in use and cannot be upgraded in-place via winget; run 'winget upgrade Microsoft.PowerShell' outside pwsh if needed"
+        }
+    }
+    ""
+}
+
+# Execute one install invocation (mock-aware). Returns { ok, reason, exit_code, stderr, stdout }
+export def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, timeout: int, --no-tty-progress]: nothing -> record {
     let cmd_str = ($argv | str join " ")
     if (is-mock-mode) {
         let mock_fails = (csv-env "YGG_MOCK_PKG_FAIL")
@@ -520,21 +559,21 @@ def run-install-argv [mgr: string, argv: list<string>, inv_pkgs: list<string>, t
             ($f == $mgr) or ($inv_pkgs | any { |p| $f == ($mgr + ":" + $p) })
         })
         if $hit {
-            return { ok: false, reason: "error", stderr: $"Package manager '($mgr)' error: simulated failure" }
+            return { ok: false, reason: "error", exit_code: 1, stderr: $"Package manager '($mgr)' error: simulated failure", stdout: "" }
         }
         $"($cmd_str)\n" | save -a $env.YGG_MOCK_PKG_LOG
-        return { ok: true, reason: "", stderr: "" }
-    }
-    let label = $"[pkg] ($mgr): ($inv_pkgs | str join ', ')"
-    let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout --label $label --no-tty-progress=$no_tty_progress })
-    if $r.timed_out {
-        return { ok: false, reason: "timeout", stderr: $r.stderr }
+        return { ok: true, reason: "", exit_code: 0, stderr: "", stdout: "" }
     }
     let ok_codes = if ($mgr == "winget") { $WINGET_OK_CODES } else { [0] }
+    let label = $"[pkg] ($mgr): ($inv_pkgs | str join ', ')"
+    let r = (with-env (pkg-env $mgr) { run-with-timeout (expand-argv $argv) $timeout --label $label --no-tty-progress=$no_tty_progress --ok-codes=$ok_codes })
+    if $r.timed_out {
+        return { ok: false, reason: "timeout", exit_code: 124, stderr: ($r.stderr | default ""), stdout: ($r.stdout | default "") }
+    }
     if ($r.exit_code in $ok_codes) {
-        { ok: true, reason: "", stderr: "" }
+        { ok: true, reason: "", exit_code: $r.exit_code, stderr: "", stdout: "" }
     } else {
-        { ok: false, reason: "error", stderr: ($r.stderr | default "") }
+        { ok: false, reason: "error", exit_code: $r.exit_code, stderr: ($r.stderr | default ""), stdout: ($r.stdout | default "") }
     }
 }
 
@@ -549,11 +588,11 @@ export def install-packages [
     --pkg-timeout: int = -1,
     --refresh-packages,
     --sandbox: string = ""
-]: nothing -> record<executed: list<string>, skipped: list<string>, failed: list<record<mgr: string, pkg: string, reason: string, stderr: string>>> {
+]: nothing -> record<executed: list<string>, skipped: list<string>, failed: list<record<mgr: string, pkg: string, reason: string, exit_code: int, stderr: string, tail: string>>, warnings: list<record<source: string, module: string, item: string, message: string>>> {
     let ygg_home = if ($maybe_plan == null) { get-ygg-home } else { $home_or_plan }
     let plan = if ($maybe_plan == null) { $home_or_plan } else { $maybe_plan }
     let selected = ($pkg | split row "," | each { |s| $s | str trim } | where { |it| $it != "" })
-    let empty_res = { executed: [], skipped: [], failed: [] }
+    let empty_res = { executed: [], skipped: [], failed: [], warnings: [] }
 
     if ($selected | is-not-empty) and $skip_packages {
         error make { msg: "--pkg cannot be combined with --skip-packages" }
@@ -588,6 +627,7 @@ export def install-packages [
     mut executed: list<string> = []
     mut skipped: list<string> = []
     mut failed: list<record> = []
+    mut warnings: list<record> = []
     mut new_hashes: record = {}
     mut new_packages: record = {}
 
@@ -659,7 +699,7 @@ export def install-packages [
         if ($mgr in $SUDO_MGRS) and not (sudo-available) {
             let msg = "sudo requires a password; run 'sudo -v' first or use --skip-packages"
             print -e $"[ygg] Error: ($msg)"
-            $failed = ($failed | append { mgr: $mgr, pkg: ($todo | str join " "), reason: "sudo_required", stderr: $msg })
+            $failed = ($failed | append { mgr: $mgr, pkg: ($todo | str join " "), reason: "sudo_required", exit_code: 1, stderr: $msg, tail: $msg })
             continue
         }
 
@@ -667,8 +707,21 @@ export def install-packages [
         $executed = ($executed | append $prep_done)
 
         mut mgr_failed = false
+        mut mgr_skipped_runtime = false
         for argv in $argvs {
             let inv_pkgs = (argv-pkgs $mgr $argv $todo)
+            if $mgr == "winget" {
+                let check_rt = (not $mock) or (($env.YGG_MOCK_ACTIVE_RUNTIME? | default "") != "")
+                if $check_rt {
+                    let rt_warn = (active-runtime-winget-warning $inv_pkgs.0)
+                    if $rt_warn != "" {
+                        print -e $"[ygg] Warning: ($rt_warn)"
+                        $warnings = ($warnings | append { source: "pkg", module: $mgr, item: $inv_pkgs.0, message: $rt_warn })
+                        $mgr_skipped_runtime = true
+                        continue
+                    }
+                }
+            }
             let no_tty = (prepare-sudo-for-progress ($mgr in $SUDO_MGRS) ($mgr == "paru"))
             let r = (run-install-argv $mgr $argv $inv_pkgs $timeout --no-tty-progress=$no_tty)
             if $r.ok {
@@ -676,12 +729,14 @@ export def install-packages [
             } else {
                 $mgr_failed = true
                 let pkg_str = ($inv_pkgs | str join " ")
-                print -e $"Package manager '($mgr)' failed for '($pkg_str)' \(($r.reason)\): ($r.stderr | str trim)"
-                $failed = ($failed | append { mgr: $mgr, pkg: $pkg_str, reason: $r.reason, stderr: $r.stderr })
+                let tail = (format-pkg-failure-tail $r.stderr $r.stdout)
+                let detail = if $tail != "" { ":\n  " + ($tail | lines | str join "\n  ") } else { "" }
+                print -e $"[ygg] Error: package manager '($mgr)' failed for '($pkg_str)' \(($r.reason), exit ($r.exit_code)\)($detail)"
+                $failed = ($failed | append { mgr: $mgr, pkg: $pkg_str, reason: $r.reason, exit_code: $r.exit_code, stderr: $r.stderr, tail: $tail })
             }
         }
 
-        if (not $mgr_failed) {
+        if (not $mgr_failed) and (not $mgr_skipped_runtime) {
             if $cacheable {
                 $new_hashes = ($new_hashes | upsert $hash_key $set_hash)
             }
@@ -698,7 +753,7 @@ export def install-packages [
         save-state $ygg_home ($st | upsert hashes $merged_hashes | upsert packages $merged_packages)
     }
 
-    { executed: $executed, skipped: $skipped, failed: $failed }
+    { executed: $executed, skipped: $skipped, failed: $failed, warnings: $warnings }
 }
 
 # RFC-030 / RFC-044: package uninstallation command as argv list
