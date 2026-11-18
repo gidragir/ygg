@@ -346,7 +346,8 @@ export def run-module-setup [
         YGG_MOD_CONFIG: $config_json,
         YGG_DRY_RUN: $is_dry,
         YGG_FORCE: $is_forced,
-        YGG_SANDBOX: $sb
+        YGG_SANDBOX: $sb,
+        YGG_BACKUP_ID: ($env.YGG_BACKUP_ID? | default "")
     }
 
     with-env $env_vars {

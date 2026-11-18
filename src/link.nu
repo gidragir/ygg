@@ -301,7 +301,7 @@ export def backup-with-notice [ygg_home: string, target: string]: nothing -> str
     let bkp = (backup-existing $ygg_home $target)
     if ($bkp != "") {
         progress-clear-line
-        print $"[ygg] Backed up existing '($target)' -> '($bkp)'"
+        print -e $"[ygg] Backed up existing '($target)' -> '($bkp)'"
     }
     $bkp
 }

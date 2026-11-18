@@ -203,16 +203,31 @@ def "main add" [
             error make { msg: $e.msg }
         }
 
-        let add_res = (register-staged-module $ygg_home $prep --force=$force)
-        progress-clear-line
-        print $"Added module ($add_res.name)"
+        let run_backup_id = (new-backup-id)
+        with-env { YGG_BACKUP_ID: $run_backup_id } {
+            let add_res = try {
+                register-staged-module $ygg_home $prep --force=$force
+            } catch { |e|
+                print-backup-summary $ygg_home $run_backup_id
+                error make $e
+            }
+            progress-clear-line
+            print $"Added module ($add_res.name)"
 
-        apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --added-module=$add_res.name
+            apply-plan --force=$force --skip-packages=$skip_packages --pkg=$pkg --pkg-timeout=$pkg_timeout --refresh-packages=$refresh_packages --sandbox=$effective_sandbox --added-module=$add_res.name
+        }
         release-host-lock $lock_file
     } catch { |e|
         progress-clear-line
         release-host-lock $lock_file
         error make $e
+    }
+}
+
+def print-backup-summary [ygg_home: string, backup_id: string] {
+    let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $backup_id))
+    if ($bkp_summary != "") {
+        print -e $bkp_summary
     }
 }
 
@@ -233,14 +248,19 @@ def "main remove" [
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
+    let run_backup_id = (new-backup-id)
     try {
         progress-step "ygg" $"removing ($name)"
-        remove-module $ygg_home $name --sandbox $sandbox
+        with-env { YGG_BACKUP_ID: $run_backup_id } {
+            remove-module $ygg_home $name --sandbox $sandbox
+        }
         progress-clear-line
         print $"Removed module ($name)"
+        print-backup-summary $ygg_home $run_backup_id
         release-host-lock $lock_file
     } catch { |e|
         progress-clear-line
+        print-backup-summary $ygg_home $run_backup_id
         release-host-lock $lock_file
         error make $e
     }
@@ -485,10 +505,18 @@ def apply-plan [
         return
     }
 
-    # Begin WAL transaction (RFC-043)
-    begin-journal-transaction $ygg_home $plan
+    let effective_refresh_packages = $effective_refresh_packages
+    let run_backup_id = if (($env.YGG_BACKUP_ID? | default "") != "") {
+        $env.YGG_BACKUP_ID
+    } else {
+        new-backup-id
+    }
 
-    try {
+    with-env { YGG_BACKUP_ID: $run_backup_id } {
+        # Begin WAL transaction (RFC-043)
+        begin-journal-transaction $ygg_home $plan
+
+        try {
         # 1. Prune unused packages if requested (RFC-030 / RFC-043)
         record-journal-step $ygg_home "prune_packages" "IN_PROGRESS"
         mut prune_res = { executed: [], failed: [], skipped: [] }
@@ -608,10 +636,13 @@ def apply-plan [
         if ($summary.stderr != "") {
             print -e $summary.stderr
         }
+        print-backup-summary $ygg_home $run_backup_id
     } catch { |e|
         progress-clear-line
         fail-journal-transaction $ygg_home ($e.msg? | default ($e | to text))
+        print-backup-summary $ygg_home $run_backup_id
         error make $e
+    }
     }
 }
 
@@ -774,7 +805,21 @@ def "main status" [
     if $json {
         print ($rows | to json --raw)
     } else {
-        $rows
+        print ($rows | table)
+        let recent = (list-recent-backups $ygg_home --limit 5)
+        if ($recent | is-not-empty) {
+            print "Recent backups (5 max):"
+            for b in $recent {
+                if $b.legacy {
+                    print $"  ($b.id)  \(legacy\)"
+                } else {
+                    let count = ($b.targets | length)
+                    let shown = ($b.targets | first 3 | str join ", ")
+                    let tail = if $count > 3 { $" +($count - 3) more" } else { "" }
+                    print $"  ($b.id)  \(($count) path\(s\)\): ($shown)($tail)"
+                }
+            }
+        }
     }
 }
 

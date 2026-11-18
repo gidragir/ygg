@@ -127,7 +127,7 @@ niri = "~/.config/niri"
             # 2. Real apply prints the backup notice; the file is at the reported path
             let ap = (^nu $ygg_bin apply --sandbox $sb | complete)
             assert equal $ap.exit_code 0 $ap.stderr
-            let notice = ($ap.stdout | lines | where { |l| $l | str starts-with ("[ygg] Backed up existing '" + $star + "'") })
+            let notice = ($ap.stderr | lines | where { |l| $l | str starts-with ("[ygg] Backed up existing '" + $star + "'") })
             assert equal ($notice | length) 1
             let bkp = ($notice | first | parse --regex "-> '(?P<p>.+)'$" | get 0.p)
             assert equal (open --raw $bkp) "host-version\n"
@@ -724,6 +724,116 @@ os = ["linux", "windows", "macos", "cachyos"]
             assert equal $rm_res.exit_code 0 $rm_res.stderr
             assert ($rm_res.stdout | str contains "Removed module prog-mod")
             assert ($rm_res.stderr | str contains "[ygg]")
+        }
+    }
+}
+
+# regression: #10
+export def test_apply_and_setup_group_backups_and_print_summary [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "grp-mod")
+        mkdir $mod_src ($sb | path join ".config" "grp") ($home | path join "modules")
+        'name = "grp-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[links]
+"a.conf" = "~/.config/grp/a.conf"
+"b.conf" = "~/.config/grp/b.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "src-a" | save -f ($mod_src | path join "a.conf")
+        "src-b" | save -f ($mod_src | path join "b.conf")
+        mkdir ($mod_src | path join "c-dir")
+        "src-c" | save -f ($mod_src | path join "c-dir" "c.conf")
+        'use sdk.nu *
+safe-link "c-dir" "~/.config/grp/c-dir"
+' | save -f ($mod_src | path join "setup.nu")
+
+        let dest_a = ($sb | path join ".config" "grp" "a.conf")
+        let dest_b = ($sb | path join ".config" "grp" "b.conf")
+        let dest_c_dir = ($sb | path join ".config" "grp" "c-dir")
+        mkdir $dest_c_dir
+        "old-a" | save -f $dest_a
+        "old-b" | save -f $dest_b
+        "old-c" | save -f ($dest_c_dir | path join "c.conf")
+
+        test-link-dir $mod_src ($home | path join "modules" "grp-mod")
+        "[[modules]]\nname = \"grp-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            let ap = (^nu $ygg_bin apply --force --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            let bkp_root = ($home | path join ".state" "backups")
+            let dirs = (ls $bkp_root | where type == "dir")
+            let jsons = (ls $bkp_root | where type == "file" | where { |f| ($f.name | str ends-with ".json") })
+            assert equal ($dirs | length) 1
+            assert equal ($jsons | length) 1
+            assert ($ap.stderr | str contains "Backed up 3 path(s) ->")
+            assert ($ap.stderr | str contains "a.conf")
+            assert ($ap.stderr | str contains "b.conf")
+            assert ($ap.stderr | str contains "c-dir")
+        }
+    }
+}
+
+# regression: #10
+export def test_apply_failure_still_prints_backup_summary [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "fail-mod")
+        mkdir $mod_src ($sb | path join ".config" "fail") ($home | path join "modules")
+        'name = "fail-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[links]
+"a.conf" = "~/.config/fail/a.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "src-a" | save -f ($mod_src | path join "a.conf")
+        'error make { msg: "intentional setup failure" }
+' | save -f ($mod_src | path join "setup.nu")
+        "old-a" | save -f ($sb | path join ".config" "fail" "a.conf")
+
+        test-link-dir $mod_src ($home | path join "modules" "fail-mod")
+        "[[modules]]\nname = \"fail-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            let ap = (^nu $ygg_bin apply --force --sandbox $sb | complete)
+            assert ($ap.exit_code != 0)
+            assert ($ap.stderr | str contains "Backed up 1 path(s) ->")
+            assert ($ap.stderr | str contains "a.conf")
+        }
+    }
+}
+
+# regression: #10
+export def test_apply_dry_run_creates_no_backup_index [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "dry-bkp-mod")
+        mkdir $mod_src ($sb | path join ".config" "drybkp") ($home | path join "modules")
+        'name = "dry-bkp-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[links]
+"a.conf" = "~/.config/drybkp/a.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "src-a" | save -f ($mod_src | path join "a.conf")
+        "old-a" | save -f ($sb | path join ".config" "drybkp" "a.conf")
+
+        test-link-dir $mod_src ($home | path join "modules" "dry-bkp-mod")
+        "[[modules]]\nname = \"dry-bkp-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            let ap = (^nu $ygg_bin apply --dry-run --force --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+            let bkp_root = ($home | path join ".state" "backups")
+            if ($bkp_root | path exists) {
+                assert equal (ls $bkp_root | length) 0
+            }
+            assert not ($ap.stderr | str contains "Backed up")
         }
     }
 }

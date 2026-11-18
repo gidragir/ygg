@@ -166,3 +166,25 @@ export def format-apply-summary [
     let stderr = "[ygg] Warnings:\n" + $bullets + "\n" + $next_line
     { stdout: $stdout, stderr: $stderr }
 }
+
+# Format the backup summary printed to stderr at the end of a mutating run (RFC-063)
+export def format-backup-summary [
+    run: record
+    --limit: int = 10
+]: nothing -> string {
+    let entries = ($run.entries? | default [])
+    let total = ($entries | length)
+    if $total == 0 {
+        return ""
+    }
+    let dir = ($run.dir? | default "")
+    let header = "[ygg] Backed up " + ($total | into string) + " path(s) -> " + $dir + ":"
+    let shown = ($entries | first $limit | each { |e| "  - " + ($e.target? | default "") })
+    let lines = if $total > $limit {
+        let rest = $total - $limit
+        $shown | append ("  ... and " + ($rest | into string) + " more")
+    } else {
+        $shown
+    }
+    $header + "\n" + ($lines | str join "\n")
+}

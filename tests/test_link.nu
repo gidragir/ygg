@@ -1040,7 +1040,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         assert ($pf.stderr | str contains "profile.orp")
         let ap = (run-link-nu ("apply-links '" + $home + "' (resolve-effective-plan '" + $home + "') --force --sandbox '" + $sb + "' | to nuon"))
         assert equal $ap.exit_code 0
-        assert ($ap.stdout | str contains ("[ygg] Backed up existing '" + $dest + "'"))
+        assert ($ap.stderr | str contains ("[ygg] Backed up existing '" + $dest + "'"))
         assert equal ($dest | path type) "symlink"
         let bk = (safe-glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp"))
         assert equal ($bk | length) 1
@@ -1058,7 +1058,7 @@ export def test_shadowed_files_blocks_unconfirmed_dir_replacement [] {
         let ap = (run-link-nu ("apply-links '" + $home + "' (resolve-effective-plan '" + $home + "') --sandbox '" + $sb + "' | to nuon"))
         assert equal $ap.exit_code 0
         assert ($ap.stderr | str contains "profile.orp")
-        assert ($ap.stdout | str contains "[ygg] Backed up existing")
+        assert ($ap.stderr | str contains "[ygg] Backed up existing")
         assert equal ($dest | path type) "symlink"
         assert equal (safe-glob ($home | path join ".state" "backups" "**" "OpenRGB" "profile.orp") | length) 1
     }

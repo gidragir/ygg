@@ -174,3 +174,31 @@ export def test_run_with_timeout_label_timeout_and_cleanup [] {
         }
     }
 }
+
+# regression: #10
+export def test_format_backup_summary_empty_and_under_limit [] {
+    assert equal (format-backup-summary { id: "x", dir: "/bkp/x", entries: [] }) ""
+    let run = {
+        id: "20261117_120000_000001",
+        dir: "C:\\ygg\\.state\\backups\\20261117_120000_000001",
+        entries: [
+            { target: "C:\\cfg\\a.conf", backup: "b1", type: "file" },
+            { target: "C:\\cfg\\b.conf", backup: "b2", type: "file" }
+        ]
+    }
+    let out = (format-backup-summary $run)
+    assert ($out | str starts-with "[ygg] Backed up 2 path(s) -> C:\\ygg\\.state\\backups\\20261117_120000_000001:")
+    assert ($out | str contains "  - C:\\cfg\\a.conf")
+    assert ($out | str contains "  - C:\\cfg\\b.conf")
+}
+
+# regression: #10
+export def test_format_backup_summary_truncates_over_limit [] {
+    let entries = (0..11 | each { |i| { target: $"path-($i)", backup: $"b-($i)", type: "file" } })
+    let out = (format-backup-summary { id: "x", dir: "dir-x", entries: $entries } --limit 10)
+    assert ($out | str contains "[ygg] Backed up 12 path(s) -> dir-x:")
+    assert ($out | str contains "  - path-0")
+    assert ($out | str contains "  - path-9")
+    assert not ($out | str contains "  - path-10")
+    assert ($out | str contains "  ... and 2 more")
+}

@@ -191,3 +191,44 @@ export def test_readonly_commands_do_not_touch_fresh_home [] {
     }
 }
 
+# regression: #10
+export def test_status_shows_recent_backups_and_preserves_json [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "st-mod")
+        mkdir $mod_src ($sb | path join ".config" "st") ($home | path join "modules")
+        'name = "st-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[links]
+"a.conf" = "~/.config/st/a.conf"
+' | save -f ($mod_src | path join "ygg.toml")
+        "src-a" | save -f ($mod_src | path join "a.conf")
+        "old-a" | save -f ($sb | path join ".config" "st" "a.conf")
+        test-link-dir $mod_src ($home | path join "modules" "st-mod")
+        "[[modules]]\nname = \"st-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        let host_os_ovr = if $nu.os-info.family == "windows" { "windows" } else { "cachyos" }
+        with-env { YGG_HOME: $home, YGG_SANDBOX: $sb, YGG_HOST_OS_OVERRIDE: $host_os_ovr } {
+            let ap = (^nu $ygg_bin apply --force --sandbox $sb | complete)
+            assert equal $ap.exit_code 0 $ap.stderr
+
+            # Add an older legacy backup directory without .json index
+            mkdir ($home | path join ".state" "backups" "20250101_000000_000001")
+
+            let st = (^nu $ygg_bin status | complete)
+            assert equal $st.exit_code 0 $st.stderr
+            assert ($st.stdout | str contains "st-mod")
+            assert ($st.stdout | str contains "Recent backups")
+            assert ($st.stdout | str contains "a.conf")
+            assert ($st.stdout | str contains "20250101_000000_000001  (legacy)")
+
+            let st_json = (^nu $ygg_bin status --json | complete)
+            assert equal $st_json.exit_code 0 $st_json.stderr
+            let parsed = ($st_json.stdout | from json)
+            assert equal ($parsed | length) 1
+            assert equal $parsed.0.name "st-mod"
+        }
+    }
+}
+
