@@ -412,3 +412,21 @@ export def test_list_recent_backups_handles_indexed_legacy_and_orphan [] {
         assert equal $recent.1.targets []
     }
 }
+
+# regression: #10
+export def test_rotate_backups_removes_orphans_when_no_dirs_exist [] {
+    with-temp-ygg { |home|
+        ensure-ygg-dirs $home
+        let bkp_root = ($home | path join ".state" "backups")
+        let orphan = ($bkp_root | path join "orphan.json")
+        { id: "orphan", created_at: "2026-11-01T00:00:00Z", entries: [] } | to json | save -f $orphan
+
+        let dry = (rotate-backups $home --dry-run)
+        assert equal $dry []
+        assert ($orphan | path exists)
+
+        let removed = (rotate-backups $home)
+        assert equal $removed []
+        assert not ($orphan | path exists)
+    }
+}

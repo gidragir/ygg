@@ -327,7 +327,7 @@ export def backup-existing [
     } else {
         null
     }
-    let now_iso = (date now | format date "%Y-%m-%dT%H:%M:%SZ")
+    let now_iso = (date now | date to-timezone utc | format date "%Y-%m-%dT%H:%M:%SZ")
     let is_rec = ($existing != null) and (($existing | describe) starts-with "record")
     let created_at = if $is_rec { ($existing.created_at? | default $now_iso) } else { $now_iso }
     let prev_entries = if $is_rec { ($existing.entries? | default []) } else { [] }
@@ -795,6 +795,19 @@ export def check-pending-journal [ygg_home: string]: nothing -> record<state: st
     }
 }
 
+def cleanup-orphan-backup-indexes [bkp_root: string] {
+    let json_files = (try {
+        ls $bkp_root | where type == "file" | where { |f| ($f.name | str ends-with ".json") }
+    } catch { [] })
+    for jf in $json_files {
+        let stem = ($jf.name | path basename | str replace --regex '\.json$' '')
+        let paired_dir = ($bkp_root | path join $stem)
+        if (($paired_dir | path type) != "dir") {
+            try { rm -f $jf.name } catch { }
+        }
+    }
+}
+
 # Rotate old backups according to retention policy (RFC-028)
 export def rotate-backups [
     ygg_home: string,
@@ -812,6 +825,9 @@ export def rotate-backups [
     } catch { [] })
 
     if ($entries | is-empty) {
+        if not $dry_run {
+            cleanup-orphan-backup-indexes $bkp_root
+        }
         return []
     }
 
@@ -861,16 +877,7 @@ export def rotate-backups [
                 try { rm -f $idx_file } catch { }
             }
         }
-        let json_files = (try {
-            ls $bkp_root | where type == "file" | where { |f| ($f.name | str ends-with ".json") }
-        } catch { [] })
-        for jf in $json_files {
-            let stem = ($jf.name | path basename | str replace --regex '\.json$' '')
-            let paired_dir = ($bkp_root | path join $stem)
-            if (($paired_dir | path type) != "dir") {
-                try { rm -f $jf.name } catch { }
-            }
-        }
+        cleanup-orphan-backup-indexes $bkp_root
     }
 
     $removed

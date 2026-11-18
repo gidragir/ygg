@@ -203,8 +203,14 @@ def "main add" [
             error make { msg: $e.msg }
         }
 
-        with-env { YGG_BACKUP_ID: (new-backup-id) } {
-            let add_res = (register-staged-module $ygg_home $prep --force=$force)
+        let run_backup_id = (new-backup-id)
+        with-env { YGG_BACKUP_ID: $run_backup_id } {
+            let add_res = try {
+                register-staged-module $ygg_home $prep --force=$force
+            } catch { |e|
+                print-backup-summary $ygg_home $run_backup_id
+                error make $e
+            }
             progress-clear-line
             print $"Added module ($add_res.name)"
 
@@ -215,6 +221,13 @@ def "main add" [
         progress-clear-line
         release-host-lock $lock_file
         error make $e
+    }
+}
+
+def print-backup-summary [ygg_home: string, backup_id: string] {
+    let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $backup_id))
+    if ($bkp_summary != "") {
+        print -e $bkp_summary
     }
 }
 
@@ -235,21 +248,19 @@ def "main remove" [
     let ygg_home = (get-ygg-home)
     ensure-ygg-dirs $ygg_home
     let lock_file = (acquire-host-lock $ygg_home "remove" --no-lock=$no_lock)
+    let run_backup_id = (new-backup-id)
     try {
-        let run_backup_id = (new-backup-id)
         progress-step "ygg" $"removing ($name)"
         with-env { YGG_BACKUP_ID: $run_backup_id } {
             remove-module $ygg_home $name --sandbox $sandbox
         }
         progress-clear-line
         print $"Removed module ($name)"
-        let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $run_backup_id))
-        if ($bkp_summary != "") {
-            print -e $bkp_summary
-        }
+        print-backup-summary $ygg_home $run_backup_id
         release-host-lock $lock_file
     } catch { |e|
         progress-clear-line
+        print-backup-summary $ygg_home $run_backup_id
         release-host-lock $lock_file
         error make $e
     }
@@ -625,17 +636,11 @@ def apply-plan [
         if ($summary.stderr != "") {
             print -e $summary.stderr
         }
-        let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $run_backup_id))
-        if ($bkp_summary != "") {
-            print -e $bkp_summary
-        }
+        print-backup-summary $ygg_home $run_backup_id
     } catch { |e|
         progress-clear-line
         fail-journal-transaction $ygg_home ($e.msg? | default ($e | to text))
-        let bkp_summary = (format-backup-summary (read-backup-run $ygg_home $run_backup_id))
-        if ($bkp_summary != "") {
-            print -e $bkp_summary
-        }
+        print-backup-summary $ygg_home $run_backup_id
         error make $e
     }
     }
