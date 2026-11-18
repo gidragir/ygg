@@ -22,3 +22,50 @@ with-temp-ygg { |tmp|
     }
 }
 ```
+
+## Кроссплатформенные моки и реальные контракты (копипаст-рецепты, ADR-05)
+
+### 1. Мок внешнего CLI без отключения Windows (`write-mock-cli`)
+Запрещено писать `if ($nu.os-info.family == "windows") { return }` из-за `#!/bin/sh`-заглушек или проверки прав `0600` (на Windows проверяй ACL через `read-windows-acl`), даже если такой `return` остался в соседних старых тестах файла. Пробрасывай `$bin_dir` одновременно в `PATH` и `Path`:
+
+```nushell
+# ✅ КОПИПАСТ-РЕЦЕПТ: кроссплатформенный мок бинарника в $bin_dir
+def write-mock-cli [bin_dir: string, name: string, sh_body: string, cmd_body: string] {
+    mkdir $bin_dir
+    let sh_path = ($bin_dir | path join $name)
+    $"#!/bin/sh\n($sh_body)\n" | save -f $sh_path
+    if $nu.os-info.family != "windows" { ^chmod +x $sh_path }
+    $"@echo off\r\nsetlocal\r\n($cmd_body)\r\n" | save -f $"($sh_path).cmd"
+}
+```
+
+### 2. Тестирование контракта «продюсер → потребитель»
+Запрещено тестировать функции-потребители (`run-service-actions`, `run-link-hooks`, `format-apply-summary`) только на синтетических `record` с угаданными полями (например, выдуманный `op: "COPY_UPDATE"` — реальный `compute-link-ops` / `plan-copy-sync` возвращает `op: "COPY"` с `detail: "pushed_to_host" | "seeded_host"` и обязательным полем `key`):
+
+```nushell
+# ❌ ЗАПРЕЩЕНО: угаданный op ("COPY_UPDATE" вместо реального "COPY") — тест зелёный, а в продакшене триггеры мертвы
+# let res = (run-service-actions $home $plan [{ op: "COPY_UPDATE", dest: $conf, module: "app" }] --sandbox $sb)
+
+# ✅ КОПИПАСТ-РЕЦЕПТ: реальный выход продюсера подаётся напрямую в потребитель
+let resolved = (resolve-link-targets $plan --sandbox $sb)
+let ops = (compute-link-ops $home $resolved --sandbox $sb)
+let actions = (run-service-actions $home $plan $ops --sandbox $sb)
+```
+
+### 3. `Post-Apply Invariant Gate` и проверка `.ps1` в реальном `^pwsh`
+После успешного `ygg apply` в E2E-тестах проверяй инвариант чистого состояния, а генерируемые `env.ps1`, `aliases.ps1` и `completions ps1` (включая пути песочницы с пробелом и кириллицей) прогоняй через реальный `^pwsh`:
+
+```nushell
+# ✅ КОПИПАСТ-РЕЦЕПТ: инвариант чистого состояния после успешного ygg apply
+assert equal ((^nu $ygg_bin diff --sandbox $sb | complete).exit_code) 0
+assert equal ((^nu $ygg_bin doctor --sandbox $sb | complete).exit_code) 0
+assert equal (($home | path join ".state" "host.lock" | path type)) null
+assert equal (($home | path join ".state" "journal.json" | path type)) null
+
+# ✅ КОПИПАСТ-РЕЦЕПТ: валидация сгенерированного .ps1 в реальном pwsh
+if (which pwsh | is-not-empty) {
+    let esc_ps1 = ($ps1_path | str replace --all "'" "''")
+    let ps_res = (^pwsh -NoProfile -NonInteractive -Command $". '($esc_ps1)'" | complete)
+    assert equal $ps_res.exit_code 0
+}
+```

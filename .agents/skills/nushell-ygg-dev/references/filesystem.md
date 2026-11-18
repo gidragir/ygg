@@ -13,10 +13,10 @@ let is_symlink = ($ptype == "symlink")
 if ($dest | path exists) { ... }
 ```
 
-* На Windows NTFS Junction (ReparsePoint) проверяй без следования внутрь папки: `($dest | path type)` / атрибуты `ReparsePoint` через `ls -D` или PowerShell `(Get-Item -LiteralPath $dest -Force).Attributes.HasFlag([IO.FileAttributes]::ReparsePoint)` (строку команды собирай конкатенацией — [syntax.md](syntax.md) §2).
-* Удаление только ссылки без риска удалить содержимое папки:
-  * Unix: `^rm $dest` (без `-r`!).
-  * Windows Junction: `^cmd /c rmdir $dest` (строго без `/S`!), путь — через `to-win32-path` (§5).
+* На Windows и Unix `($dest | path type) == "symlink"` (хелпер `is-link-or-junction`) распознаёт и симлинки, и NTFS Junctions (включая битые) через системный `symlink_metadata` без запуска внешних процессов. Проверять атрибут `ReparsePoint` через PowerShell **запрещено**: это ложно срабатывает на файлы OneDrive/WOF/AppExecLink и нарушает бюджет процессов (ADR-04).
+* Удаление только ссылки без риска удалить содержимое папки (`remove-link-only`):
+  * Unix: `^rm $dest` (строго без `-r`!).
+  * Windows Junction: `^cmd /c rmdir $win_dest` (строго без `/S`!), путь — через `to-win32-path` (§5).
 
 ## 2. Нормализация глоб-таргетов `dest_raw` (папка со звёздочкой `*`)
 
@@ -88,3 +88,32 @@ if ($tmp != "") and ($tmp | path exists) and ($tmp | str contains $safe_subpath)
 let mode_tail = ($mode | str substring (($mode | str length) - 9)..)
 let is_exec = ($mode_tail =~ '^..x')
 ```
+
+## 8. Чтение файла (`path type == "file"`), блокировки на Windows и бюджет процессов (`ADR-02`, `ADR-04`)
+
+1. **Чтение файла только после проверки `path type == "file"`:**
+   `path exists` возвращает `true` и для директории, на которой `open --raw` падает с исключением:
+   ```nushell
+   # ❌ НЕПРАВИЛЬНО: упадёт, если $dest — директория
+   let content = if ($dest | path exists) { open --raw $dest } else { "" }
+
+   # ✅ ПРАВИЛЬНО:
+   let content = if (($dest | path type) == "file") { open --raw $dest } else { "" }
+   ```
+
+2. **Ноль вызовов `powershell`/`pwsh`/`icacls` внутри циклов `for`/`each` (`One-Subprocess-Per-Phase`, `ADR-04`):**
+   * В `link-target-matches` сначала сравнивай встроенный `(normalize-case ($dest | path expand)) == (normalize-case ($src | path expand))` и читай `ls -lD $dest | get -o 0.target`. Запускай `^powershell` (`link-literal-target`), только когда оба быстрых пути на Windows не дали результата.
+   * Если в фазе (`doctor`, `status`, `apply`) нужно опросить свойства/ACL списка путей через PowerShell, передавай все пути **одним батч-вызовом** через JSON, а не поштучно в цикле:
+   ```nushell
+   # ✅ КОПИПАСТ-РЕЦЕПТ: батч-опрос Windows в 1 подпроцесс на всю фазу
+   let paths_json = ($paths | to json --raw)
+   let ps_script = (
+       "$paths = ConvertFrom-Json '" + ($paths_json | str replace --all "'" "''") + "'; "
+       + "$out = @{}; foreach ($p in $paths) { $out[$p] = (Get-Acl -LiteralPath $p).AccessToString }; "
+       + "$out | ConvertTo-Json -Compress"
+   )
+   let acl_map = (^powershell -NoProfile -NonInteractive -Command $ps_script | complete | get stdout | from json)
+   ```
+
+3. **Детект занятых целей на Windows (`probe-locked-targets`, `ADR-02`):**
+   Проверяй блокировку только атомарным переименованием `mv $dest $"($dest).ygg-probe"` и обратно (с авто-восстановлением осиротевшей пробы `.ygg-probe` при старте). Запрещено заменять `mv` на PowerShell `[IO.File]::Open(..., 'Open', 'ReadWrite', 'None')`: этот вызов падает с `UnauthorizedAccessException` на директориях и `ReadOnly`-файлах, не видит открытые дескрипторы/CWD в глубине дерева каталога и нарушает бюджет процессов (`ADR-04`).

@@ -64,6 +64,8 @@ let len = ($text | str length --grapheme-clusters)
 let head = ($text | str substring --grapheme-clusters 0..<$cut)
 ```
 
+Для вычисления относительного пути от базовой директории используй `($exp | path relative-to $home)` вместо ручного среза. Если нужно отрезать первое слово команды через срез, сначала сделай `$cmd | str trim`, иначе ведущие пробелы сместят индекс на длину пробелов.
+
 ## 6. Захват `mut`-переменной в замыканиях (`with-env`, `each`)
 
 В Nushell замыкания (`with-env { ... } { ... }`, `each { ... }`) запрещают захват `mut`-переменных на этапе парсинга (`Capture of mutable variable`). Если значение вычисляется через `mut` до входа в блок, затени его неизменяемым `let`:
@@ -82,4 +84,25 @@ let refresh = $refresh
 with-env { YGG_BACKUP_ID: $bid } {
     install-packages --refresh=$refresh
 }
+```
+
+## 7. Аннотации возвращаемого `record` (проверка типов в рантайме)
+
+В Nushell 0.116 аннотация выходного типа `: nothing -> record<a: int, b: string>` проверяется **в рантайме при каждом возврате из функции**. Добавление, удаление или переименование поля в возвращаемом словаре без обновления сигнатуры роняет выполнение с `nu::shell::type_mismatch`.
+
+```nushell
+# ❌ НЕПРАВИЛЬНО: добавили поле `warnings`, но забыли обновить сигнатуру -> упадёт в рантайме
+export def apply-plan [ygg_home: string]: nothing -> record<applied: int, failed: int> {
+    { applied: 1, failed: 0, warnings: [] }
+}
+
+# ✅ ПРАВИЛЬНО: сигнатура и возвращаемый record совпадают по всем полям и типам
+export def apply-plan [ygg_home: string]: nothing -> record<applied: int, failed: int, warnings: list<string>> {
+    { applied: 1, failed: 0, warnings: [] }
+}
+```
+
+Перед изменением сигнатуры или полей возврата функции обязательно найди всех её потребителей в коде и тестах:
+```nushell
+^rg -n "имя-функции" src/ bin/ tests/
 ```

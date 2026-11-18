@@ -26,6 +26,8 @@ url=$(gh issue create --repo gidragir/ygg --title "doctor: broken junction repor
 gh project item-add 5 --owner gidragir --url "$url"
 ```
 
+> **Важно:** на проекте #5 может быть включено авто-добавление новых issues в момент создания. Если `gh project item-add` возвращает `Content already exists in this project`, не падай — получи `item-id` через `gh project item-list 5 --owner gidragir --format json --limit 100` по совпадению `.content.url == $url` и затем проставь `Priority` и `Size`.
+
 ## Priority и Size на доске (#5, владелец `gidragir`)
 
 1. ID полей и опций: `gh project field-list 5 --owner gidragir --format json`.

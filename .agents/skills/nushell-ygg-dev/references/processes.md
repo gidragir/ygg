@@ -59,7 +59,9 @@ for pid in $pids {
 Правила:
 - оборачивай редирект в `try/catch` и разделяй `stdout`/`stderr` через `o>` и `e>`;
 - в ветке `try` возвращай `exit_code: 0` явно: успешный запуск с `o>`/`e>` **не сбрасывает** унаследованный `$env.LAST_EXIT_CODE` после предшествующего `error make`;
-- в `catch` `$env.LAST_EXIT_CODE` может быть `0` — подменяй на `1`;
+- в `catch` читай `$env.LAST_EXIT_CODE?` **первой строкой** блока (до вызова `which $bin` или других команд, чтобы не затереть код), а значение `0` подменяй на `1`;
+- временные лог-файлы `mktemp` создавай **внутри** `try`, чтобы исключение до цикла не оставляло сиротские `ygg-proc-*.log`;
+- при `$label == ""` и `$timeout_sec > 0` проверяй статус `job list`, чтобы прерывание `Ctrl+C` не маскировалось под `exit_code: 124`;
 - отсутствующий бинарник определяй через `which`: в `catch` при `External command failed` `$env.LAST_EXIT_CODE` равен `1`, а не `127`, и файлы вывода пусты.
 
 ```nushell
@@ -115,3 +117,16 @@ job spawn {
 - ненулевой код не считается провалом сам по себе: решает вызывающий код (например, `WINGET_OK_CODES`);
 - при таймауте возвращает `exit_code: 124` и сохраняет и накопленный `stderr`, и сообщение о таймауте;
 - при прерывании (`Ctrl+C`) или таймауте гарантированно вызывает `kill-job-tree` (§4) и удаляет свои временные файлы из системного tmp.
+
+## 8. Разделитель `--` в командах `git` (`clone` vs `checkout`)
+
+В `git clone` и `git fetch` `--` отделяет опции от URL. В `git checkout` разделитель `--` отделяет ревизию от **путей к файлам** (`git checkout [<branch>] -- <pathspec>`), поэтому `git checkout -- $branch` падает с `error: pathspec '...' did not match any file(s)`:
+
+```nushell
+# ✅ ПРАВИЛЬНО:
+if ($git_url | str starts-with "-") { error make { msg: "Invalid git URL" } }
+^git clone -- $git_url $dest
+
+if ($branch | str starts-with "-") { error make { msg: "Invalid branch name" } }
+^git -C $mod_path checkout $branch
+```
