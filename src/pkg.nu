@@ -537,7 +537,7 @@ export def active-runtime-winget-warning [pkg: string, ctx?: record]: nothing ->
     if $os != "windows" {
         return ""
     }
-    let norm = ($pkg | str trim | str downcase)
+    let norm = ($pkg | str trim | str lowercase)
     if ($norm in ["nushell.nushell", "nushell"]) {
         return "Nushell is currently running ygg and cannot be upgraded in-place via winget; run 'winget upgrade Nushell.Nushell' outside nu if needed"
     }

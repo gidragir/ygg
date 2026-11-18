@@ -837,3 +837,63 @@ os = ["linux", "windows", "macos", "cachyos"]
         }
     }
 }
+
+# regression: #14
+export def test_e2e_apply_pkg_failure_includes_exit_code_and_tail [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "pkg-diag-mod")
+        mkdir $mod_src ($home | path join "modules")
+        'name = "pkg-diag-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[packages]
+winget = ["Bad.Pkg"]
+' | save -f ($mod_src | path join "ygg.toml")
+        test-link-dir $mod_src ($home | path join "modules" "pkg-diag-mod")
+        "[[modules]]\nname = \"pkg-diag-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env {
+            YGG_HOME: $home,
+            YGG_SANDBOX: $sb,
+            YGG_HOST_OS_OVERRIDE: "windows",
+            YGG_MOCK_PKG_LOG: ($home | path join "pkg.log"),
+            YGG_MOCK_PKG_FAIL: "winget:Bad.Pkg"
+        } {
+            let res = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert ($res.exit_code != 0)
+            assert ($res.stderr | str contains "winget: Bad.Pkg (error, exit 1:") $res.stderr
+            assert ($res.stderr | str contains "simulated failure") $res.stderr
+        }
+    }
+}
+
+# regression: #14
+export def test_e2e_apply_active_runtime_winget_warns_and_succeeds [] {
+    with-temp-ygg { |home|
+        let sb = ($home | path join "sb")
+        let mod_src = ($home | path join "pkg-rt-mod")
+        mkdir $mod_src ($home | path join "modules")
+        'name = "pkg-rt-mod"
+os = ["linux", "windows", "macos", "cachyos"]
+[packages]
+winget = ["Nushell.Nushell"]
+' | save -f ($mod_src | path join "ygg.toml")
+        test-link-dir $mod_src ($home | path join "modules" "pkg-rt-mod")
+        "[[modules]]\nname = \"pkg-rt-mod\"\n" | save -f ($home | path join "host.toml")
+
+        let ygg_bin = ($env.FILE_PWD | path join "../bin/ygg.nu" | path expand)
+        with-env {
+            YGG_HOME: $home,
+            YGG_SANDBOX: $sb,
+            YGG_HOST_OS_OVERRIDE: "windows",
+            YGG_MOCK_PKG_LOG: ($home | path join "pkg.log"),
+            YGG_MOCK_ACTIVE_RUNTIME: "nu"
+        } {
+            let res = (^nu $ygg_bin apply --sandbox $sb | complete)
+            assert equal $res.exit_code 0 $res.stderr
+            assert ($res.stdout | str contains "with 1 warning(s)") $res.stdout
+            assert ($res.stderr | str contains "[ygg] Warning:") $res.stderr
+        }
+    }
+}
