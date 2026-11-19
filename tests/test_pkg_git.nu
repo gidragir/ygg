@@ -1618,3 +1618,454 @@ winget = ["Nushell.Nushell", "Microsoft.PowerShell", "Git.Git"]' | save -f ($m1 
         }
     }
 }
+
+def write-mock-cli [bin_dir: string, name: string, sh_body: string, cmd_body: string]: nothing -> nothing {
+    mkdir $bin_dir
+    let sh_path = ($bin_dir | path join $name)
+    $"#!/bin/sh\n($sh_body)\n" | save -f $sh_path
+    if $nu.os-info.family != "windows" { ^chmod +x $sh_path }
+    $"@echo off\r\nsetlocal\r\n($cmd_body)\r\n" | save -f $"($sh_path).cmd"
+}
+
+# regression: #23
+export def test_probe_packages_mock_and_os_info [] {
+    with-temp-ygg { |home|
+        let log = ($home | path join "probe.log")
+        let res = (with-env {
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: $log,
+            YGG_MOCK_PKG_UNKNOWN: "bad-pkg,node@22"
+        } {
+            probe-packages {
+                pacman: ["ripgrep", "bad-pkg"],
+                mise: ["node@22", "python@3.12"],
+                winget: ["Git.Git"],
+                cargo: ["fd-find"]
+            }
+        })
+        assert (($res | where mgr == "pacman" and pkg == "ripgrep" | first).status == "ok")
+        assert (($res | where mgr == "pacman" and pkg == "bad-pkg" | first).status == "not_found")
+        # mise checks name before '@'
+        assert (($res | where mgr == "mise" and pkg == "node@22" | first).status == "not_found")
+        assert (($res | where mgr == "mise" and pkg == "python@3.12" | first).status == "ok")
+        # winget unavailable on cachyos -> info
+        assert (($res | where mgr == "winget" and pkg == "Git.Git" | first).status == "info")
+        # cargo available everywhere over HTTP -> ok
+        assert (($res | where mgr == "cargo" and pkg == "fd-find" | first).status == "ok")
+
+        let logged = (open --raw $log)
+        assert ($logged | str contains "probe pacman ripgrep")
+        assert ($logged | str contains "probe pacman bad-pkg")
+        assert ($logged | str contains "probe mise node@22")
+        assert ($logged | str contains "probe mise python@3.12")
+        assert ($logged | str contains "probe cargo fd-find")
+        assert (not ($logged | str contains "winget"))
+
+        # Check explicit --host-os, bare mise tool name in YGG_MOCK_PKG_UNKNOWN, and paru available on Windows
+        let res_win = (with-env {
+            YGG_MOCK_PKG_LOG: $log,
+            YGG_MOCK_PKG_UNKNOWN: "node,missing-aur"
+        } {
+            probe-packages {
+                mise: ["node@22"],
+                paru: ["paru-bin", "missing-aur"],
+                pacman: ["ripgrep"]
+            } --host-os { os: "windows", distro: "windows", auto_scopes: ["windows"] }
+        })
+        assert equal ($res_win | where mgr == "mise" and pkg == "node@22" | first).status "not_found"
+        assert equal ($res_win | where mgr == "paru" and pkg == "paru-bin" | first).status "ok"
+        assert equal ($res_win | where mgr == "paru" and pkg == "missing-aur" | first).status "not_found"
+        assert equal ($res_win | where mgr == "pacman" and pkg == "ripgrep" | first).status "info"
+        assert equal ($KNOWN_PKG_MANAGERS | length) 12
+    }
+}
+
+# regression: #23
+export def test_probe_packages_cli_probes_and_missing_bin [] {
+    with-temp-ygg { |home|
+        let bin_dir = ($home | path join "mock-bin")
+        write-mock-cli $bin_dir "pacman" '
+if [ "$1" != "-Si" ]; then exit 2; fi
+case "$2" in
+  ripgrep) echo "Name : ripgrep"; exit 0 ;;
+  missing-pkg) echo "error: package '\''missing-pkg'\'' was not found" >&2; exit 1 ;;
+  err-pkg) echo "error: failed to synchronize all databases" >&2; exit 1 ;;
+esac
+exit 1
+' '
+if not "%~1"=="-Si" exit /b 2
+if "%~2"=="ripgrep" (echo Name : ripgrep & exit /b 0)
+if "%~2"=="missing-pkg" (echo error: package missing-pkg was not found 1>&2 & exit /b 1)
+if "%~2"=="err-pkg" (echo error: failed to synchronize all databases 1>&2 & exit /b 1)
+exit /b 1
+'
+        write-mock-cli $bin_dir "mise" '
+if [ "$1" != "ls-remote" ]; then exit 2; fi
+case "$2" in
+  node) echo "20.0.0"; echo "22.0.0"; exit 0 ;;
+  missing-tool) echo "mise ERROR no versions found" >&2; exit 1 ;;
+  rate-limited) echo "HTTP status client error (403 Forbidden) rate limit exceeded" >&2; exit 1 ;;
+esac
+exit 1
+' '
+if not "%~1"=="ls-remote" exit /b 2
+if "%~2"=="node" (echo 20.0.0 & echo 22.0.0 & exit /b 0)
+if "%~2"=="missing-tool" (echo mise ERROR no versions found 1>&2 & exit /b 1)
+if "%~2"=="rate-limited" (echo HTTP status client error (403 Forbidden) rate limit exceeded 1>&2 & exit /b 1)
+exit /b 1
+'
+        write-mock-cli $bin_dir "winget" '
+if [ "$4" = "Git.Git" ]; then echo "Found Git"; exit 0; fi
+if [ "$4" = "Bad.Pkg" ]; then echo "No package found matching input criteria." >&2; exit 1; fi
+echo "Failed to update source" >&2; exit 2
+' '
+if "%~4"=="Git.Git" (echo Found Git & exit /b 0)
+if "%~4"=="Bad.Pkg" (echo No package found matching input criteria. 1>&2 & exit /b 1)
+echo Failed to update source 1>&2 & exit /b 2
+'
+
+        let clean_path = [$bin_dir]
+        let res = (with-env {
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: "",
+            PATH: $clean_path,
+            Path: $clean_path
+        } {
+            probe-packages {
+                pacman: ["ripgrep", "missing-pkg", "err-pkg"],
+                mise: ["node@22", "missing-tool@1", "rate-limited@1"],
+                apt: ["curl"]
+            }
+        })
+        assert equal ($res | where mgr == "pacman" and pkg == "ripgrep" | first).status "ok"
+        assert equal ($res | where mgr == "pacman" and pkg == "missing-pkg" | first).status "not_found"
+        assert equal ($res | where mgr == "pacman" and pkg == "err-pkg" | first).status "warn"
+        assert equal ($res | where mgr == "mise" and pkg == "node@22" | first).status "ok"
+        assert equal ($res | where mgr == "mise" and pkg == "missing-tool@1" | first).status "not_found"
+        assert equal ($res | where mgr == "mise" and pkg == "rate-limited@1" | first).status "warn"
+        assert equal ($res | where mgr == "apt" and pkg == "curl" | first).status "info"
+
+        # Missing binary on PATH -> warn (never not_found)
+        let res_missing = (with-env {
+            YGG_HOST_OS_OVERRIDE: "fedora",
+            YGG_MOCK_PKG_LOG: "",
+            PATH: $clean_path,
+            Path: $clean_path
+        } {
+            probe-packages { dnf: ["ripgrep"] }
+        })
+        assert equal ($res_missing | first).status "warn"
+        assert (($res_missing | first).detail | str contains "dnf")
+
+        # winget CLI classifications
+        let res_win = (with-env {
+            YGG_HOST_OS_OVERRIDE: "windows",
+            YGG_MOCK_PKG_LOG: "",
+            PATH: $clean_path,
+            Path: $clean_path
+        } {
+            probe-packages { winget: ["Git.Git", "Bad.Pkg", "Net.Err"] }
+        })
+        assert equal ($res_win | where pkg == "Git.Git" | first).status "ok"
+        assert equal ($res_win | where pkg == "Bad.Pkg" | first).status "not_found"
+        assert equal ($res_win | where pkg == "Net.Err" | first).status "warn"
+    }
+}
+
+# regression: #23
+export def test_probe_packages_http_probes_and_network_errors [] {
+    with-temp-ygg { |home|
+        # Connection failure -> warn for all HTTP managers
+        let res_err = (with-env {
+            YGG_MOCK_PKG_LOG: "",
+            YGG_PROBE_AUR_URL: "http://127.0.0.1:1/aur",
+            YGG_PROBE_CARGO_URL: "http://127.0.0.1:1/cargo",
+            YGG_PROBE_NPM_URL: "http://127.0.0.1:1/npm",
+            YGG_PROBE_PYPI_URL: "http://127.0.0.1:1/pypi"
+        } {
+            probe-packages {
+                paru: ["paru-bin"],
+                cargo: ["fd-find"],
+                pnpm: ["@biomejs/biome"],
+                uv: ["ruff"]
+            }
+        })
+        for row in $res_err {
+            assert equal $row.status "warn"
+        }
+
+        # Real HTTP status 200 / 404 / 500 + AUR 50-chunking + User-Agent + URL encoding
+        let py = if (which python3 | is-not-empty) {
+            "python3"
+        } else if (which python | is-not-empty) {
+            "python"
+        } else {
+            ""
+        }
+        let py_ok = if $py != "" {
+            (try { (^$py -c "import http.server, json" | complete).exit_code == 0 } catch { false })
+        } else {
+            false
+        }
+        if not $py_ok {
+            return
+        }
+
+        let port_file = ($home | path join "port.txt")
+        let srv_py = ($home | path join "srv.py")
+        '
+import json, sys, threading, urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+port_file = sys.argv[1]
+aur_calls = []
+stop_event = threading.Event()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/__shutdown":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"aur_calls": aur_calls}).encode())
+            stop_event.set()
+            return
+        if parsed.path == "/aur":
+            qs = urllib.parse.parse_qs(parsed.query)
+            args = qs.get("arg[]", [])
+            aur_calls.append(len(args))
+            results = [{"Name": a} for a in args if a != "missing-aur"]
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"results": results}).encode())
+            return
+        if parsed.path.startswith("/cargo/"):
+            ua = self.headers.get("User-Agent", "")
+            if ua != "ygg-lint":
+                self.send_response(400)
+                self.end_headers()
+                return
+            name = parsed.path[len("/cargo/"):]
+            code = 200 if name == "fd-find" else (500 if name == "err-crate" else 404)
+            self.send_response(code)
+            self.end_headers()
+            return
+        if parsed.path.startswith("/npm/"):
+            raw_tail = parsed.path[len("/npm/"):]
+            code = 200 if raw_tail == "%40biomejs%2Fbiome" else 404
+            self.send_response(code)
+            self.end_headers()
+            return
+        if parsed.path.startswith("/pypi/"):
+            code = 200 if parsed.path == "/pypi/ruff/json" else 404
+            self.send_response(code)
+            self.end_headers()
+            return
+        self.send_response(404)
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+
+srv = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+with open(port_file, "w") as f:
+    f.write(str(srv.server_address[1]))
+t = threading.Thread(target=srv.serve_forever, daemon=True)
+t.start()
+stop_event.wait(timeout=30)
+srv.shutdown()
+srv.server_close()
+' | save -f $srv_py
+
+        let jid = (job spawn { ^$py $srv_py $port_file | complete | ignore })
+        try {
+            mut port = ""
+            for _ in 1..40 {
+                if ($port_file | path type) == "file" {
+                    let p = (open --raw $port_file | str trim)
+                    if $p != "" {
+                        $port = $p
+                        break
+                    }
+                }
+                sleep 50ms
+            }
+            assert ($port != "") "HTTP test server did not start"
+            let base = $"http://127.0.0.1:($port)"
+
+            let aur_pkgs = (1..52 | each { |i| $"pkg-($i)" } | append "missing-aur")
+            let res_http = (with-env {
+                YGG_MOCK_PKG_LOG: "",
+                YGG_PROBE_AUR_URL: $"($base)/aur",
+                YGG_PROBE_CARGO_URL: $"($base)/cargo",
+                YGG_PROBE_NPM_URL: $"($base)/npm",
+                YGG_PROBE_PYPI_URL: $"($base)/pypi"
+            } {
+                probe-packages {
+                    paru: $aur_pkgs,
+                    cargo: ["fd-find", "bad-crate", "err-crate"],
+                    pnpm: ["@biomejs/biome", "bad-npm"],
+                    uv: ["ruff", "bad-pypi"]
+                }
+            })
+
+            assert equal ($res_http | where mgr == "paru" and pkg == "pkg-1" | first).status "ok"
+            assert equal ($res_http | where mgr == "paru" and pkg == "pkg-52" | first).status "ok"
+            assert equal ($res_http | where mgr == "paru" and pkg == "missing-aur" | first).status "not_found"
+            assert equal ($res_http | where mgr == "cargo" and pkg == "fd-find" | first).status "ok"
+            assert equal ($res_http | where mgr == "cargo" and pkg == "bad-crate" | first).status "not_found"
+            assert equal ($res_http | where mgr == "cargo" and pkg == "err-crate" | first).status "warn"
+            assert equal ($res_http | where mgr == "pnpm" and pkg == "@biomejs/biome" | first).status "ok"
+            assert equal ($res_http | where mgr == "pnpm" and pkg == "bad-npm" | first).status "not_found"
+            assert equal ($res_http | where mgr == "uv" and pkg == "ruff" | first).status "ok"
+            assert equal ($res_http | where mgr == "uv" and pkg == "bad-pypi" | first).status "not_found"
+
+            let stats = (http get --max-time 5sec $"($base)/__shutdown")
+            assert equal $stats.aur_calls [50, 3]
+        } catch { |e|
+            try { job kill $jid | ignore } catch { }
+            error make { msg: ($e.rendered? | default $e.msg) }
+        }
+        for _ in 1..20 {
+            if (job list | where id == $jid | is-empty) { break }
+            sleep 25ms
+        }
+        try { job kill $jid | ignore } catch { }
+    }
+}
+
+# regression: #23
+export def test_probe_packages_all_cli_classifications_and_isolation [] {
+    let src_dir = ($env.FILE_PWD | path join "../src" | path expand)
+    assert equal (probe-packages {}) []
+
+    with-temp-ygg { |home|
+        let log = ($home | path join "probe.log")
+        # Mock YGG_MOCK_PKG_MISSING for CLI managers
+        let res_mock_miss = (with-env {
+            YGG_HOST_OS_OVERRIDE: "cachyos",
+            YGG_MOCK_PKG_LOG: $log,
+            YGG_MOCK_PKG_MISSING: "pacman"
+        } {
+            probe-packages { pacman: ["ripgrep"], cargo: ["fd-find"] }
+        })
+        assert equal ($res_mock_miss | where mgr == "pacman" | first).status "warn"
+        assert equal ($res_mock_miss | where mgr == "cargo" | first).status "ok"
+
+        let bin_dir = ($home | path join "cli-bin")
+        write-mock-cli $bin_dir "scoop" '
+case "$2" in
+  git) echo "Name : git"; exit 0 ;;
+  bad-scoop) echo "Could not find manifest for bad-scoop"; exit 0 ;;
+  empty-scoop) exit 0 ;;
+  net-scoop) echo "fatal: unable to access connection timeout" >&2; exit 1 ;;
+esac
+' '
+if "%~2"=="git" (echo Name : git & exit /b 0)
+if "%~2"=="bad-scoop" (echo Could not find manifest for bad-scoop & exit /b 0)
+if "%~2"=="empty-scoop" (exit /b 0)
+if "%~2"=="net-scoop" (echo fatal: unable to access connection timeout 1>&2 & exit /b 1)
+'
+        write-mock-cli $bin_dir "apt-cache" '
+case "$2" in
+  curl) echo "Package: curl"; exit 0 ;;
+  missing-apt) echo "E: No packages found" >&2; exit 100 ;;
+  broken-apt) echo "E: Lock open failed" >&2; exit 2 ;;
+esac
+' '
+if "%~2"=="curl" (echo Package: curl & exit /b 0)
+if "%~2"=="missing-apt" (echo E: No packages found 1>&2 & exit /b 100)
+if "%~2"=="broken-apt" (echo E: Lock open failed 1>&2 & exit /b 2)
+'
+        write-mock-cli $bin_dir "dnf" '
+case "$3" in
+  ripgrep) echo "Name : ripgrep"; exit 0 ;;
+  missing-dnf) echo "Error: No matching Packages to list" >&2; exit 1 ;;
+  err-dnf) echo "Failed to download metadata" >&2; exit 1 ;;
+esac
+' '
+if "%~3"=="ripgrep" (echo Name : ripgrep & exit /b 0)
+if "%~3"=="missing-dnf" (echo Error: No matching Packages to list 1>&2 & exit /b 1)
+if "%~3"=="err-dnf" (echo Failed to download metadata 1>&2 & exit /b 1)
+'
+        write-mock-cli $bin_dir "zypper" '
+case "$3" in
+  git) echo "Information for package git:"; exit 0 ;;
+  missing-zyp) echo "package '\''missing-zyp'\'' not found." >&2; exit 104 ;;
+  err-zyp) echo "System management is locked" >&2; exit 7 ;;
+esac
+' '
+if "%~3"=="git" (echo Information for package git: & exit /b 0)
+if "%~3"=="missing-zyp" (echo package missing-zyp not found. 1>&2 & exit /b 104)
+if "%~3"=="err-zyp" (echo System management is locked 1>&2 & exit /b 7)
+'
+        write-mock-cli $bin_dir "brew" '
+case "$2" in
+  bat) echo "bat: stable 0.24.0"; exit 0 ;;
+  missing-brew) echo "Error: No available formula with the name \"missing-brew\"" >&2; exit 1 ;;
+  err-brew) echo "curl: (6) Could not resolve host" >&2; exit 1 ;;
+esac
+' '
+if "%~2"=="bat" (echo bat: stable 0.24.0 & exit /b 0)
+if "%~2"=="missing-brew" (echo Error: No available formula with the name missing-brew 1>&2 & exit /b 1)
+if "%~2"=="err-brew" (echo curl: ^(6^) Could not resolve host 1>&2 & exit /b 1)
+'
+
+        let clean_path = [$bin_dir]
+        let r_scoop = (with-env { YGG_HOST_OS_OVERRIDE: "windows", YGG_MOCK_PKG_LOG: "", PATH: $clean_path, Path: $clean_path } {
+            probe-packages { scoop: ["git", "bad-scoop", "empty-scoop", "net-scoop"] }
+        })
+        assert equal ($r_scoop | where pkg == "git" | first).status "ok"
+        assert equal ($r_scoop | where pkg == "bad-scoop" | first).status "not_found"
+        assert equal ($r_scoop | where pkg == "empty-scoop" | first).status "not_found"
+        assert equal ($r_scoop | where pkg == "net-scoop" | first).status "warn"
+
+        let r_apt = (with-env { YGG_HOST_OS_OVERRIDE: "ubuntu", YGG_MOCK_PKG_LOG: "", PATH: $clean_path, Path: $clean_path } {
+            probe-packages { apt: ["curl", "missing-apt", "broken-apt"] }
+        })
+        assert equal ($r_apt | where pkg == "curl" | first).status "ok"
+        assert equal ($r_apt | where pkg == "missing-apt" | first).status "not_found"
+        assert equal ($r_apt | where pkg == "broken-apt" | first).status "warn"
+
+        let r_dnf = (with-env { YGG_HOST_OS_OVERRIDE: "fedora", YGG_MOCK_PKG_LOG: "", PATH: $clean_path, Path: $clean_path } {
+            probe-packages { dnf: ["ripgrep", "missing-dnf", "err-dnf"] }
+        })
+        assert equal ($r_dnf | where pkg == "ripgrep" | first).status "ok"
+        assert equal ($r_dnf | where pkg == "missing-dnf" | first).status "not_found"
+        assert equal ($r_dnf | where pkg == "err-dnf" | first).status "warn"
+
+        let r_zyp = (with-env { YGG_HOST_OS_OVERRIDE: "opensuse", YGG_MOCK_PKG_LOG: "", PATH: $clean_path, Path: $clean_path } {
+            probe-packages { zypper: ["git", "missing-zyp", "err-zyp"] }
+        })
+        assert equal ($r_zyp | where pkg == "git" | first).status "ok"
+        assert equal ($r_zyp | where pkg == "missing-zyp" | first).status "not_found"
+        assert equal ($r_zyp | where pkg == "err-zyp" | first).status "warn"
+
+        let r_brew = (with-env { YGG_HOST_OS_OVERRIDE: "macos", YGG_MOCK_PKG_LOG: "", PATH: $clean_path, Path: $clean_path } {
+            probe-packages { brew: ["bat", "missing-brew", "err-brew"] }
+        })
+        assert equal ($r_brew | where pkg == "bat" | first).status "ok"
+        assert equal ($r_brew | where pkg == "missing-brew" | first).status "not_found"
+        assert equal ($r_brew | where pkg == "err-brew" | first).status "warn"
+
+        # Verify zero stderr output and zero ygg-proc-* temp files in isolated TMPDIR
+        let iso_tmp = ($home | path join "iso-tmp")
+        mkdir $iso_tmp
+        let sub = (with-env {
+            TMPDIR: $iso_tmp,
+            TEMP: $iso_tmp,
+            TMP: $iso_tmp,
+            YGG_HOST_OS_OVERRIDE: "ubuntu",
+            YGG_MOCK_PKG_LOG: "",
+            PATH: $clean_path,
+            Path: $clean_path
+        } {
+            ^($nu.current-exe) -I $src_dir -c 'use pkg.nu [probe-packages]; let res = (probe-packages { apt: ["curl"] }); print ($res | to json -r)' | complete
+        })
+        assert equal $sub.exit_code 0 $sub.stderr
+        assert equal ($sub.stderr | str trim) ""
+        assert equal ($sub.stdout | from json | first).status "ok"
+        assert equal (ls $iso_tmp | where { |f| ($f.name | path basename) starts-with "ygg-proc-" } | length) 0
+    }
+}

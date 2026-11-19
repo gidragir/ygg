@@ -30,6 +30,12 @@ const SYSTEM_PRUNE_MGRS = ["pacman", "paru", "apt", "dnf", "zypper", "brew", "wi
 # Managers requiring sudo to install or uninstall (RFC-048)
 const SUDO_MGRS = ["pacman", "apt", "dnf", "zypper"]
 
+# All package managers supported across ygg target platforms
+export const KNOWN_PKG_MANAGERS = ["winget", "scoop", "pacman", "paru", "apt", "dnf", "zypper", "brew", "mise", "cargo", "pnpm", "uv"]
+
+# Package managers probed via HTTP registry/RPC APIs across all platforms
+const HTTP_PROBE_MGRS = ["paru", "cargo", "pnpm", "uv"]
+
 # RFC-005 / RFC-013: package installation commands as argv lists (one invocation per entry)
 def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>> {
     match $mgr {
@@ -295,6 +301,293 @@ const LISTING_ARGVS = {
     cargo: [cargo install --list],
     pnpm: [pnpm ls -g --json --depth=0],
     uv: [uv tool list]
+}
+
+# Read-only existence probe commands for CLI package managers (RFC-062)
+const PROBE_ARGVS = {
+    winget: [winget show --exact --id],
+    scoop: [scoop info],
+    pacman: [pacman -Si],
+    apt: [apt-cache show],
+    dnf: [dnf info --quiet],
+    zypper: [zypper --non-interactive info],
+    brew: [brew info],
+    mise: [mise ls-remote]
+}
+
+def normalize-pkg-list [raw: any]: nothing -> list<string> {
+    if (($raw | describe) starts-with "list") {
+        $raw | where { |p| ($p != null) and ($p != "") } | each { |p| $p | into string }
+    } else if ($raw != null) and ($raw != "") {
+        [($raw | into string)]
+    } else {
+        []
+    }
+}
+
+def encode-pkg-path-seg [name: string]: nothing -> string {
+    $name | url encode --all | str replace --all "%2D" "-" | str replace --all "%5F" "_" | str replace --all "%2E" "." | str replace --all "%7E" "~"
+}
+
+def probe-http-single [mgr: string, pkg: string, url: string, headers: list<string>]: nothing -> record<mgr: string, pkg: string, status: string, detail: string> {
+    let resp = (try {
+        let r = (http get --full --allow-errors --max-time 30sec --headers $headers $url)
+        { ok: true, status: ($r.status | into int), err: "" }
+    } catch { |e|
+        { ok: false, status: 0, err: $e.msg }
+    })
+    if not $resp.ok {
+        return { mgr: $mgr, pkg: $pkg, status: "warn", detail: $resp.err }
+    }
+    if $resp.status == 200 {
+        { mgr: $mgr, pkg: $pkg, status: "ok", detail: "" }
+    } else if $resp.status == 404 {
+        { mgr: $mgr, pkg: $pkg, status: "not_found", detail: $"package '($pkg)' not found in ($mgr) registry" }
+    } else {
+        { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"HTTP ($resp.status)" }
+    }
+}
+
+def probe-paru-http [pkgs: list<string>]: nothing -> list<record<mgr: string, pkg: string, status: string, detail: string>> {
+    let base_url = ($env.YGG_PROBE_AUR_URL? | default "https://aur.archlinux.org/rpc/v5/info")
+    mut out: list<record<mgr: string, pkg: string, status: string, detail: string>> = []
+    for chunk in ($pkgs | chunks 50) {
+        let query = ($chunk | each { |p| $"arg[]=($p | url encode --all)" } | str join "&")
+        let url = $"($base_url)?($query)"
+        let resp = (try {
+            let r = (http get --full --allow-errors --max-time 30sec $url)
+            { ok: true, status: ($r.status | into int), body: $r.body, err: "" }
+        } catch { |e|
+            { ok: false, status: 0, body: null, err: $e.msg }
+        })
+        if not $resp.ok {
+            for pkg in $chunk {
+                $out = ($out | append { mgr: "paru", pkg: $pkg, status: "warn", detail: $resp.err })
+            }
+            continue
+        }
+        if $resp.status != 200 {
+            for pkg in $chunk {
+                $out = ($out | append { mgr: "paru", pkg: $pkg, status: "warn", detail: $"HTTP ($resp.status)" })
+            }
+            continue
+        }
+        let body = $resp.body
+        if not (($body | describe) starts-with "record") {
+            for pkg in $chunk {
+                $out = ($out | append { mgr: "paru", pkg: $pkg, status: "warn", detail: "unexpected AUR RPC response" })
+            }
+            continue
+        }
+        if ($body.type? | default "") == "error" {
+            let err_detail = ($body.error? | default "AUR RPC error" | into string)
+            for pkg in $chunk {
+                $out = ($out | append { mgr: "paru", pkg: $pkg, status: "warn", detail: $err_detail })
+            }
+            continue
+        }
+        let found_names = ($body.results? | default [] | each { |r| $r.Name? | default "" })
+        for pkg in $chunk {
+            if ($pkg in $found_names) {
+                $out = ($out | append { mgr: "paru", pkg: $pkg, status: "ok", detail: "" })
+            } else {
+                $out = ($out | append { mgr: "paru", pkg: $pkg, status: "not_found", detail: $"package '($pkg)' not found in AUR" })
+            }
+        }
+    }
+    $out
+}
+
+def probe-http-mgr [mgr: string, pkgs: list<string>]: nothing -> list<record<mgr: string, pkg: string, status: string, detail: string>> {
+    if $mgr == "paru" {
+        return (probe-paru-http $pkgs)
+    }
+    $pkgs | each { |pkg|
+        match $mgr {
+            "cargo" => {
+                let base = ($env.YGG_PROBE_CARGO_URL? | default "https://crates.io/api/v1/crates")
+                let name = (split-pkg-spec $pkg).name
+                probe-http-single "cargo" $pkg $"($base)/(encode-pkg-path-seg $name)" [User-Agent "ygg-lint"]
+            },
+            "pnpm" => {
+                let base = ($env.YGG_PROBE_NPM_URL? | default "https://registry.npmjs.org")
+                let name = (split-pkg-spec $pkg).name
+                probe-http-single "pnpm" $pkg $"($base)/(encode-pkg-path-seg $name)" []
+            },
+            "uv" => {
+                let base = ($env.YGG_PROBE_PYPI_URL? | default "https://pypi.org/pypi")
+                let name = (uv-pkg-spec $pkg).name
+                probe-http-single "uv" $pkg $"($base)/(encode-pkg-path-seg $name)/json" []
+            },
+            _ => { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"unknown HTTP probe manager '($mgr)'" }
+        }
+    }
+}
+
+def classify-cli-probe [mgr: string, pkg: string, target: string, bin: string, r: record]: nothing -> record<mgr: string, pkg: string, status: string, detail: string> {
+    if ($r.timed_out? | default false) {
+        return { mgr: $mgr, pkg: $pkg, status: "warn", detail: ($r.stderr? | default "" | str trim) }
+    }
+    if $r.exit_code == 127 {
+        return { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"($bin) not found in PATH" }
+    }
+    let out_str = ($r.stdout? | default "")
+    let err_str = ($r.stderr? | default "")
+    let combined = ($"($out_str)\n($err_str)" | str trim)
+    let low = ($combined | str lowercase)
+    let outcome = match $mgr {
+        "winget" => {
+            if $r.exit_code == 0 {
+                { status: "ok", detail: "" }
+            } else if ($r.exit_code in [-1978335212, 2316632084]) or ($low | str contains "no package found") {
+                { status: "not_found", detail: $combined }
+            } else {
+                { status: "warn", detail: (if $combined != "" { $combined } else { $"winget exited with ($r.exit_code)" }) }
+            }
+        },
+        "scoop" => {
+            if ($low =~ '(timed out|timeout|connection|network|could not resolve)') {
+                { status: "warn", detail: $combined }
+            } else if ($low =~ "(could not find|couldn't find)") or ($r.exit_code != 0) or (($out_str | str trim) == "") {
+                { status: "not_found", detail: (if $combined != "" { $combined } else { $"package '($pkg)' not found in scoop" }) }
+            } else {
+                { status: "ok", detail: "" }
+            }
+        },
+        "pacman" => {
+            if $r.exit_code == 0 {
+                { status: "ok", detail: "" }
+            } else if ($low =~ '(was not found|не найден)') {
+                { status: "not_found", detail: $combined }
+            } else {
+                { status: "warn", detail: (if $combined != "" { $combined } else { $"pacman exited with ($r.exit_code)" }) }
+            }
+        },
+        "apt" => {
+            if ($r.exit_code == 100) or ($low =~ '(no packages found|unable to locate package)') {
+                { status: "not_found", detail: (if $combined != "" { $combined } else { $"package '($pkg)' not found in apt" }) }
+            } else if ($r.exit_code == 0) and (($out_str | str trim) != "") {
+                { status: "ok", detail: "" }
+            } else {
+                { status: "warn", detail: (if $combined != "" { $combined } else { $"apt-cache exited with ($r.exit_code)" }) }
+            }
+        },
+        "dnf" => {
+            if ($low | str contains "no matching packages") {
+                { status: "not_found", detail: $combined }
+            } else if $r.exit_code == 0 {
+                { status: "ok", detail: "" }
+            } else {
+                { status: "warn", detail: (if $combined != "" { $combined } else { $"dnf exited with ($r.exit_code)" }) }
+            }
+        },
+        "zypper" => {
+            if ($low | str contains "not found") {
+                { status: "not_found", detail: $combined }
+            } else if $r.exit_code == 0 {
+                { status: "ok", detail: "" }
+            } else {
+                { status: "warn", detail: (if $combined != "" { $combined } else { $"zypper exited with ($r.exit_code)" }) }
+            }
+        },
+        "brew" => {
+            if ($low | str contains "no available formula") {
+                { status: "not_found", detail: $combined }
+            } else if $r.exit_code == 0 {
+                { status: "ok", detail: "" }
+            } else {
+                { status: "warn", detail: (if $combined != "" { $combined } else { $"brew exited with ($r.exit_code)" }) }
+            }
+        },
+        "mise" => {
+            if ($low =~ '(rate limit|403|429|timeout|timed out|connection|network|dns|temporary failure|could not resolve)') {
+                { status: "warn", detail: $combined }
+            } else if ($r.exit_code != 0) or (($out_str | str trim) == "") {
+                { status: "not_found", detail: (if $combined != "" { $combined } else { $"tool '($target)' not found in mise" }) }
+            } else {
+                { status: "ok", detail: "" }
+            }
+        },
+        _ => { status: "warn", detail: $"unknown probe manager '($mgr)'" }
+    }
+    { mgr: $mgr, pkg: $pkg, status: $outcome.status, detail: $outcome.detail }
+}
+
+# Probe package existence across CLI managers and HTTP registries without modifying the host (RFC-062)
+export def probe-packages [pkgs_by_mgr: record, --host-os: record = {}]: nothing -> list<record<mgr: string, pkg: string, status: string, detail: string>> {
+    let eff_host_os = if ($host_os | is-empty) { detect-host-os } else { $host_os }
+    let allowed = (allowed-package-managers $eff_host_os)
+    let mock = (is-mock-mode)
+    let mock_unknown = if $mock { csv-env "YGG_MOCK_PKG_UNKNOWN" } else { [] }
+    let mock_missing = if $mock { csv-env "YGG_MOCK_PKG_MISSING" } else { [] }
+    mut results: list<record<mgr: string, pkg: string, status: string, detail: string>> = []
+
+    for mgr in ($pkgs_by_mgr | columns) {
+        let pkgs = (normalize-pkg-list ($pkgs_by_mgr | get $mgr))
+        if ($pkgs | is-empty) {
+            continue
+        }
+
+        if ($mgr not-in $allowed) and ($mgr not-in $HTTP_PROBE_MGRS) {
+            for pkg in $pkgs {
+                $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "info", detail: "manager not available on this OS; verified in CI matrix" })
+            }
+            continue
+        }
+
+        if $mock {
+            if ($mgr not-in $HTTP_PROBE_MGRS) and ($mgr in $mock_missing) {
+                for pkg in $pkgs {
+                    $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"($mgr) not found in PATH" })
+                }
+                continue
+            }
+            for pkg in $pkgs {
+                $"probe ($mgr) ($pkg)\n" | save -a $env.YGG_MOCK_PKG_LOG
+                let is_unknown = if ($mgr == "mise") {
+                    let base_name = (split-pkg-spec $pkg).name
+                    ($pkg in $mock_unknown) or ($base_name in $mock_unknown)
+                } else {
+                    $pkg in $mock_unknown
+                }
+                if $is_unknown {
+                    $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "not_found", detail: $"package '($pkg)' not found in ($mgr)" })
+                } else {
+                    $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "ok", detail: "" })
+                }
+            }
+            continue
+        }
+
+        if ($mgr in $HTTP_PROBE_MGRS) {
+            $results = ($results | append (probe-http-mgr $mgr $pkgs))
+            continue
+        }
+
+        let base_argv = ($PROBE_ARGVS | get -o $mgr)
+        if $base_argv == null {
+            for pkg in $pkgs {
+                $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"unknown package manager '($mgr)'" })
+            }
+            continue
+        }
+        let bin = ($base_argv | first)
+        if (which $bin | is-empty) {
+            for pkg in $pkgs {
+                $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"($bin) not found in PATH" })
+            }
+            continue
+        }
+
+        for pkg in $pkgs {
+            let target = if ($mgr == "mise") { (split-pkg-spec $pkg).name } else { $pkg }
+            let argv = ($base_argv | append $target)
+            let r = (with-env (pkg-env $mgr) { run-with-timeout $argv 30 })
+            $results = ($results | append (classify-cli-probe $mgr $pkg $target $bin $r))
+        }
+    }
+
+    $results
 }
 
 # Installed packages from a user-space manager listing as {name, version, requested}
