@@ -2,8 +2,8 @@
 directory: src/lint.nu
 source:
   kind: git
-  blob_sha: b5a848eaedc78c5cc2d70ddb781ced9d8676e5c2
-  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
+  blob_sha: d1962918a51ed2cb61af8a65bd1f5be1289d5b98
+  commit_sha: 6d584b36062a1a9c84120fdf8b06dbc230e95d09
 generated_by:
   component: context-init
   role: update

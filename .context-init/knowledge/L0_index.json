@@ -11,9 +11,9 @@
   "commands": {
     "test": "rtk mise run test",
     "custom": {
-      "release-tag": "rtk mise run release-tag",
       "changelog": "rtk mise run changelog",
-      "release": "rtk mise run release"
+      "release": "rtk mise run release",
+      "release-tag": "rtk mise run release-tag"
     }
   },
   "subsystems": [
