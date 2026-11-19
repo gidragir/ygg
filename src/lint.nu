@@ -147,6 +147,47 @@ def validate-scope-pkg-managers [scopes_rec: any]: nothing -> list<record> {
     $out
 }
 
+def validate-containers [cfg: any, target_prefix: string]: nothing -> list<record> {
+    if $cfg == null {
+        return []
+    }
+    if not (is-record $cfg) {
+        return [(lint-finding "schema" "error" $target_prefix ($target_prefix + " must be a table with 'files'") ("Fix " + $target_prefix + " structure in ygg.toml"))]
+    }
+    let files = ($cfg.files? | default null)
+    if $files == null {
+        return []
+    }
+    let desc = ($files | describe)
+    let valid = if ($desc == "string") {
+        true
+    } else if ($desc starts-with "list") {
+        $files | all { |x| ($x | describe) == "string" }
+    } else {
+        false
+    }
+    if not $valid {
+        let tgt = ($target_prefix + " files")
+        return [(lint-finding "schema" "error" $tgt ($target_prefix + ".files must be a string or list of strings") ("Set files to a list of compose paths in " + $target_prefix))]
+    }
+    []
+}
+
+def validate-scope-containers [scopes_rec: any]: nothing -> list<record> {
+    if not (is-record $scopes_rec) {
+        return []
+    }
+    mut out = []
+    for s_name in ($scopes_rec | columns) {
+        let s_val = ($scopes_rec | get $s_name)
+        if (is-record $s_val) and ($s_val.containers? != null) {
+            let prefix = ("[scope." + $s_name + ".containers]")
+            $out = ($out | append (validate-containers $s_val.containers $prefix))
+        }
+    }
+    $out
+}
+
 # L1: Validate ygg.toml, companion TOML files, top-level keys, OS values, and package managers
 export def lint-schemas [mod_dir: string]: nothing -> record<findings: list<record>, manifest: any> {
     if not (safe-dir-exists $mod_dir) {
@@ -213,10 +254,14 @@ export def lint-schemas [mod_dir: string]: nothing -> record<findings: list<reco
         $findings = ($findings | append (validate-os-field $manifest.os))
         $findings = ($findings | append (validate-pkg-managers ($manifest.packages? | default {}) "[packages]"))
         $findings = ($findings | append (validate-scope-pkg-managers ($manifest.scope? | default {})))
+        $findings = ($findings | append (validate-containers ($manifest.containers? | default null) "[containers]"))
+        $findings = ($findings | append (validate-scope-containers ($manifest.scope? | default {})))
     } else {
         $findings = ($findings | append (validate-os-field ($raw_ygg.os? | default null)))
         $findings = ($findings | append (validate-pkg-managers ($raw_ygg.packages? | default null) "[packages]"))
         $findings = ($findings | append (validate-scope-pkg-managers ($raw_ygg.scope? | default null)))
+        $findings = ($findings | append (validate-containers ($raw_ygg.containers? | default null) "[containers]"))
+        $findings = ($findings | append (validate-scope-containers ($raw_ygg.scope? | default null)))
     }
 
     { findings: $findings, manifest: $manifest }
@@ -466,7 +511,12 @@ export def lint-setup [mod_dir: string, src_dir: string]: nothing -> list<record
 }
 
 def collect-compose-files [mod_dir: string, manifest: record]: nothing -> list<record<rel: string, full: string>> {
-    let base_raw = ($manifest.containers?.files? | default null)
+    let base_cfg = ($manifest.containers? | default null)
+    let base_raw = if (is-record $base_cfg) {
+        $base_cfg.files? | default null
+    } else {
+        null
+    }
     let base_rels = if $base_raw != null {
         to-str-list $base_raw
     } else {
@@ -477,8 +527,11 @@ def collect-compose-files [mod_dir: string, manifest: record]: nothing -> list<r
     let scopes = ($manifest.scope? | default {})
     if (is-record $scopes) {
         for s_val in ($scopes | values) {
-            if (is-record $s_val) and ($s_val.containers?.files? != null) {
-                $scope_rels = ($scope_rels | append (to-str-list $s_val.containers.files))
+            if (is-record $s_val) {
+                let sc = ($s_val.containers? | default null)
+                if (is-record $sc) and ($sc.files? != null) {
+                    $scope_rels = ($scope_rels | append (to-str-list $sc.files))
+                }
             }
         }
     }
@@ -638,6 +691,26 @@ def clone-fixture-dep [
     { ok: true, path: $dep_dir, findings: [] }
 }
 
+def read-fixture-str [
+    entry: record,
+    field: string,
+    rel_label: string
+]: nothing -> record<ok: bool, val: string, findings: list<record>> {
+    let raw = ($entry | get -o $field)
+    if $raw == null {
+        return { ok: true, val: "", findings: [] }
+    }
+    let desc = ($raw | describe)
+    if $desc != "string" {
+        return {
+            ok: false,
+            val: "",
+            findings: [(lint-finding "fixture" "error" $rel_label ("Field '" + $field + "' in " + $rel_label + " must be a string (got " + $desc + ")") ("Set '" + $field + "' to a string in [[modules]] in " + $rel_label))]
+        }
+    }
+    { ok: true, val: ($raw | str trim), findings: [] }
+}
+
 def load-lint-fixtures [
     mod_dir: string,
     mod_name: string,
@@ -698,7 +771,13 @@ def load-lint-fixtures [
                 continue
             }
 
-            let entry_name = ($entry.name? | default "" | into string | str trim)
+            let name_res = (read-fixture-str $entry "name" $rel_label)
+            if not $name_res.ok {
+                $findings = ($findings | append $name_res.findings)
+                $fx_ok = false
+                continue
+            }
+            let entry_name = $name_res.val
             if $entry_name == "" {
                 $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Module entry in ($rel_label) missing required field 'name'" $"Add 'name' to each [[modules]] entry in ($rel_label)"))
                 $fx_ok = false
@@ -711,14 +790,26 @@ def load-lint-fixtures [
                 $self_scopes = $scopes
                 $extra_mods = ($extra_mods | append ($entry | upsert name $entry_name | upsert path $mod_dir | upsert scopes $scopes))
             } else {
-                let src = ($entry.source? | default "" | into string | str trim)
+                let src_res = (read-fixture-str $entry "source" $rel_label)
+                if not $src_res.ok {
+                    $findings = ($findings | append $src_res.findings)
+                    $fx_ok = false
+                    continue
+                }
+                let src = $src_res.val
                 if $src == "" {
                     $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Dependency '($entry_name)' in ($rel_label) is missing 'source'" $"Specify 'source' (relative path or git URL) for '($entry_name)' in ($rel_label)"))
                     $fx_ok = false
                     continue
                 }
 
-                let ref = ($entry.ref? | default "" | into string | str trim)
+                let ref_res = (read-fixture-str $entry "ref" $rel_label)
+                if not $ref_res.ok {
+                    $findings = ($findings | append $ref_res.findings)
+                    $fx_ok = false
+                    continue
+                }
+                let ref = $ref_res.val
                 if (is-git-url $src) {
                     let cloned = (clone-fixture-dep $rel_label $entry_name $src $ref $deps_dir)
                     if not $cloned.ok {
@@ -902,6 +993,9 @@ def merge-pkg-map [acc: record, pkg_map: any]: nothing -> record {
     }
     mut out = $acc
     for mgr in ($pkg_map | columns) {
+        if $mgr not-in $KNOWN_PKG_MANAGERS {
+            continue
+        }
         let pkgs = (to-str-list ($pkg_map | get $mgr) | where { |p| $p != "" })
         if ($pkgs | is-not-empty) {
             let cur = ($out | get -o $mgr | default [])

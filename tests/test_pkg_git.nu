@@ -2059,5 +2059,24 @@ if "%~2"=="err-brew" (echo curl: ^(6^) Could not resolve host 1>&2 & exit /b 1)
         assert equal ($sub.stderr | str trim) ""
         assert equal ($sub.stdout | from json | first).status "ok"
         assert equal (ls $iso_tmp | where { |f| ($f.name | path basename) starts-with "ygg-proc-" } | length) 0
+
+        # Unknown package manager returns "warn" (not "info") in both normal and mock modes
+        let res_unknown_normal = (with-env { YGG_MOCK_PKG_LOG: "" } {
+            probe-packages { aptget: ["foo"] }
+        })
+        assert equal ($res_unknown_normal | length) 1
+        assert equal $res_unknown_normal.0.mgr "aptget"
+        assert equal $res_unknown_normal.0.pkg "foo"
+        assert equal $res_unknown_normal.0.status "warn"
+        assert ($res_unknown_normal.0.detail | str contains "unknown package manager")
+
+        let unk_log = ($home | path join "unknown-mgr.log")
+        let res_unknown_mock = (with-env { YGG_MOCK_PKG_LOG: $unk_log } {
+            probe-packages { aptget: ["foo"] }
+        })
+        assert equal ($res_unknown_mock | length) 1
+        assert equal $res_unknown_mock.0.status "warn"
+        assert ($res_unknown_mock.0.detail | str contains "unknown package manager")
+        assert (not ($unk_log | path exists))
     }
 }

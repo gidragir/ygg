@@ -76,12 +76,15 @@ jobs:
               use lint.nu [compute-lint-targets]
 
               def has-nonempty [v: any]: nothing -> bool {
+                let d = ($v | describe)
                 if $v == null {
                   false
-                } else if (($v | describe) starts-with "list") {
-                  ($v | where { |x| ($x | into string | str trim) != "" } | is-not-empty)
+                } else if ($d starts-with "list") {
+                  ($v | any { |x| (($x | describe) == "string") and (($x | str trim) != "") })
+                } else if ($d == "string") {
+                  ($v | str trim) != ""
                 } else {
-                  ($v | into string | str trim) != ""
+                  false
                 }
               }
 
@@ -98,18 +101,35 @@ jobs:
               let targets = if ($os_override | is-not-empty) {
                 $os_override
               } else if $loaded.ok {
-                let t = (compute-lint-targets $loaded.manifest)
+                let t = (try { compute-lint-targets $loaded.manifest } catch { [] })
                 if ($t | is-not-empty) { $t } else { ["linux"] }
               } else {
                 ["linux"]
               }
 
               let has_mise = if $loaded.ok {
-                let m = $loaded.manifest
-                let base_has = (has-nonempty ($m.packages?.mise? | default null))
-                let scope_vals = ($m.scope? | default {} | values)
-                let scope_has = ($scope_vals | any { |s| (($s | describe) starts-with "record") and (has-nonempty ($s.packages?.mise? | default null)) })
-                $base_has or $scope_has
+                try {
+                  let m = $loaded.manifest
+                  let base_pkgs = ($m.packages? | default null)
+                  let base_has = if (($base_pkgs | describe) starts-with "record") {
+                    has-nonempty ($base_pkgs.mise? | default null)
+                  } else {
+                    false
+                  }
+                  let scope_raw = ($m.scope? | default null)
+                  let scope_vals = if (($scope_raw | describe) starts-with "record") { $scope_raw | values } else { [] }
+                  let scope_has = ($scope_vals | any { |s|
+                    if not (($s | describe) starts-with "record") {
+                      false
+                    } else {
+                      let sp = ($s.packages? | default null)
+                      (($sp | describe) starts-with "record") and (has-nonempty ($sp.mise? | default null))
+                    }
+                  })
+                  $base_has or $scope_has
+                } catch {
+                  false
+                }
               } else {
                 false
               }
@@ -124,7 +144,7 @@ jobs:
                   "macos" | "darwin" => {
                     $host_matrix = ($host_matrix | append { os: $os, runner: "macos-latest" })
                   },
-                  "linux" | "ubuntu" | "debian" | "pop" | "mint" => {
+                  "linux" | "unix" | "ubuntu" | "debian" | "pop" | "mint" => {
                     $host_matrix = ($host_matrix | append { os: $os, runner: "ubuntu-latest" })
                   },
                   "arch" | "cachyos" => {

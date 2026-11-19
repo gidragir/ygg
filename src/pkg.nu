@@ -528,6 +528,13 @@ export def probe-packages [pkgs_by_mgr: record, --host-os: record = {}]: nothing
             continue
         }
 
+        if $mgr not-in $KNOWN_PKG_MANAGERS {
+            for pkg in $pkgs {
+                $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "warn", detail: $"unknown package manager '($mgr)'" })
+            }
+            continue
+        }
+
         if ($mgr not-in $allowed) and ($mgr not-in $HTTP_PROBE_MGRS) {
             for pkg in $pkgs {
                 $results = ($results | append { mgr: $mgr, pkg: $pkg, status: "info", detail: "manager not available on this OS; verified in CI matrix" })

@@ -720,3 +720,176 @@ export def test_lint_cli_no_phase2_modules_legacy [] {
         assert (not ($runner_txt | str contains "test_phase2_modules"))
     }
 }
+
+# regression: #23
+export def test_lint_non_record_containers_and_bad_fixture_types [] {
+    with-temp-ygg { |home|
+        # 1. containers = true (base and [scope.work]) must not crash collect-compose-files or --json
+        let d_base = ($home | path join "modules" "bad-containers-base")
+        mkdir $d_base
+        ([
+            'name = "bad-containers-base"'
+            'os = ["linux"]'
+            'containers = true'
+        ] | str join "\n") | save -f ($d_base | path join "ygg.toml")
+
+        assert equal (lint-compose $d_base { name: "bad-containers-base", containers: true, scope: { work: { containers: true } } }) []
+        let f_base = (run-lint $d_base --src-dir $SRC_DIR)
+        assert ($f_base | any { |f| ($f.check == "schema") and ($f.severity == "error") and ($f.target == "[containers]") })
+
+        let r_base = (^nu $YGG_BIN lint $d_base --json | complete)
+        assert equal $r_base.exit_code 1 $r_base.stderr
+        assert equal ($r_base.stderr | str trim) ""
+        let j_base = ($r_base.stdout | from json)
+        assert ($j_base | any { |f| ($f.check == "schema") and ($f.severity == "error") and ($f.target == "[containers]") })
+
+        let d_scope = ($home | path join "modules" "bad-containers-scope")
+        mkdir $d_scope
+        ([
+            'name = "bad-containers-scope"'
+            'os = ["linux"]'
+            '[scope.work]'
+            'containers = true'
+        ] | str join "\n") | save -f ($d_scope | path join "ygg.toml")
+
+        let r_scope = (^nu $YGG_BIN lint $d_scope --json | complete)
+        assert equal $r_scope.exit_code 1 $r_scope.stderr
+        assert equal ($r_scope.stderr | str trim) ""
+        let j_scope = ($r_scope.stdout | from json)
+        assert ($j_scope | any { |f| ($f.check == "schema") and ($f.severity == "error") and ($f.target == "[scope.work.containers]") })
+
+        let d_files = ($home | path join "modules" "bad-containers-files")
+        mkdir $d_files
+        ([
+            'name = "bad-containers-files"'
+            'os = ["linux"]'
+            '[containers]'
+            'files = { bad = 1 }'
+        ] | str join "\n") | save -f ($d_files | path join "ygg.toml")
+        let r_files = (^nu $YGG_BIN lint $d_files --json | complete)
+        assert equal $r_files.exit_code 1 $r_files.stderr
+        assert equal ($r_files.stderr | str trim) ""
+        let j_files = ($r_files.stdout | from json)
+        assert ($j_files | any { |f| ($f.check == "schema") and ($f.severity == "error") and ($f.target == "[containers] files") })
+
+        # 2. Non-string name/source/ref in ci/hosts/*.toml must emit fixture error via --json and clean temp dir
+        let d_fx = ($home | path join "modules" "bad-fixture-types")
+        mkdir ($d_fx | path join "ci" "hosts")
+        ([
+            'name = "bad-fixture-types"'
+            'os = ["linux"]'
+        ] | str join "\n") | save -f ($d_fx | path join "ygg.toml")
+        ([
+            '[[modules]]'
+            'name = ["a"]'
+            '[[modules]]'
+            'name = "dep-obj-src"'
+            'source = { x = 1 }'
+            '[[modules]]'
+            'name = "dep-arr-ref"'
+            'source = "https://example.com/dep.git"'
+            'ref = []'
+        ] | str join "\n") | save -f ($d_fx | path join "ci" "hosts" "bad-types.toml")
+
+        let tmp_sub = ($home | path join "fx-tmp")
+        mkdir $tmp_sub
+        let r_fx = (with-env { TMPDIR: $tmp_sub, TEMP: $tmp_sub, TMP: $tmp_sub } {
+            ^nu $YGG_BIN lint $d_fx --json | complete
+        })
+        assert equal $r_fx.exit_code 1 $r_fx.stderr
+        assert equal ($r_fx.stderr | str trim) ""
+        let j_fx = ($r_fx.stdout | from json)
+        let fx_errs = ($j_fx | where check == "fixture" and severity == "error" and target == "ci/hosts/bad-types.toml")
+        assert equal ($fx_errs | length) 3
+        assert ($fx_errs | any { |f| $f.detail | str contains "'name'" })
+        assert ($fx_errs | any { |f| $f.detail | str contains "'source'" })
+        assert ($fx_errs | any { |f| $f.detail | str contains "'ref'" })
+        assert equal (ls $tmp_sub | length) 0
+    }
+}
+
+# regression: #23
+export def test_lint_l6_ignores_unknown_manager_reported_in_l1 [] {
+    with-temp-ygg { |home|
+        let d = ($home | path join "modules" "unknown-mgr-mod")
+        mkdir $d
+        ([
+            'name = "unknown-mgr-mod"'
+            'os = ["linux"]'
+            '[packages]'
+            'aptget = ["curl"]'
+            'cargo = ["fd-find"]'
+        ] | str join "\n") | save -f ($d | path join "ygg.toml")
+
+        let mock_log = ($home | path join "l6-unknown-mgr.log")
+        let findings = (with-env { YGG_MOCK_PKG_LOG: $mock_log } {
+            run-lint $d --packages --src-dir $SRC_DIR
+        })
+        assert ($findings | any { |f| ($f.check == "schema") and ($f.severity == "error") and ($f.target == "[packages] aptget") })
+        assert (not ($findings | any { |f| ($f.check == "packages") and ($f.target | str contains "aptget") }))
+        assert ((open --raw $mock_log) | str contains "probe cargo fd-find")
+        assert (not ((open --raw $mock_log) | str contains "aptget"))
+    }
+}
+
+# regression: #38
+export def test_lint_module_check_workflow_matrix_handles_malformed_packages_and_unix_os [] {
+    with-temp-ygg { |home|
+        let wf = (open --raw ($REPO_ROOT | path join ".github" "workflows" "module-check.yml") | from yaml)
+        let step_run = ($wf.jobs.matrix.steps | where { |s| ($s.id? | default "") == "plan" } | first | get run)
+        let parsed_script = ($step_run | parse --regex "(?s)r#'(?<inner>.*)'#")
+        assert (($parsed_script | length) == 1)
+        let inner_script = ($parsed_script | first | get inner)
+
+        # 1. packages = "oops"
+        let d_str = ($home | path join "modules" "wf-pkg-str")
+        mkdir $d_str
+        "name = \"wf-pkg-str\"\nos = [\"linux\"]\npackages = \"oops\"\n" | save -f ($d_str | path join "ygg.toml")
+        let out_str = ($home | path join "gh-out-str.txt")
+        "" | save -f $out_str
+        let r_str = (with-env { YGG_MATRIX_MOD_DIR: $d_str, YGG_OS_INPUT: "", GITHUB_OUTPUT: $out_str } {
+            ^nu -I $SRC_DIR -c $inner_script | complete
+        })
+        assert equal $r_str.exit_code 0 $r_str.stderr
+        assert ((open --raw $out_str) | str contains "has-mise=false")
+
+        # 2. [packages.mise] bad = 1 (record instead of list/string)
+        let d_rec = ($home | path join "modules" "wf-mise-rec")
+        mkdir $d_rec
+        "name = \"wf-mise-rec\"\nos = [\"linux\"]\n[packages.mise]\nbad = 1\n" | save -f ($d_rec | path join "ygg.toml")
+        let out_rec = ($home | path join "gh-out-rec.txt")
+        "" | save -f $out_rec
+        let r_rec = (with-env { YGG_MATRIX_MOD_DIR: $d_rec, YGG_OS_INPUT: "", GITHUB_OUTPUT: $out_rec } {
+            ^nu -I $SRC_DIR -c $inner_script | complete
+        })
+        assert equal $r_rec.exit_code 0 $r_rec.stderr
+        assert ((open --raw $out_rec) | str contains "has-mise=false")
+
+        # 3. [[packages.mise]] bad = 1 (table instead of list/string) and scoped malformed packages
+        let d_tbl = ($home | path join "modules" "wf-mise-tbl")
+        mkdir $d_tbl
+        "name = \"wf-mise-tbl\"\nos = [\"linux\"]\n[[packages.mise]]\nbad = 1\n[scope.work]\npackages = \"oops\"\n" | save -f ($d_tbl | path join "ygg.toml")
+        let out_tbl = ($home | path join "gh-out-tbl.txt")
+        "" | save -f $out_tbl
+        let r_tbl = (with-env { YGG_MATRIX_MOD_DIR: $d_tbl, YGG_OS_INPUT: "", GITHUB_OUTPUT: $out_tbl } {
+            ^nu -I $SRC_DIR -c $inner_script | complete
+        })
+        assert equal $r_tbl.exit_code 0 $r_tbl.stderr
+        assert ((open --raw $out_tbl) | str contains "has-mise=false")
+
+        # 4. Valid mise package list sets has-mise=true and os = ["unix"] maps to ubuntu-latest without Unknown OS warning
+        let d_unix = ($home | path join "modules" "wf-unix")
+        mkdir $d_unix
+        "name = \"wf-unix\"\nos = [\"unix\"]\n[packages]\nmise = [\"node@22\"]\n" | save -f ($d_unix | path join "ygg.toml")
+        let out_unix = ($home | path join "gh-out-unix.txt")
+        "" | save -f $out_unix
+        let r_unix = (with-env { YGG_MATRIX_MOD_DIR: $d_unix, YGG_OS_INPUT: "", GITHUB_OUTPUT: $out_unix } {
+            ^nu -I $SRC_DIR -c $inner_script | complete
+        })
+        assert equal $r_unix.exit_code 0 $r_unix.stderr
+        assert (not ($r_unix.stdout | str contains "Unknown OS"))
+        let out_txt = (open --raw $out_unix)
+        assert ($out_txt | str contains '"os":"unix","runner":"ubuntu-latest"')
+        assert ($out_txt | str contains "has-mise=true")
+    }
+}
