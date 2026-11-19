@@ -1711,7 +1711,7 @@ exit 1
 if not "%~1"=="ls-remote" exit /b 2
 if "%~2"=="node" (echo 20.0.0 & echo 22.0.0 & exit /b 0)
 if "%~2"=="missing-tool" (echo mise ERROR no versions found 1>&2 & exit /b 1)
-if "%~2"=="rate-limited" (echo HTTP status client error (403 Forbidden) rate limit exceeded 1>&2 & exit /b 1)
+if "%~2"=="rate-limited" (echo HTTP status client error ^(403 Forbidden^) rate limit exceeded 1>&2 & exit /b 1)
 exit /b 1
 '
         write-mock-cli $bin_dir "winget" '
@@ -1795,21 +1795,13 @@ export def test_probe_packages_http_probes_and_network_errors [] {
         }
 
         # Real HTTP status 200 / 404 / 500 + AUR 50-chunking + User-Agent + URL encoding
-        let py = if (which python3 | is-not-empty) {
-            "python3"
-        } else if (which python | is-not-empty) {
-            "python"
-        } else {
-            ""
-        }
-        let py_ok = if $py != "" {
-            (try { (^$py -c "import http.server, json" | complete).exit_code == 0 } catch { false })
-        } else {
-            false
-        }
-        if not $py_ok {
+        let py_candidates = (["python3", "python"] | where { |cand|
+            (which $cand | is-not-empty) and (try { (^$cand -c "import http.server, json" | complete).exit_code == 0 } catch { false })
+        })
+        if ($py_candidates | is-empty) {
             return
         }
+        let py = ($py_candidates | first)
 
         let port_file = ($home | path join "port.txt")
         let srv_py = ($home | path join "srv.py")
