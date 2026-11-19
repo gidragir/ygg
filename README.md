@@ -90,6 +90,7 @@ ygg <command> [options]
 | **`apply`** | `[-n, --dry-run] [-f, --force] [--sandbox <path>]` | Execute the full pipeline: install packages, deploy links, export environment, and run `setup.nu` hooks. |
 | **`diff`** | `[--sandbox <path>]` | Dry-run preview of planned symlink and copy operations without modifying the filesystem. |
 | **`doctor`** | `[--json] [--fix] [-y] [--ack-shadow]` | Read-only host audit: checks broken links, orphan files, collisions, permission leaks, and uncommitted edits. Exits with code `1` on error. `--fix` repairs safe findings; `--ack-shadow` marks reviewed backup-shadow warnings as `info` until a newer backup of the same path appears. |
+| **`lint`** | `[path] [--packages] [--os <list>] [--json]` | Read-only module validation (schemas, sources across all scopes, scope syntax, `setup.nu`, plan simulation, compose files, and optional package probes) in isolated sandboxes. Exits with code `1` on error. |
 | **`update`** | | Fetch and rebase all Git modules. Safely aborts on conflict; auto-applies on success. |
 | **`self-update`** | `[--channel stable\|main] [--check] [--no-lock]` | Update the ygg engine itself to the latest stable release tag (default) or the tip of `main`. `--check` only reports whether a newer release exists. |
 | **`save`** | `[--sandbox <path>]` | Synchronize modified host files defined in `[save]` back to their source module repos. |
@@ -219,6 +220,95 @@ Can we create NTFS Junction? (mklink /J)
 * **NTFS Directory Junctions:** Standard unprivileged users can link directories across NTFS volumes with zero permission prompts.
 * **3-Way GUI Copy Sync:** For single configuration files that external Windows apps rewrite destructively (breaking symlinks), `ygg` maintains a 3-way content hash baseline (`.state/baseline/`) and seamlessly brings external GUI changes back to Git via `ygg save`.
 * **Isolated `.cmd` Shims:** Any executable scripts placed into `~/.local/bin/` automatically receive Windows `.cmd` shim wrappers with `setlocal` environment isolation.
+
+---
+
+## 🔍 Module Verification
+
+Validate a module repository locally, before `git push`, and in CI without mutating `~/.ygg`, `$HOME`, or `host.toml`.
+
+### 1. Local Audit (`ygg lint`)
+
+```bash
+ygg lint [path] [--packages] [--os <list>] [--json]
+```
+
+`ygg lint` runs read-only checks inside ephemeral temporary sandboxes (cleaned up automatically) and exits with code `1` only when at least one `error` finding is reported (`warn` and `info` exit `0`):
+
+* **L1 (Schemas):** parses `ygg.toml` and companion TOML files (`packages.toml`, `links.toml`, `env.toml`, `aliases.toml`, `services.toml`, `secrets.example.toml`); warns on unknown top-level keys in `ygg.toml` and validates `os` values and package manager names.
+* **L2 (Sources):** verifies every declared source in `[links]`, `[save]`, and `[containers]` across base and **all** `[scope.*]` sections (including `mode = "dir"` directory targets).
+* **L3 (Scopes):** parses every `[scope.*]` expression.
+* **L4 (`setup.nu`):** checks `setup.nu` syntax with the engine SDK include path (`nu-check`).
+* **L5 (Plan simulation):** runs `resolve-effective-plan` and `preflight-check` for each target OS (module `os` + `[scope.<distro>]` targets, or `--os <list>`) and scope set (empty scopes and each non-OS scope individually, unless overridden by `ci/hosts/*.toml`). Findings for non-host OSes are marked `cross_os: true` — final native validation runs in CI.
+* **L6 (Packages, `--packages`):** probes declared package IDs using managers available on the current host (`winget`, `scoop`, `pacman`, `paru`, `apt`, `dnf`, `zypper`, `brew`, `mise`, `cargo`, `pnpm`, `uv`); unavailable managers emit `info`, probe/network failures emit `warn`, and missing packages emit `error`.
+* **Compose:** validates Compose files with `<runtime> compose -f <file> config -q` when `docker` or `podman` is available (`info` if no runtime).
+
+```bash
+ygg lint                         # static + plan checks for current directory
+ygg lint ./my-module --packages  # include package existence probes
+ygg lint --os linux,windows      # restrict L5 plan target OSes
+ygg lint --json                  # machine-readable JSON findings
+```
+
+### 2. Pre-Push Git Hook
+
+Run `ygg lint` automatically before pushing a module repository:
+
+* **Unix (Linux / macOS)** — `.git/hooks/pre-push` (`chmod +x .git/hooks/pre-push`):
+  ```sh
+  #!/bin/sh
+  ygg lint || exit 1
+  ```
+* **Windows** — Git for Windows runs `.git/hooks/pre-push` via POSIX `sh`; invoke the `ygg.cmd` shim installed by `install.ps1` (which resolves `nu.exe` and `ygg.nu` automatically):
+  ```sh
+  #!/bin/sh
+  ygg.cmd lint || exit 1
+  ```
+  If an external tool invokes a native Windows batch hook (e.g. `.git/hooks/pre-push.cmd`):
+  ```bat
+  @echo off
+  call "%USERPROFILE%\.local\bin\ygg.cmd" lint || exit /b 1
+  ```
+
+### 3. Module CI (`.github/workflows/ygg.yml`)
+
+Connect the reusable workflow from your module repository in 5 lines (pin `@vX.Y.Z` to the engine release tag, e.g. `@v0.3.0`):
+
+```yaml
+name: ygg
+on: [push, pull_request]
+jobs:
+  check:
+    uses: gidragir/ygg/.github/workflows/module-check.yml@v0.3.0
+```
+
+The workflow reads `os` (and distro `[scope.*]` targets) from `ygg.toml`, builds a native runner/container matrix (`windows-latest`, `macos-latest`, `ubuntu-latest`, `archlinux:latest`, `fedora:latest`), and runs `ygg lint` per target. Optional `with:` inputs:
+
+| Input | Default | Description |
+| :--- | :--- | :--- |
+| `ygg-version` | `'v0.3.0'` | Engine Git ref (tag, branch, or SHA) to run |
+| `module-path` | `'.'` | Path to the module inside the caller repository |
+| `packages` | `true` | Probe declared packages (`--packages`) |
+| `os` | `''` | Comma-separated OS target override |
+
+### 4. Host Fixtures (`ci/hosts/*.toml`)
+
+To test multi-scope combinations, module `config` values, or `depends_on` collisions across modules, add optional virtual `host.toml` fixtures under `ci/hosts/*.toml`. When present, L5 simulates these fixtures instead of the default per-scope matrix:
+
+```toml
+# ci/hosts/work-laptop.toml
+os = ["windows"]                  # optional: restrict OS targets for this fixture
+
+[[modules]]
+name = "my-module"                # checked module (matched by name in ygg.toml)
+scopes = ["work"]
+config = { projects_dir = "~/projects" }
+
+[[modules]]
+name = "shared-base"              # dependency (relative path or Git URL)
+source = "https://github.com/<owner>/<repo>"
+ref = "v1.2.0"                    # optional Git ref
+```
 
 ---
 

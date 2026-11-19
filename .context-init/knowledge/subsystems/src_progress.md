@@ -2,8 +2,8 @@
 directory: src/progress.nu
 source:
   kind: git
-  blob_sha: 5b168b05996f988f1c47690a1f50c22ac90a196a
-  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
+  blob_sha: ec01a98506a8b79e2e9f67eb3fb0d035f4af4870
+  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
 generated_by:
   component: context-init
   role: update

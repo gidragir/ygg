@@ -2,8 +2,8 @@
 directory: src/pkg.nu
 source:
   kind: git
-  blob_sha: b973ce47c7f12ec3df1e7c7328aaf9ee980bc9fd
-  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
+  blob_sha: 3d6e99c81b1de1aba9ba3a35cbaf64734ae79cc0
+  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
 generated_by:
   component: context-init
   role: update
@@ -31,11 +31,11 @@ freshness:
 ## 🔑 Ключевой контракт и экспорты
 ```text
 export def pkg-env [mgr: string]: nothing -> record
-def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>>
+export const KNOWN_PKG_MANAGERS = ["winget", "scoop", "pacman", "paru", "apt", "dnf", "zypper", "brew", "mise", "cargo", "pnpm", "uv"] # Package managers probed via HTTP registry/RPC APIs across all platforms const HTTP_PROBE_MGRS = ["paru", "cargo", "pnpm", "uv"] # RFC-005 / ...
 def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string>
 def default-pkg-timeout [mgr: string]: nothing -> int
 def kill-job-tree [jid: int]: nothing -> nothing
-export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = "" --no-tty-progress --soft-fail ]: nothing -> record
+export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = "" --no-tty-progress --soft-fail --ok-codes: list<int> = [0] ]: nothing -> record
 ```
 
 ## 🧪 Запуск и тестирование

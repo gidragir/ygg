@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-17",
+  "updated_at": "2026-11-19",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml"
@@ -11,10 +11,9 @@
   "commands": {
     "test": "rtk mise run test",
     "custom": {
-      "test-phase2": "rtk mise run test-phase2",
       "release-tag": "rtk mise run release-tag",
-      "release": "rtk mise run release",
-      "changelog": "rtk mise run changelog"
+      "changelog": "rtk mise run changelog",
+      "release": "rtk mise run release"
     }
   },
   "subsystems": [
@@ -180,11 +179,11 @@
         "export def is-prerelease [tag: string]: nothing -> bool",
         "export def normalize-version [raw: string]: nothing -> string",
         "export def set-ygg-version [content: string, version: string]: nothing -> string",
+        "export def set-workflow-ygg-version [content: string, version: string]: nothing -> string",
         "def repo-root []: nothing -> string",
         "def git [root: string, ...args: string]: nothing -> record",
         "def git-ok [root: string, ...args: string]: nothing -> string",
-        "def fail [msg: string]",
-        "def assert-clean [root: string]"
+        "def fail [msg: string]"
       ],
       "summary_source": "heuristic"
     },
@@ -375,6 +374,38 @@
       "summary_source": "heuristic"
     },
     {
+      "id": "src_lint",
+      "name": "Lint",
+      "summary": "Модуль и компоненты директории `src/lint` (1 файлов)",
+      "l1_path": "subsystems/src_lint.md",
+      "tags": [
+        "Generic / Multi-language",
+        "src_lint"
+      ],
+      "key_files": [
+        "src/lint.nu"
+      ],
+      "files": [
+        {
+          "path": "src/lint.nu",
+          "is_entrypoint": false
+        }
+      ],
+      "key_symbols": [
+        "def is-record [v: any]: nothing -> bool",
+        "def has-wildcard-chars [s: string]: nothing -> bool",
+        "def has-win32-invalid-chars [s: string]: nothing -> bool",
+        "def native-rel [rel: string]: nothing -> string",
+        "def to-str-list [v: any]: nothing -> list<string>",
+        "def safe-path-type [p: string]: nothing -> any",
+        "def safe-path-exists [p: string]: nothing -> bool",
+        "def safe-dir-exists [p: string]: nothing -> bool",
+        "def safe-file-exists [p: string]: nothing -> bool",
+        "export def lint-finding [ check: string, severity: string, target: string, detail: string, fix: string ]: nothing -> record<check: string, severity: string, target: string, detail: string, fix: string>"
+      ],
+      "summary_source": "heuristic"
+    },
+    {
       "id": "src_manifest",
       "name": "Manifest",
       "summary": "Модуль и компоненты директории `src/manifest` (1 файлов)",
@@ -397,7 +428,7 @@
         "export def save-host-config [ygg_home: string, cfg: record]: nothing -> nothing",
         "export def validate-module-os [manifest: record, host_os: record]: nothing -> bool",
         "export def merge-services-deep [base: any, overlay: any]: any -> any",
-        "export def load-module-manifest [mod_dir: string]: nothing -> record"
+        "export const YGG_MANIFEST_KEYS = [\"name\", \"os\", \"depends_on\", \"description\", \"config\", \"packages\", \"links\", \"save\", \"services\", \"env\", \"aliases\", \"path\", \"scope\", \"doctor\", \"containers\", \"setup\"] # Supported OS and distribution tokens for ygg.toml `os` field export const KNOWN..."
       ],
       "summary_source": "heuristic"
     },
@@ -444,11 +475,11 @@
       ],
       "key_symbols": [
         "export def pkg-env [mgr: string]: nothing -> record",
-        "def pkg-argv-list [mgr: string, pkgs: list<string>]: nothing -> list<list<string>>",
+        "export const KNOWN_PKG_MANAGERS = [\"winget\", \"scoop\", \"pacman\", \"paru\", \"apt\", \"dnf\", \"zypper\", \"brew\", \"mise\", \"cargo\", \"pnpm\", \"uv\"] # Package managers probed via HTTP registry/RPC APIs across all platforms const HTTP_PROBE_MGRS = [\"paru\", \"cargo\", \"pnpm\", \"uv\"] # RFC-005 / ...",
         "def argv-pkgs [mgr: string, argv: list<string>, pkgs: list<string>]: nothing -> list<string>",
         "def default-pkg-timeout [mgr: string]: nothing -> int",
         "def kill-job-tree [jid: int]: nothing -> nothing",
-        "export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = \"\" --no-tty-progress --soft-fail ]: nothing -> record"
+        "export def run-with-timeout [ argv: list<string> timeout_sec: int --label: string = \"\" --no-tty-progress --soft-fail --ok-codes: list<int> = [0] ]: nothing -> record"
       ],
       "summary_source": "heuristic"
     },
@@ -561,8 +592,8 @@
         "tests/test_e2e_modules.nu",
         "tests/test_env.nu",
         "tests/test_link.nu",
+        "tests/test_lint.nu",
         "tests/test_manifest.nu",
-        "tests/test_phase2_modules.nu",
         "tests/test_pkg_git.nu",
         "tests/test_progress.nu",
         "tests/test_sdk.nu",
@@ -606,11 +637,11 @@
           "is_entrypoint": false
         },
         {
-          "path": "tests/test_manifest.nu",
+          "path": "tests/test_lint.nu",
           "is_entrypoint": false
         },
         {
-          "path": "tests/test_phase2_modules.nu",
+          "path": "tests/test_manifest.nu",
           "is_entrypoint": false
         },
         {
@@ -630,6 +661,38 @@
           "is_entrypoint": false
         }
       ],
+      "summary_source": "heuristic"
+    },
+    {
+      "id": "tests_fixtures",
+      "name": "Tests Fixtures",
+      "summary": "Тесты для `tests`",
+      "l1_path": "subsystems/tests_fixtures.md",
+      "tags": [
+        "Generic / Multi-language",
+        "tests",
+        "tests_fixtures"
+      ],
+      "key_files": [
+        "tests/fixtures/module-sample/links.toml",
+        "tests/fixtures/module-sample/packages.toml",
+        "tests/fixtures/module-sample/ygg.toml"
+      ],
+      "files": [
+        {
+          "path": "tests/fixtures/module-sample/links.toml",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/fixtures/module-sample/packages.toml",
+          "is_entrypoint": false
+        },
+        {
+          "path": "tests/fixtures/module-sample/ygg.toml",
+          "is_entrypoint": false
+        }
+      ],
+      "parent": "tests",
       "summary_source": "heuristic"
     }
   ],

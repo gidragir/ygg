@@ -2,8 +2,8 @@
 directory: src/link.nu
 source:
   kind: git
-  blob_sha: 83547a4bbb09f518ae7d83f9b6326ac6b3a17862
-  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
+  blob_sha: b14328db6b22d6205c47f4f015f6882ad1758d2a
+  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
 generated_by:
   component: context-init
   role: update

@@ -2,8 +2,8 @@
 directory: tests
 source:
   kind: git
-  blob_sha: 1b24506f9f1fd12af2304ead7eb8c58eb12c3971
-  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
+  blob_sha: 74b4293e966efe5d6566c69be1189e8c0897c483
+  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
 generated_by:
   component: context-init
   role: update
@@ -35,8 +35,8 @@ freshness:
 | `tests/test_e2e_modules.nu` | Исходный код |
 | `tests/test_env.nu` | Исходный код |
 | `tests/test_link.nu` | Исходный код |
+| `tests/test_lint.nu` | Исходный код |
 | `tests/test_manifest.nu` | Исходный код |
-| `tests/test_phase2_modules.nu` | Исходный код |
 | `tests/test_pkg_git.nu` | Исходный код |
 | `tests/test_progress.nu` | Исходный код |
 | `tests/test_sdk.nu` | Исходный код |
