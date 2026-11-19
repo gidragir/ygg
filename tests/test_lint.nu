@@ -5,7 +5,7 @@
 use std/assert
 use ../src/lint.nu *
 use ../src/manifest.nu [load-module-manifest]
-use helpers.nu [with-temp-ygg, test-dangling-link]
+use helpers.nu [with-temp-ygg, test-dangling-link, snapshot-tree]
 
 const SRC_DIR = (path self | path dirname | path dirname | path join "src")
 
@@ -261,5 +261,274 @@ export def test_lint_read_only_and_no_temp_artifacts [] {
         assert (not (($home | path join ".state") | path exists))
         assert (not (($home | path join "host.toml") | path exists))
         assert equal (ls $tmp_sub | where { |f| ($f.name | path basename) starts-with "ygg-proc-" } | length) 0
+    }
+}
+
+# regression: #23
+export def test_lint_l5_cross_os_conflict [] {
+    with-temp-ygg { |home|
+        let d = ($home | path join "modules" "cross-mod")
+        mkdir ($d | path join "app")
+        "base = 1\n" | save -f ($d | path join "app" "base.conf")
+        "sub = 1\n" | save -f ($d | path join "sub.conf")
+        ([
+            'name = "cross-mod"'
+            'os = ["linux", "windows"]'
+            '[links]'
+            '"app" = "~/.config/app"'
+            '[scope."windows and work".links]'
+            '"sub.conf" = "~/.config/app/sub.conf"'
+        ] | str join "\n") | save -f ($d | path join "ygg.toml")
+
+        let findings = (run-lint $d --src-dir $SRC_DIR)
+        let errs = ($findings | where check == "plan" and severity == "error")
+        assert (($errs | length) >= 1)
+        let win_err = ($errs | where os == "windows" | first)
+        assert equal $win_err.scopes ["work"]
+        assert equal $win_err.target "cross-mod: sub.conf"
+        assert ($errs | where os == "linux" | is-empty)
+        if $nu.os-info.family != "windows" {
+            assert equal $win_err.cross_os true
+            assert ($win_err.detail | str contains "план для windows построен на")
+        } else {
+            assert equal $win_err.cross_os false
+        }
+        # Mixed L1-L4 + L5 schema serializes cleanly to JSON and expands as table
+        let json_out = ($findings | to json --raw)
+        assert (($json_out | from json | length) == ($findings | length))
+        let _ = ($findings | table --expand)
+        # --os filter restricts L5 simulation to matching targets
+        let linux_only = (run-lint $d --os ["linux"] --src-dir $SRC_DIR)
+        assert ($linux_only | where check == "plan" and severity == "error" | is-empty)
+    }
+}
+
+# regression: #23
+export def test_lint_l5_depends_on_without_and_with_fixture [] {
+    with-temp-ygg { |home|
+        let app_dir = ($home | path join "modules" "app-mod")
+        mkdir $app_dir
+        "app = 1\n" | save -f ($app_dir | path join "app.conf")
+        ([
+            'name = "app-mod"'
+            'os = ["linux"]'
+            'depends_on = ["dep-mod"]'
+            '[links]'
+            '"app.conf" = "~/.config/shared.conf"'
+        ] | str join "\n") | save -f ($app_dir | path join "ygg.toml")
+
+        # 1. Without fixture: L5 runs, missing_dependency downgraded to warn, 0 errors
+        let no_fx = (run-lint $app_dir --src-dir $SRC_DIR)
+        assert equal ($no_fx | where severity == "error" | length) 0
+        let warns = ($no_fx | where check == "plan" and severity == "warn")
+        assert ($warns | any { |f| ($f.target == "app-mod: depends_on") and ($f.detail | str contains "dep-mod") })
+
+        # 2. With ci/hosts/default.toml and local relative dependency colliding on destination
+        let dep_dir = ($home | path join "modules" "dep-mod")
+        mkdir $dep_dir
+        "dep = 1\n" | save -f ($dep_dir | path join "dep.conf")
+        ([
+            'name = "dep-mod"'
+            'os = ["linux"]'
+            '[links]'
+            '"dep.conf" = "~/.config/shared.conf"'
+        ] | str join "\n") | save -f ($dep_dir | path join "ygg.toml")
+
+        mkdir ($app_dir | path join "ci" "hosts")
+        ([
+            '[[modules]]'
+            'name = "app-mod"'
+            ''
+            '[[modules]]'
+            'name = "dep-mod"'
+            'source = "../dep-mod"'
+        ] | str join "\n") | save -f ($app_dir | path join "ci" "hosts" "default.toml")
+
+        let with_fx = (run-lint $app_dir --src-dir $SRC_DIR)
+        assert ($with_fx | where target =~ "depends_on" | is-empty)
+        let col_errs = ($with_fx | where check == "plan" and severity == "error")
+        assert (($col_errs | length) >= 1)
+        assert ($col_errs | any { |f| ($f.detail | str contains "shared.conf") and ($f.detail | str contains "dep-mod") })
+    }
+}
+
+# regression: #23
+export def test_lint_l5_fixture_git_clone_and_error [] {
+    with-temp-ygg { |home|
+        let dep_repo = ($home | path join "repos" "dep-git")
+        mkdir $dep_repo
+        "dep = 1\n" | save -f ($dep_repo | path join "dep.conf")
+        ([
+            'name = "dep-git"'
+            'os = ["linux"]'
+            '[links]'
+            '"dep.conf" = "~/.config/git-shared.conf"'
+        ] | str join "\n") | save -f ($dep_repo | path join "ygg.toml")
+
+        let init_res = (^git -C $dep_repo init -b v1 | complete)
+        assert equal $init_res.exit_code 0
+        let add_res = (^git -C $dep_repo add -A | complete)
+        assert equal $add_res.exit_code 0
+        let commit_res = (^git -C $dep_repo -c user.name=Test -c user.email=test@example.com commit -m "init" | complete)
+        assert equal $commit_res.exit_code 0
+
+        let url_path = ($dep_repo | str replace --all "\\" "/")
+        let git_url = if ($url_path | str starts-with "/") { $"file://($url_path)" } else { $"file:///($url_path)" }
+        let missing_url = if ($url_path | str starts-with "/") { $"file://($url_path)-missing" } else { $"file:///($url_path)-missing" }
+
+        let app_dir = ($home | path join "modules" "app-git")
+        mkdir $app_dir
+        "app = 1\n" | save -f ($app_dir | path join "app.conf")
+        ([
+            'name = "app-git"'
+            'os = ["linux"]'
+            'depends_on = ["dep-git"]'
+            '[links]'
+            '"app.conf" = "~/.config/git-shared.conf"'
+        ] | str join "\n") | save -f ($app_dir | path join "ygg.toml")
+
+        mkdir ($app_dir | path join "ci" "hosts")
+        ([
+            '[[modules]]'
+            'name = "dep-git"'
+            $'source = "($git_url)"'
+            'ref = "v1"'
+        ] | str join "\n") | save -f ($app_dir | path join "ci" "hosts" "git-dep.toml")
+        ([
+            '[[modules]]'
+            'name = "dep-missing"'
+            $'source = "($missing_url)"'
+        ] | str join "\n") | save -f ($app_dir | path join "ci" "hosts" "bad-url.toml")
+
+        let findings = (run-lint $app_dir --src-dir $SRC_DIR)
+        assert ($findings | any { |f| ($f.check == "plan") and ($f.severity == "error") and ($f.detail | str contains "git-shared.conf") })
+        assert ($findings | any { |f| ($f.check == "fixture") and ($f.severity == "error") and ($f.target == "ci/hosts/bad-url.toml") })
+    }
+}
+
+# regression: #23
+export def test_lint_l5_distro_targets_and_expr_scopes [] {
+    with-temp-ygg { |home|
+        let d = ($home | path join "modules" "scope-expr-mod")
+        mkdir $d
+        ([
+            'name = "scope-expr-mod"'
+            'os = ["linux"]'
+            '[scope.cachyos]'
+            'links = {}'
+            '[scope."work and not headless"]'
+            'links = {}'
+        ] | str join "\n") | save -f ($d | path join "ygg.toml")
+
+        let manifest = (load-module-manifest $d)
+        let targets = (compute-lint-targets $manifest)
+        assert ("linux" in $targets)
+        assert ("cachyos" in $targets)
+        assert equal (compute-lint-targets $manifest ["cachyos"]) ["cachyos"]
+
+        let sets = (compute-scope-sets $manifest)
+        assert ([] in $sets)
+        assert (["work"] in $sets)
+        assert (["headless"] in $sets)
+        assert (not (["and"] in $sets))
+        assert (not (["not"] in $sets))
+        assert (not (["cachyos"] in $sets))
+    }
+}
+
+# regression: #23
+export def test_lint_l6_packages_and_no_override_leak [] {
+    with-temp-ygg { |home|
+        # 1. Real host OS without caller override: L5 tests cross-OS without leaking into L6 or external mock log
+        let d1 = ($home | path join "modules" "pkg-mod-real")
+        mkdir $d1
+        ([
+            'name = "pkg-mod-real"'
+            'os = ["linux", "windows", "macos"]'
+            '[packages]'
+            'cargo = ["fd-find", "bad-crate"]'
+            '[scope.windows.packages]'
+            'winget = ["Git.Git"]'
+            '[scope.linux.packages]'
+            'apt = ["curl"]'
+        ] | str join "\n") | save -f ($d1 | path join "ygg.toml")
+
+        let mock_log1 = ($home | path join "l6-real.log")
+        let f1 = (with-env { YGG_MOCK_PKG_LOG: $mock_log1, YGG_MOCK_PKG_UNKNOWN: "bad-crate" } {
+            run-lint $d1 --packages --src-dir $SRC_DIR
+        })
+        assert ($mock_log1 | path exists)
+        let logged1 = (open --raw $mock_log1)
+        assert ($logged1 | str contains "probe cargo fd-find")
+        assert ($f1 | any { |f| ($f.check == "packages") and ($f.severity == "error") and ($f.target == "cargo: bad-crate") })
+        assert (not ($f1 | any { |f| ($f.check == "packages") and ($f.target == "cargo: fd-find") }))
+        if $nu.os-info.family == "windows" {
+            assert ($f1 | any { |f| ($f.check == "packages") and ($f.severity == "info") and ($f.target == "apt: curl") })
+        } else {
+            assert ($f1 | any { |f| ($f.check == "packages") and ($f.severity == "info") and ($f.target == "winget: Git.Git") })
+        }
+
+        # 2. Caller override "cachyos": L5 runs windows override, L6 still sees "cachyos"
+        let d2 = ($home | path join "modules" "pkg-mod-cachyos")
+        mkdir $d2
+        ([
+            'name = "pkg-mod-cachyos"'
+            'os = ["linux", "windows"]'
+            '[packages]'
+            'pacman = ["ripgrep", "bad-pkg"]'
+            '[scope.windows.packages]'
+            'winget = ["Git.Git"]'
+        ] | str join "\n") | save -f ($d2 | path join "ygg.toml")
+
+        let mock_log2 = ($home | path join "l6-cachyos.log")
+        let f2 = (with-env { YGG_HOST_OS_OVERRIDE: "cachyos", YGG_MOCK_PKG_LOG: $mock_log2, YGG_MOCK_PKG_UNKNOWN: "bad-pkg" } {
+            run-lint $d2 --packages --src-dir $SRC_DIR
+        })
+        assert ($f2 | any { |f| ($f.check == "packages") and ($f.severity == "error") and ($f.target == "pacman: bad-pkg") })
+        assert (not ($f2 | any { |f| ($f.check == "packages") and ($f.target == "pacman: ripgrep") }))
+        assert ($f2 | any { |f| ($f.check == "packages") and ($f.severity == "info") and ($f.target == "winget: Git.Git") })
+    }
+}
+
+# regression: #23
+export def test_lint_readonly_and_tmp_cleanup [] {
+    with-temp-ygg { |home|
+        let tmp_sub = ($home | path join "subtmp")
+        mkdir $tmp_sub
+        let d = ($home | path join "modules" "ro-full")
+        mkdir $d
+        "cfg = 1\n" | save -f ($d | path join "app.conf")
+        ([
+            'name = "ro-full"'
+            'os = ["linux", "windows"]'
+            '[links]'
+            '"app.conf" = "~/.config/ro-app.conf"'
+        ] | str join "\n") | save -f ($d | path join "ygg.toml")
+        "use sdk.nu *\nlet x = 1\n" | save -f ($d | path join "setup.nu")
+        mkdir ($d | path join "ci" "hosts")
+        "[[modules\nbroken = \n" | save -f ($d | path join "ci" "hosts" "broken.toml")
+
+        let home_before = (snapshot-tree $home)
+        let sb_before = (snapshot-tree $env.YGG_SANDBOX)
+
+        let res = (with-env {
+            TMPDIR: $tmp_sub,
+            TEMP: $tmp_sub,
+            TMP: $tmp_sub,
+            YGG_TEST_MOD: $d
+        } {
+            ^nu -I $SRC_DIR -c 'use lint.nu *; let f = (run-lint $env.YGG_TEST_MOD); print ($f | to json -r)' | complete
+        })
+
+        assert equal $res.exit_code 0
+        assert equal ($res.stderr | str trim) ""
+        let findings = ($res.stdout | from json)
+        assert ($findings | where check == "setup" | is-empty)
+        assert ($findings | any { |f| ($f.check == "fixture") and ($f.severity == "error") and ($f.target == "ci/hosts/broken.toml") })
+        assert (not (($home | path join ".state") | path exists))
+        assert (not (($home | path join "host.toml") | path exists))
+        assert equal (snapshot-tree $home) $home_before
+        assert equal (snapshot-tree $env.YGG_SANDBOX) $sb_before
+        assert equal (ls $tmp_sub | length) 0
     }
 }

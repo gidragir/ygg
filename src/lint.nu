@@ -1,9 +1,13 @@
 # src/lint.nu
-# Yggdrasil configuration manager — Static analysis stages (L1-L4, compose) for `ygg lint` (RFC-062)
+# Yggdrasil configuration manager — Static analysis, plan simulation & package probes for `ygg lint` (RFC-062)
 
-use manifest.nu [load-module-manifest, eval-scope-expression, list-module-scopes, YGG_MANIFEST_KEYS, KNOWN_OS_VALUES]
-use pkg.nu [KNOWN_PKG_MANAGERS]
+use manifest.nu [load-module-manifest, eval-scope-expression, list-module-scopes, resolve-effective-plan, YGG_MANIFEST_KEYS, KNOWN_OS_VALUES, DISTRO_AUTO_SCOPES]
+use link.nu [resolve-link-targets, compute-link-ops, preflight-check]
+use state.nu [detect-host-os]
+use pkg.nu [KNOWN_PKG_MANAGERS, probe-packages]
 use container.nu [detect-container-runtime, run-compose, find-override-file]
+
+const LINT_SRC_DIR = (path self | path dirname)
 
 const COMPANION_TOMLS = ["packages.toml", "links.toml", "env.toml", "aliases.toml", "services.toml", "secrets.example.toml"]
 const MANIFEST_COMPANIONS = ["packages.toml", "links.toml", "env.toml", "aliases.toml", "services.toml"]
@@ -519,4 +523,471 @@ export def lint-compose [mod_dir: string, manifest: record]: nothing -> list<rec
         }
         $findings
     }
+}
+
+def extract-scope-tokens [expr: string]: nothing -> list<string> {
+    let raw = ($expr | str trim)
+    if $raw == "" {
+        return []
+    }
+    $raw
+    | str replace --all "(" " ( "
+    | str replace --all ")" " ) "
+    | str replace --all "!" " not "
+    | str replace --all "&&" " and "
+    | str replace --all "||" " or "
+    | split row -r '\s+'
+    | each { |t| $t | str lowercase | str replace --all '"' '' | str replace --all "'" "" }
+    | where { |t| $t not-in ["and", "or", "not", "(", ")", ""] }
+    | uniq
+}
+
+# Compute target OS/distro values to simulate in L5 from manifest.os and declared distro scopes
+export def compute-lint-targets [manifest: record, os_filter: list<string> = []]: nothing -> list<string> {
+    let base_os = (to-str-list ($manifest.os? | default [])
+        | each { |s| $s | str lowercase }
+        | where { |s| $s != "" })
+    mut scope_distros = []
+    for expr in (list-module-scopes $manifest) {
+        for tok in (extract-scope-tokens $expr) {
+            if $tok in $DISTRO_AUTO_SCOPES {
+                $scope_distros = ($scope_distros | append $tok)
+            }
+        }
+    }
+    let targets = ($base_os | append $scope_distros | uniq)
+    if ($os_filter | is-empty) {
+        $targets
+    } else {
+        let norm_filter = ($os_filter | each { |s| $s | str lowercase } | where { |s| $s != "" })
+        $targets | where { |t| $t in $norm_filter }
+    }
+}
+
+# Compute default L5 scope sets: empty scopes plus each non-OS scope token individually
+export def compute-scope-sets [manifest: record]: nothing -> list<list<string>> {
+    mut user_scopes = []
+    for expr in (list-module-scopes $manifest) {
+        for tok in (extract-scope-tokens $expr) {
+            if $tok not-in $KNOWN_OS_VALUES {
+                $user_scopes = ($user_scopes | append $tok)
+            }
+        }
+    }
+    let unique_scopes = ($user_scopes | uniq)
+    [[]] | append ($unique_scopes | each { |s| [$s] })
+}
+
+def is-git-url [src: string]: nothing -> bool {
+    ($src | str starts-with "http://") or ($src | str starts-with "https://") or ($src | str starts-with "git@") or ($src | str starts-with "ssh://") or ($src | str starts-with "file://")
+}
+
+def clone-fixture-dep [
+    rel_label: string,
+    dep_name: string,
+    git_url: string,
+    ref: string,
+    deps_dir: string
+]: nothing -> record<ok: bool, path: string, findings: list<record>> {
+    if ($dep_name == "") or ($dep_name | str contains "/") or ($dep_name | str contains "\\") or ($dep_name | str contains "..") or (has-win32-invalid-chars $dep_name) {
+        return {
+            ok: false,
+            path: "",
+            findings: [(lint-finding "fixture" "error" $rel_label $"Invalid dependency name '($dep_name)' in ($rel_label)" "Use a valid module name without path separators")]
+        }
+    }
+    if ($git_url | str starts-with "-") or ($ref | str starts-with "-") {
+        return {
+            ok: false,
+            path: "",
+            findings: [(lint-finding "fixture" "error" $rel_label $"Invalid git source or ref for '($dep_name)' in ($rel_label)" "Provide a valid git URL and ref")]
+        }
+    }
+
+    let dep_dir = ($deps_dir | path join $dep_name)
+    if (safe-dir-exists $dep_dir) {
+        return { ok: true, path: $dep_dir, findings: [] }
+    }
+
+    let argv = (
+        ["clone", "--depth", "1"]
+        | append (if $ref != "" { ["--branch", $ref] } else { [] })
+        | append ["--", $git_url, $dep_dir]
+    )
+    let clone_res = (try {
+        with-env { GIT_TERMINAL_PROMPT: "0" } {
+            ^git ...$argv | complete
+        }
+    } catch { |e|
+        { exit_code: 1, stdout: "", stderr: ($e.rendered? | default $e.msg) }
+    })
+    if $clone_res.exit_code != 0 {
+        try { rm -rf $dep_dir } catch {}
+        let err_tail = ($clone_res.stderr | ansi strip | str trim)
+        let msg = if $err_tail != "" {
+            $"Failed to clone dependency '($dep_name)' from '($git_url)': ($err_tail)"
+        } else {
+            $"Failed to clone dependency '($dep_name)' from '($git_url)'"
+        }
+        return {
+            ok: false,
+            path: "",
+            findings: [(lint-finding "fixture" "error" $rel_label $msg $"Check 'source' and 'ref' for '($dep_name)' in ($rel_label)")]
+        }
+    }
+    { ok: true, path: $dep_dir, findings: [] }
+}
+
+def load-lint-fixtures [
+    mod_dir: string,
+    mod_name: string,
+    deps_dir: string
+]: nothing -> record<has_fixtures: bool, fixtures: list<record>, findings: list<record>> {
+    let hosts_dir = ($mod_dir | path join "ci" "hosts")
+    if not (safe-dir-exists $hosts_dir) {
+        return { has_fixtures: false, fixtures: [], findings: [] }
+    }
+
+    let files = (try { ls -a $hosts_dir } catch { [] }
+        | where { |it|
+            let b = ($it.name | path basename)
+            ($b not-in [".", ".."]) and ($b | str ends-with ".toml")
+        }
+        | sort-by name)
+
+    if ($files | is-empty) {
+        return { has_fixtures: false, fixtures: [], findings: [] }
+    }
+
+    mut fixtures = []
+    mut findings = []
+
+    for f in $files {
+        let fname = ($f.name | path basename)
+        let rel_label = $"ci/hosts/($fname)"
+        let parsed = (parse-toml-file $f.name $rel_label)
+        if not $parsed.ok {
+            $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Failed to parse ($rel_label): ($parsed.err)" $"Fix TOML syntax in ($rel_label)"))
+            continue
+        }
+
+        let data = $parsed.data
+        let has_os = ($data.os? != null)
+        let fx_os = if $has_os {
+            to-str-list $data.os | each { |s| $s | str lowercase } | where { |s| $s != "" } | uniq
+        } else {
+            []
+        }
+
+        let raw_mods = ($data.modules? | default [])
+        let mods_desc = ($raw_mods | describe)
+        if not (($mods_desc starts-with "list") or ($mods_desc starts-with "table")) {
+            $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Invalid 'modules' in ($rel_label): expected array of tables [[modules]]" $"Fix [[modules]] structure in ($rel_label)"))
+            continue
+        }
+
+        mut extra_mods = []
+        mut self_scopes = []
+        mut has_self = false
+        mut fx_ok = true
+
+        for entry in $raw_mods {
+            if not (is-record $entry) {
+                $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Each [[modules]] entry in ($rel_label) must be a TOML table" $"Fix [[modules]] entry in ($rel_label)"))
+                $fx_ok = false
+                continue
+            }
+
+            let entry_name = ($entry.name? | default "" | into string | str trim)
+            if $entry_name == "" {
+                $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Module entry in ($rel_label) missing required field 'name'" $"Add 'name' to each [[modules]] entry in ($rel_label)"))
+                $fx_ok = false
+                continue
+            }
+
+            let scopes = (to-str-list ($entry.scopes? | default []))
+            if $entry_name == $mod_name {
+                $has_self = true
+                $self_scopes = $scopes
+                $extra_mods = ($extra_mods | append ($entry | upsert name $entry_name | upsert path $mod_dir | upsert scopes $scopes))
+            } else {
+                let src = ($entry.source? | default "" | into string | str trim)
+                if $src == "" {
+                    $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Dependency '($entry_name)' in ($rel_label) is missing 'source'" $"Specify 'source' (relative path or git URL) for '($entry_name)' in ($rel_label)"))
+                    $fx_ok = false
+                    continue
+                }
+
+                let ref = ($entry.ref? | default "" | into string | str trim)
+                if (is-git-url $src) {
+                    let cloned = (clone-fixture-dep $rel_label $entry_name $src $ref $deps_dir)
+                    if not $cloned.ok {
+                        $findings = ($findings | append $cloned.findings)
+                        $fx_ok = false
+                        continue
+                    }
+                    $extra_mods = ($extra_mods | append ($entry | upsert name $entry_name | upsert path $cloned.path | upsert scopes $scopes))
+                } else {
+                    let rel_path = ($mod_dir | path join (native-rel $src) | path expand -n)
+                    if not (safe-dir-exists $rel_path) {
+                        $findings = ($findings | append (lint-finding "fixture" "error" $rel_label $"Dependency '($entry_name)' source '($src)' not found at '($rel_path)'" $"Fix relative 'source' path for '($entry_name)' in ($rel_label)"))
+                        $fx_ok = false
+                        continue
+                    }
+                    $extra_mods = ($extra_mods | append ($entry | upsert name $entry_name | upsert path $rel_path | upsert scopes $scopes))
+                }
+            }
+        }
+
+        if not $has_self {
+            $extra_mods = ($extra_mods | append { name: $mod_name, path: $mod_dir, scopes: [] })
+        }
+
+        if $fx_ok {
+            $fixtures = ($fixtures | append {
+                file: $rel_label,
+                has_os: $has_os,
+                os: $fx_os,
+                self_scopes: $self_scopes,
+                extra_modules: $extra_mods
+            })
+        }
+    }
+
+    { has_fixtures: true, fixtures: $fixtures, findings: $findings }
+}
+
+def map-preflight-fix [reason: string]: nothing -> string {
+    match $reason {
+        "missing_dependency" => "Add a ci/hosts/*.toml fixture declaring this dependency, or add the module to host.toml",
+        "nesting_conflict" => "Do not link both a parent directory and a path inside it; split the directory link into per-file links or glob /*",
+        "ownership_conflict" => "Point the glob destination to a regular directory instead of an unmanaged symlink/junction",
+        "missing_source" => "Add the missing source file/directory to the module or fix the link key",
+        "invalid_mode_source" => "Point the link key to a directory or remove mode = \"dir\"",
+        "shadowed_files" => "Link entries individually (glob /*) or confirm replacement with mode = \"dir\"",
+        _ => "Resolve pre-flight conflict shown in detail"
+    }
+}
+
+def run-single-plan-check [
+    mod_name: string,
+    target_os: string,
+    scopes: list<string>,
+    extra_mods: list<record>,
+    has_fixture: bool,
+    native: record,
+    tmp_ygg: string,
+    tmp_sb: string,
+    tmp_mock_log: string
+]: nothing -> list<record> {
+    let is_cross_os = (
+        ($target_os != $native.os)
+        and ($target_os != $native.distro)
+        and ($target_os not-in $native.auto_scopes)
+    )
+    let cross_note = if $is_cross_os {
+        $" [план для ($target_os) построен на ($native.os); окончательная проверка — нативный прогон в CI]"
+    } else {
+        ""
+    }
+    let prev_override = ($env.YGG_HOST_OS_OVERRIDE? | default null)
+    let plan_override = if $is_cross_os { $target_os } else { $prev_override }
+
+    let res = (with-env {
+        YGG_HOME: $tmp_ygg,
+        YGG_SANDBOX: $tmp_sb,
+        YGG_MOCK_PKG_LOG: $tmp_mock_log,
+        YGG_HOST_OS_OVERRIDE: $plan_override
+    } {
+        try {
+            let plan = (resolve-effective-plan $tmp_ygg --extra-modules $extra_mods)
+            let resolved = (resolve-link-targets $plan --sandbox $tmp_sb)
+            let ops = (compute-link-ops $tmp_ygg $resolved --sandbox $tmp_sb)
+            let problems = (preflight-check $tmp_ygg $plan $resolved $ops --sandbox $tmp_sb --quiet)
+            { ok: true, collisions: ($resolved.collisions? | default []), problems: $problems, err: "" }
+        } catch { |e|
+            { ok: false, collisions: [], problems: [], err: ($e.rendered? | default $e.msg) }
+        }
+    })
+
+    if not $res.ok {
+        let detail = ($res.err + $cross_note)
+        return [((lint-finding "plan" "error" $"($mod_name): plan" $detail "Fix manifest or scope configuration causing plan resolution failure")
+            | merge { os: $target_os, scopes: $scopes, cross_os: $is_cross_os })]
+    }
+
+    mut findings = []
+
+    for c in $res.collisions {
+        let target = $"($c.winner_module): ($c.winner_key)"
+        let detail = ($"Target collision for '($c.dest)': '($c.winner_module): ($c.winner_key)' overrides '($c.loser_module): ($c.loser_key)'" + $cross_note)
+        $findings = ($findings | append (
+            (lint-finding "plan" "error" $target $detail "Remove or exclude the conflicting link/save target in one of the modules or adjust module scopes")
+            | merge { os: $target_os, scopes: $scopes, cross_os: $is_cross_os }
+        ))
+    }
+
+    for p in $res.problems {
+        let is_unverified_dep = (not $has_fixture) and ($p.reason == "missing_dependency")
+        let sev = if $is_unverified_dep { "warn" } else { "error" }
+        let target = $"($p.module): ($p.key)"
+        let base_detail = if $is_unverified_dep {
+            $"($p.detail) \(dependency not verified without ci/hosts/ fixture\)"
+        } else {
+            $p.detail
+        }
+        let detail = ($base_detail + $cross_note)
+        $findings = ($findings | append (
+            (lint-finding "plan" $sev $target $detail (map-preflight-fix $p.reason))
+            | merge { os: $target_os, scopes: $scopes, cross_os: $is_cross_os }
+        ))
+    }
+
+    $findings
+}
+
+def lint-plan [
+    mod_dir: string,
+    manifest: record,
+    native: record,
+    os_filter: list<string>,
+    tmp_ygg: string,
+    tmp_sb: string,
+    deps_dir: string,
+    tmp_mock_log: string
+]: nothing -> list<record> {
+    let fx_res = (load-lint-fixtures $mod_dir $manifest.name $deps_dir)
+    mut findings = $fx_res.findings
+
+    if not $fx_res.has_fixtures {
+        let targets = (compute-lint-targets $manifest $os_filter)
+        let scope_sets = (compute-scope-sets $manifest)
+        for target_os in $targets {
+            for scopes in $scope_sets {
+                let extra_mods = [{ name: $manifest.name, path: $mod_dir, scopes: $scopes }]
+                $findings = ($findings | append (
+                    run-single-plan-check $manifest.name $target_os $scopes $extra_mods false $native $tmp_ygg $tmp_sb $tmp_mock_log
+                ))
+            }
+        }
+        return $findings
+    }
+
+    let norm_filter = ($os_filter | each { |s| $s | str lowercase } | where { |s| $s != "" })
+    let default_targets = (compute-lint-targets $manifest $os_filter)
+
+    for fx in $fx_res.fixtures {
+        let fx_targets = if $fx.has_os {
+            if ($norm_filter | is-empty) {
+                $fx.os
+            } else {
+                $fx.os | where { |t| $t in $norm_filter }
+            }
+        } else {
+            $default_targets
+        }
+        for target_os in $fx_targets {
+            $findings = ($findings | append (
+                run-single-plan-check $manifest.name $target_os $fx.self_scopes $fx.extra_modules true $native $tmp_ygg $tmp_sb $tmp_mock_log
+            ))
+        }
+    }
+
+    $findings
+}
+
+def merge-pkg-map [acc: record, pkg_map: any]: nothing -> record {
+    if not (is-record $pkg_map) {
+        return $acc
+    }
+    mut out = $acc
+    for mgr in ($pkg_map | columns) {
+        let pkgs = (to-str-list ($pkg_map | get $mgr) | where { |p| $p != "" })
+        if ($pkgs | is-not-empty) {
+            let cur = ($out | get -o $mgr | default [])
+            $out = ($out | upsert $mgr ($cur | append $pkgs | uniq))
+        }
+    }
+    $out
+}
+
+def collect-module-packages [manifest: record]: nothing -> record {
+    mut all_pkgs = (merge-pkg-map {} ($manifest.packages? | default {}))
+    let scopes = ($manifest.scope? | default {})
+    if (is-record $scopes) {
+        for s_val in ($scopes | values) {
+            if (is-record $s_val) {
+                $all_pkgs = (merge-pkg-map $all_pkgs ($s_val.packages? | default null))
+            }
+        }
+    }
+    $all_pkgs
+}
+
+def lint-packages [manifest: record, native: record]: nothing -> list<record> {
+    let all_pkgs = (collect-module-packages $manifest)
+    if ($all_pkgs | is-empty) {
+        return []
+    }
+    let probed = (probe-packages $all_pkgs --host-os $native)
+    mut findings = []
+    for r in $probed {
+        if $r.status == "ok" {
+            continue
+        }
+        let target = $"($r.mgr): ($r.pkg)"
+        if $r.status == "not_found" {
+            $findings = ($findings | append (lint-finding "packages" "error" $target $r.detail $"Verify package name/ID for ($r.mgr) or remove it from manifest"))
+        } else if $r.status == "info" {
+            $findings = ($findings | append (lint-finding "packages" "info" $target $r.detail $"Package manager ($r.mgr) is verified natively on its target OS in CI"))
+        } else {
+            $findings = ($findings | append (lint-finding "packages" "warn" $target $r.detail $"Ensure ($r.mgr) is installed and reachable, or re-run in CI"))
+        }
+    }
+    $findings
+}
+
+# Run full read-only lint pipeline (L1-L5, compose, optional L6 --packages) in isolated temp sandbox
+export def run-lint [
+    mod_dir: string,
+    --packages,
+    --os: list<string> = [],
+    --src-dir: string = ""
+]: nothing -> list<record> {
+    let native = (detect-host-os)
+    let eff_src = if ($src_dir == "") { $LINT_SRC_DIR } else { $src_dir }
+    let tmp_root = (mktemp -d -t ygg-lint-XXXXXX)
+
+    let findings = (try {
+        let tmp_ygg = ($tmp_root | path join "ygg")
+        let tmp_sb = ($tmp_root | path join "sandbox")
+        let deps_dir = ($tmp_root | path join "deps")
+        let tmp_mock_log = ($tmp_root | path join "mock.log")
+        mkdir $tmp_ygg
+        mkdir $tmp_sb
+        mkdir $deps_dir
+        "" | save -f $tmp_mock_log
+
+        let l1 = (lint-schemas $mod_dir)
+        mut out = $l1.findings
+        if $l1.manifest != null {
+            let manifest = $l1.manifest
+            let abs_mod_dir = ($mod_dir | path expand -n)
+            $out = ($out | append (lint-sources $abs_mod_dir))
+            $out = ($out | append (lint-scopes $manifest))
+            $out = ($out | append (lint-setup $abs_mod_dir $eff_src))
+            $out = ($out | append (lint-plan $abs_mod_dir $manifest $native $os $tmp_ygg $tmp_sb $deps_dir $tmp_mock_log))
+            $out = ($out | append (lint-compose $abs_mod_dir $manifest))
+            if $packages {
+                $out = ($out | append (lint-packages $manifest $native))
+            }
+        }
+        $out
+    } catch { |e|
+        try { rm -rf $tmp_root } catch {}
+        error make { msg: ($e.rendered? | default $e.msg) }
+    })
+
+    try { rm -rf $tmp_root } catch {}
+    $findings
 }
