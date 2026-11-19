@@ -8,6 +8,8 @@ use ../src/manifest.nu [load-module-manifest]
 use helpers.nu [with-temp-ygg, test-dangling-link, snapshot-tree]
 
 const SRC_DIR = (path self | path dirname | path dirname | path join "src")
+const REPO_ROOT = (path self | path dirname | path dirname)
+const YGG_BIN = ($REPO_ROOT | path join "bin" "ygg.nu")
 
 def mk-mod [home: string, name: string]: nothing -> string {
     let d = ($home | path join "modules" $name)
@@ -530,5 +532,191 @@ export def test_lint_readonly_and_tmp_cleanup [] {
         assert equal (snapshot-tree $home) $home_before
         assert equal (snapshot-tree $env.YGG_SANDBOX) $sb_before
         assert equal (ls $tmp_sub | length) 0
+    }
+}
+
+# regression: #23
+export def test_lint_cli_json_and_exit_codes [] {
+    with-temp-ygg { |home|
+        let sb = $env.YGG_SANDBOX
+
+        # 1. Clean module -> exit 0, valid JSON [], empty stderr, default "." works, no host mutation or tmp leaks
+        let clean_dir = ($home | path join "modules" "cli-clean")
+        mkdir $clean_dir
+        "cfg = 1\n" | save -f ($clean_dir | path join "app.conf")
+        ([
+            'name = "cli-clean"'
+            'os = ["linux", "windows", "macos"]'
+            '[links]'
+            '"app.conf" = "~/.config/cli-clean.conf"'
+        ] | str join "\n") | save -f ($clean_dir | path join "ygg.toml")
+
+        let tmp_sub = ($home | path join "cli-tmp")
+        mkdir $tmp_sub
+        let home_before = (snapshot-tree $home)
+        let sb_before = (snapshot-tree $sb)
+
+        let res_clean = (with-env { TMPDIR: $tmp_sub, TEMP: $tmp_sub, TMP: $tmp_sub } {
+            ^nu $YGG_BIN lint $clean_dir --json | complete
+        })
+        assert equal $res_clean.exit_code 0 $res_clean.stderr
+        assert equal ($res_clean.stderr | str trim) ""
+        assert equal ($res_clean.stdout | from json) []
+        assert equal (snapshot-tree $home) $home_before
+        assert equal (snapshot-tree $sb) $sb_before
+        assert equal (ls $tmp_sub | length) 0
+
+        # Default path "." when invoked from module directory
+        let res_dot = (with-env { YGG_LINT_TARGET: $clean_dir, YGG_LINT_BIN: $YGG_BIN } {
+            ^nu -c 'cd $env.YGG_LINT_TARGET; ^nu $env.YGG_LINT_BIN lint --json' | complete
+        })
+        assert equal $res_dot.exit_code 0 $res_dot.stderr
+        assert equal ($res_dot.stderr | str trim) ""
+        assert equal ($res_dot.stdout | from json) []
+
+        # 2. Warn-only module ([scopes.x]) -> exit 0, JSON contains warn finding, empty stderr
+        let warn_dir = ($home | path join "modules" "cli-warn")
+        mkdir $warn_dir
+        ([
+            'name = "cli-warn"'
+            'os = ["linux", "windows", "macos"]'
+            '[scopes.x]'
+            'foo = "bar"'
+        ] | str join "\n") | save -f ($warn_dir | path join "ygg.toml")
+
+        let res_warn = (^nu $YGG_BIN lint $warn_dir --json | complete)
+        assert equal $res_warn.exit_code 0 $res_warn.stderr
+        assert equal ($res_warn.stderr | str trim) ""
+        let parsed_warn = ($res_warn.stdout | from json)
+        assert (($parsed_warn | length) >= 1)
+        assert ($parsed_warn | all { |f| $f.severity != "error" })
+        assert ($parsed_warn | any { |f| ($f.check == "schema") and ($f.severity == "warn") and ($f.target == "ygg.toml scopes") })
+
+        # 3. Error module (missing source) -> exit 1, JSON has {check, severity, target, detail, fix}, empty stderr
+        let err_dir = ($home | path join "modules" "cli-err")
+        mkdir $err_dir
+        ([
+            'name = "cli-err"'
+            'os = ["linux", "windows", "macos"]'
+            '[links]'
+            '"missing.conf" = "~/.config/missing.conf"'
+        ] | str join "\n") | save -f ($err_dir | path join "ygg.toml")
+
+        let res_err = (^nu $YGG_BIN lint $err_dir --json | complete)
+        assert equal $res_err.exit_code 1
+        assert equal ($res_err.stderr | str trim) ""
+        let parsed_err = ($res_err.stdout | from json)
+        let first_err = ($parsed_err | where severity == "error" | first)
+        for col in ["check", "severity", "target", "detail", "fix"] {
+            assert ($col in ($first_err | columns)) $"Missing column ($col)"
+        }
+        assert equal $first_err.check "source"
+        assert equal $first_err.target "ygg.toml [links] missing.conf"
+
+        # 4. Broken ygg.toml with --json -> exit 1, valid JSON array, empty stderr
+        let broken_dir = ($home | path join "modules" "cli-broken")
+        mkdir $broken_dir
+        "name = [unclosed\n" | save -f ($broken_dir | path join "ygg.toml")
+
+        let res_broken = (^nu $YGG_BIN lint $broken_dir --json | complete)
+        assert equal $res_broken.exit_code 1
+        assert equal ($res_broken.stderr | str trim) ""
+        let parsed_broken = ($res_broken.stdout | from json)
+        assert (($parsed_broken | length) >= 1)
+        assert ($parsed_broken | any { |f| ($f.check == "schema") and ($f.severity == "error") and ($f.target == "ygg.toml") })
+    }
+}
+
+# regression: #23
+export def test_lint_cli_human_output_stdout_only [] {
+    with-temp-ygg { |home|
+        # 1. Clean module -> stdout summary, empty stderr, exit 0
+        let clean_dir = (mk-mod $home "cli-human-clean")
+        let res_clean = (^nu $YGG_BIN lint $clean_dir | complete)
+        assert equal $res_clean.exit_code 0 $res_clean.stderr
+        assert equal ($res_clean.stderr | str trim) ""
+        assert ($res_clean.stdout | str contains "Lint: 0 error(s), 0 warning(s).")
+
+        # 2. Mixed L1 5-col warn + L5 8-col error renders table & summary cleanly to stdout, empty stderr, exit 1
+        let mixed_dir = ($home | path join "modules" "cli-human-mixed")
+        mkdir ($mixed_dir | path join "app")
+        "base = 1\n" | save -f ($mixed_dir | path join "app" "base.conf")
+        "sub = 1\n" | save -f ($mixed_dir | path join "sub.conf")
+        ([
+            'name = "cli-human-mixed"'
+            'os = ["linux", "windows"]'
+            '[scopes.x]'
+            'foo = "bar"'
+            '[links]'
+            '"app" = "~/.config/app"'
+            '[scope."windows and work".links]'
+            '"sub.conf" = "~/.config/app/sub.conf"'
+        ] | str join "\n") | save -f ($mixed_dir | path join "ygg.toml")
+
+        let res_mixed = (^nu $YGG_BIN lint $mixed_dir | complete)
+        assert equal $res_mixed.exit_code 1
+        assert equal ($res_mixed.stderr | str trim) ""
+        assert ($res_mixed.stdout | str contains "schema")
+        assert ($res_mixed.stdout | str contains "plan")
+        assert ($res_mixed.stdout | str contains "Lint: 1 error(s), 1 warning(s).")
+
+        # 3. --os flag filters L5 plan checks via CLI
+        let os_dir = ($home | path join "modules" "cli-os-filter")
+        mkdir ($os_dir | path join "app")
+        "base = 1\n" | save -f ($os_dir | path join "app" "base.conf")
+        "sub = 1\n" | save -f ($os_dir | path join "sub.conf")
+        ([
+            'name = "cli-os-filter"'
+            'os = ["linux", "windows"]'
+            '[links]'
+            '"app" = "~/.config/app"'
+            '[scope."windows and work".links]'
+            '"sub.conf" = "~/.config/app/sub.conf"'
+        ] | str join "\n") | save -f ($os_dir | path join "ygg.toml")
+
+        let res_linux = (^nu $YGG_BIN lint $os_dir --os linux --json | complete)
+        assert equal $res_linux.exit_code 0 $res_linux.stderr
+        assert equal ($res_linux.stderr | str trim) ""
+        assert equal ($res_linux.stdout | from json) []
+
+        let res_win = (^nu $YGG_BIN lint $os_dir --os windows --json | complete)
+        assert equal $res_win.exit_code 1
+        assert equal ($res_win.stderr | str trim) ""
+        let parsed_win = ($res_win.stdout | from json)
+        assert ($parsed_win | any { |f| ($f.check == "plan") and ($f.severity == "error") and ($f.os == "windows") })
+
+        # 4. --packages flag triggers L6 package probing via CLI
+        let pkg_dir = ($home | path join "modules" "cli-pkgs")
+        mkdir $pkg_dir
+        ([
+            'name = "cli-pkgs"'
+            'os = ["linux", "windows", "macos"]'
+            '[packages]'
+            'cargo = ["fd-find", "bad-crate"]'
+        ] | str join "\n") | save -f ($pkg_dir | path join "ygg.toml")
+
+        let mock_log = ($home | path join "cli-pkg-probe.log")
+        let res_pkg = (with-env { YGG_MOCK_PKG_LOG: $mock_log, YGG_MOCK_PKG_UNKNOWN: "bad-crate" } {
+            ^nu $YGG_BIN lint $pkg_dir --packages --json | complete
+        })
+        assert equal $res_pkg.exit_code 1
+        assert equal ($res_pkg.stderr | str trim) ""
+        assert ($mock_log | path exists)
+        assert ((open --raw $mock_log) | str contains "probe cargo fd-find")
+        let parsed_pkg = ($res_pkg.stdout | from json)
+        assert ($parsed_pkg | any { |f| ($f.check == "packages") and ($f.severity == "error") and ($f.target == "cargo: bad-crate") })
+        assert (not ($parsed_pkg | any { |f| ($f.check == "packages") and ($f.target == "cargo: fd-find") }))
+    }
+}
+
+# regression: #35
+export def test_lint_cli_no_phase2_modules_legacy [] {
+    with-temp-ygg { |_home|
+        assert (not ($REPO_ROOT | path join "tests" "test_phase2_modules.nu" | path exists))
+        let mise_txt = (open --raw ($REPO_ROOT | path join "mise.toml"))
+        assert (not ($mise_txt | str contains "test-phase2"))
+        assert (not ($mise_txt | str contains "test_phase2_modules"))
+        let runner_txt = (open --raw ($REPO_ROOT | path join "tests" "run.nu"))
+        assert (not ($runner_txt | str contains "test_phase2_modules"))
     }
 }
