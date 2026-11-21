@@ -3,7 +3,7 @@
   "schema_version": 4,
   "project": "ygg",
   "description": "> **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**",
-  "updated_at": "2026-11-19",
+  "updated_at": "2026-11-21",
   "project_type": "Generic / Multi-language",
   "entrypoints": [
     "mise.toml"
@@ -11,9 +11,9 @@
   "commands": {
     "test": "rtk mise run test",
     "custom": {
+      "release-tag": "rtk mise run release-tag",
       "changelog": "rtk mise run changelog",
-      "release": "rtk mise run release",
-      "release-tag": "rtk mise run release-tag"
+      "release": "rtk mise run release"
     }
   },
   "subsystems": [

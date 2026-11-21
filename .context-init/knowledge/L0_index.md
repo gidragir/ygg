@@ -1,6 +1,6 @@
 # 🗺 Карта архитектуры: ygg (L0)
 
-> **Стек:** Generic / Multi-language | **Обновлено:** 2026-11-19
+> **Стек:** Generic / Multi-language | **Обновлено:** 2026-11-21
 > **Описание:** > **Minimalist, cross-platform modular dotfile and configuration manager powered by [Nushell](https://www.nushell.sh/).**
 
 ## 🚪 Точки входа (Root Entrypoints)
