@@ -2,8 +2,8 @@
 directory: src/manifest.nu
 source:
   kind: git
-  blob_sha: 977d2ff0be78d3d99ea4aa8356453bf45e448616
-  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
+  blob_sha: 7daecefb49b71d11d5bf1fe471561386f2d68a0c
+  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
 generated_by:
   component: context-init
   role: update
@@ -34,7 +34,7 @@ export def load-host-config [ygg_home: string]: nothing -> record
 export def save-host-config [ygg_home: string, cfg: record]: nothing -> nothing
 export def validate-module-os [manifest: record, host_os: record]: nothing -> bool
 export def merge-services-deep [base: any, overlay: any]: any -> any
-export def load-module-manifest [mod_dir: string]: nothing -> record
+export const YGG_MANIFEST_KEYS = ["name", "os", "depends_on", "description", "config", "packages", "links", "save", "services", "env", "aliases", "path", "scope", "doctor", "containers", "setup"] # Supported OS and distribution tokens for ygg.toml `os` field export const KNOWN...
 ```
 
 ## 🧪 Запуск и тестирование

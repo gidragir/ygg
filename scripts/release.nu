@@ -44,6 +44,49 @@ export def set-ygg-version [content: string, version: string]: nothing -> string
     $content | str replace --regex '(?m)^const YGG_VERSION = "[^"]+"' $'const YGG_VERSION = "($version)"'
 }
 
+# `content` of .github/workflows/module-check.yml with inputs.ygg-version.default set to `v<version>`
+export def set-workflow-ygg-version [content: string, version: string]: nothing -> string {
+    let ver = ($version | str trim | str replace --regex '^v' '')
+    let default_pat = r#'^([ \t]+default:[ \t]*)['"]?v[^#'"\r\n]+['"]?([ \t]*(?:#.*)?\r?)$'#
+    let lines = ($content | split row "\n")
+    mut in_block = false
+    mut base_indent = -1
+    mut replaced = false
+    mut out: list<string> = []
+
+    for line in $lines {
+        let trimmed = ($line | str trim)
+        let indent = (($line | str length) - ($line | str trim --left | str length))
+        if (not $replaced) and ($line =~ '^[ \t]*ygg-version:[ \t]*(?:#.*)?\r?$') {
+            $in_block = true
+            $base_indent = $indent
+            $out = ($out | append $line)
+            continue
+        }
+        if $in_block and (not $replaced) {
+            if ($trimmed == "") or ($trimmed starts-with "#") {
+                $out = ($out | append $line)
+                continue
+            }
+            if $indent <= $base_indent {
+                $in_block = false
+            } else if ($line =~ $default_pat) {
+                let rep = ('${1}' + $"'v($ver)'" + '${2}')
+                $out = ($out | append ($line | str replace --regex $default_pat $rep))
+                $replaced = true
+                $in_block = false
+                continue
+            }
+        }
+        $out = ($out | append $line)
+    }
+
+    if not $replaced {
+        error make { msg: "ygg-version default not found in workflow" }
+    }
+    $out | str join "\n"
+}
+
 def repo-root []: nothing -> string {
     $env.FILE_PWD | path dirname
 }
@@ -115,6 +158,7 @@ def "main prepare" [
     }
 
     let ygg_bin = ($root | path join "bin" "ygg.nu")
+    let workflow_file = ($root | path join ".github" "workflows" "module-check.yml")
     let current = (read-ygg-version $ygg_bin)
     let next = if $version != "" {
         normalize-version $version
@@ -134,19 +178,23 @@ def "main prepare" [
     print $"Release ($current) -> ($next) on branch '($branch)'"
     if $dry_run {
         print "  would set YGG_VERSION in bin/ygg.nu"
+        print "  would set ygg-version default in .github/workflows/module-check.yml"
         print $"  would regenerate CHANGELOG.md with git-cliff --tag ($tag)"
         print $"  would commit 'chore\(release\): ($tag)'"
         if $branch == "main" { print $"  would create tag ($tag)" }
         return
     }
 
-    set-ygg-version (open --raw $ygg_bin) $next | save --force $ygg_bin
+    let updated_bin = (set-ygg-version (open --raw $ygg_bin) $next)
+    let updated_wf = (set-workflow-ygg-version (open --raw $workflow_file) $next)
+    $updated_bin | save --force $ygg_bin
+    $updated_wf | save --force $workflow_file
     let cl = (do { cd $root; ^git-cliff --tag $tag --output CHANGELOG.md } | complete)
     if $cl.exit_code != 0 {
-        git $root "checkout" "--" "bin/ygg.nu" "CHANGELOG.md" | ignore
+        git $root "checkout" "--" "bin/ygg.nu" ".github/workflows/module-check.yml" "CHANGELOG.md" | ignore
         fail $"git-cliff failed: ($cl.stderr | str trim)"
     }
-    git-ok $root "add" "bin/ygg.nu" "CHANGELOG.md" | ignore
+    git-ok $root "add" "bin/ygg.nu" ".github/workflows/module-check.yml" "CHANGELOG.md" | ignore
     git-ok $root "commit" "--quiet" "--message" $"chore\(release\): ($tag)" | ignore
     print $"Committed chore\(release\): ($tag)"
 

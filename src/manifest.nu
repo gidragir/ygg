@@ -85,6 +85,15 @@ export def merge-services-deep [base: any, overlay: any]: any -> any {
     }
 }
 
+# Top-level keys recognized in ygg.toml
+export const YGG_MANIFEST_KEYS = ["name", "os", "depends_on", "description", "config", "packages", "links", "save", "services", "env", "aliases", "path", "scope", "doctor", "containers", "setup"]
+
+# Supported OS and distribution tokens for ygg.toml `os` field
+export const KNOWN_OS_VALUES = ["linux", "windows", "macos", "darwin", "unix", "arch", "cachyos", "ubuntu", "debian", "pop", "mint", "fedora", "rhel", "centos", "opensuse", "sles", "opensuse-tumbleweed", "opensuse-leap"]
+
+# Distribution auto-scopes emitted by detect-host-os
+export const DISTRO_AUTO_SCOPES = ["arch", "cachyos", "ubuntu", "debian", "pop", "mint", "fedora", "rhel", "centos", "opensuse", "sles", "opensuse-tumbleweed", "opensuse-leap"]
+
 # Load module manifest ygg.toml and merge optional packages.toml, links.toml, env.toml, aliases.toml
 export def load-module-manifest [mod_dir: string]: nothing -> record {
     let ygg_path = ($mod_dir | path join "ygg.toml")
@@ -326,6 +335,15 @@ export def load-module-manifest [mod_dir: string]: nothing -> record {
     }
 
     $manifest
+}
+
+# List all declared scope names/expressions in a loaded manifest without activation
+export def list-module-scopes [manifest: record]: nothing -> list<string> {
+    let scope_rec = ($manifest.scope? | default {})
+    if not (($scope_rec | describe) starts-with "record") {
+        return []
+    }
+    $scope_rec | columns | uniq
 }
 
 # Normalize a scalar-or-list value to list<string> (RFC-003)

@@ -2,6 +2,7 @@
 # bin/ygg.nu — Yggdrasil CLI Router
 
 use ../src *
+use ../src/lint.nu [run-lint]
 
 const YGG_VERSION = "0.3.0"
 
@@ -41,6 +42,7 @@ def main [
     print "  ygg clean [--backups] [--hashes] [--dry-run] [--no-lock]  Clean old backups and orphaned state hashes"
     print "  ygg status [--json]                      Display module sync and git status table"
     print "  ygg doctor [--json] [--fix] [-y] [--ack-shadow]  Host audit & self-healing (exit code 1 on errors)"
+    print "  ygg lint [path] [--packages] [--os <os>] [--json]  Validate module manifest, links, scopes and setup"
     print "  ygg self-update [--channel <c>] [--check] [--no-lock]  Update the ygg engine to the latest release (or main)"
     print "  ygg completions <shell>                  Generate shell completions (nu, zsh, bash, fish, ps1)"
     print "  ygg version                              Print version (also --version / -v)"
@@ -915,6 +917,36 @@ def "main doctor" [
     }
 }
 
+# Validate a module directory (manifest, links, scopes, setup, compose, optional packages) without mutating host state
+def "main lint" [
+    path: string = ".", # Module directory to validate
+    --packages, # Probe whether declared packages exist
+    --os: string = "", # Comma-separated OS list to filter L5 targets
+    --json # Print findings as JSON
+] {
+    let os_list = ($os | split row "," | each { |s| $s | str trim | str lowercase } | where { |s| $s != "" })
+    let src_dir = if ($env.FILE_PWD? != null) {
+        let candidate = ($env.FILE_PWD | path dirname | path join "src")
+        if ($candidate | path type) == "dir" { $candidate } else { "" }
+    } else {
+        ""
+    }
+    let report = (run-lint $path --packages=$packages --os=$os_list --src-dir=$src_dir)
+    let errors = ($report | where { |r| $r.severity == "error" } | length)
+    if $json {
+        print ($report | to json --raw)
+    } else {
+        if ($report | is-not-empty) {
+            print ($report | table --expand)
+        }
+        let warns = ($report | where { |r| $r.severity == "warn" } | length)
+        print $"Lint: ($errors) error\(s\), ($warns) warning\(s\)."
+    }
+    if $errors > 0 {
+        exit 1
+    }
+}
+
 # SDK helper subcommands for setup.nu scripts: not part of the public CLI (absent from `ygg --help`)
 const SDK_SUBCOMMANDS = ["onchange", "merge-json", "export-secrets", "safe-link"]
 const DQ = '"'
@@ -971,12 +1003,13 @@ def cli-root-flags []: nothing -> table {
     signature-flags $root.signatures
 }
 
-# Completion source for a positional: modules (host.toml), shells (completions), path (add)
+# Completion source for a positional: modules (host.toml), shells (completions), path (add, lint)
 def completion-kind [command: string, positional: string]: nothing -> string {
     match ($command + " " + ($positional | str replace '?' '')) {
         "remove name" => "modules"
         "completions shell" => "shells"
         "add source" => "path"
+        "lint path" => "path"
         _ => ""
     }
 }

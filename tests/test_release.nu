@@ -2,7 +2,7 @@
 # Tests for scripts/release.nu: tag/version consistency checked by the release workflow
 
 use std/assert
-use ../scripts/release.nu [read-ygg-version, release-tag-error, is-prerelease, normalize-version, set-ygg-version]
+use ../scripts/release.nu [read-ygg-version, release-tag-error, is-prerelease, normalize-version, set-ygg-version, set-workflow-ygg-version]
 use helpers.nu [with-temp-ygg]
 
 export def test_read_ygg_version_parses_const [] {
@@ -66,4 +66,44 @@ const YGG_VERSION = \"0.2.0\"
     assert equal ($out | lines | length) ($src | lines | length)
     let failed = (try { set-ygg-version "def main [] {}" "0.3.0"; false } catch { true })
     assert $failed "content without YGG_VERSION must be rejected"
+}
+
+# regression: #38
+export def test_set_workflow_ygg_version [] {
+    let sample = "on:
+  workflow_call:
+    inputs:
+      ygg-version:
+        description: 'Version of ygg'
+        type: string
+        default: 'v0.3.0'
+      module-path:
+        default: '.'
+"
+    let updated = (set-workflow-ygg-version $sample "0.4.0")
+    assert ($updated | str contains "default: 'v0.4.0'")
+    assert ($updated | str contains "default: '.'")
+    assert equal ($updated | lines | length) ($sample | lines | length)
+
+    let pre = (set-workflow-ygg-version $sample "v0.4.0-rc.1")
+    assert ($pre | str contains "default: 'v0.4.0-rc.1'")
+
+    let missing_nested = "on:
+  workflow_call:
+    inputs:
+      ygg-version:
+        type: string
+      other-input:
+        default: 'v0.1.0'
+"
+    let failed_missing = (try { set-workflow-ygg-version "on: [push]" "0.4.0"; false } catch { true })
+    assert $failed_missing "content without ygg-version must be rejected"
+    let failed_nested = (try { set-workflow-ygg-version $missing_nested "0.4.0"; false } catch { true })
+    assert $failed_nested "ygg-version without default must not touch sibling input"
+
+    let root = ($env.FILE_PWD | path join ".." | path expand)
+    let ygg_ver = (read-ygg-version ($root | path join "bin" "ygg.nu"))
+    let wf_path = ($root | path join ".github" "workflows" "module-check.yml")
+    let wf_raw = (open --raw $wf_path)
+    assert ($wf_raw | str contains $"default: 'v($ygg_ver)'") "module-check.yml default ygg-version must match YGG_VERSION"
 }

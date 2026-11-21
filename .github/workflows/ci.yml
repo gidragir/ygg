@@ -70,3 +70,11 @@ jobs:
           ^nu -c $"source '($out)'"
           rm --force $out
           print "nu completions: syntax OK"
+
+  module-check:
+    name: Module check workflow
+    uses: ./.github/workflows/module-check.yml
+    with:
+      ygg-version: ${{ github.event.pull_request.head.sha || github.sha }}
+      module-path: tests/fixtures/module-sample
+      packages: false
