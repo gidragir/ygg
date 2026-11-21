@@ -2050,14 +2050,13 @@ if "%~2"=="err-brew" (echo curl: ^(6^) Could not resolve host 1>&2 & exit /b 1)
             TMP: $iso_tmp,
             YGG_HOST_OS_OVERRIDE: "ubuntu",
             YGG_MOCK_PKG_LOG: "",
-            PATH: $clean_path,
-            Path: $clean_path
+            PATH: ($env.PATH | prepend $bin_dir)
         } {
             ^($nu.current-exe) -I $src_dir -c 'use pkg.nu [probe-packages]; let res = (probe-packages { apt: ["curl"] }); print ($res | to json -r)' | complete
         })
         assert equal $sub.exit_code 0 $sub.stderr
         assert equal ($sub.stderr | str trim) ""
-        assert equal ($sub.stdout | from json | first).status "ok"
+        assert equal ($sub.stdout | from json | first).status "ok" $sub.stdout
         assert equal (ls $iso_tmp | where { |f| ($f.name | path basename) starts-with "ygg-proc-" } | length) 0
 
         # Unknown package manager returns "warn" (not "info") in both normal and mock modes
