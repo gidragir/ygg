@@ -37,6 +37,10 @@ def write-mock-cli [bin_dir: string, name: string, sh_body: string, cmd_body: st
     if $nu.os-info.family != "windows" { ^chmod +x $sh_path }
     $"@echo off\r\nsetlocal\r\n($cmd_body)\r\n" | save -f $"($sh_path).cmd"
 }
+
+# При спавне дочернего ^nu на Windows передавай PATH и Path строкой через (char esep):
+let sub_path = (($env.PATH? | default $env.Path? | default []) | prepend $bin_dir | str join (char esep))
+with-env { PATH: $sub_path, Path: $sub_path } { ^($nu.current-exe) ... }
 ```
 
 ### 2. Тестирование контракта «продюсер → потребитель»
