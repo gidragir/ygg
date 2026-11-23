@@ -2044,13 +2044,15 @@ if "%~2"=="err-brew" (echo curl: ^(6^) Could not resolve host 1>&2 & exit /b 1)
         # Verify zero stderr output and zero ygg-proc-* temp files in isolated TMPDIR
         let iso_tmp = ($home | path join "iso-tmp")
         mkdir $iso_tmp
+        let sub_path = (($env.PATH? | default $env.Path? | default []) | prepend $bin_dir | str join (char esep))
         let sub = (with-env {
             TMPDIR: $iso_tmp,
             TEMP: $iso_tmp,
             TMP: $iso_tmp,
             YGG_HOST_OS_OVERRIDE: "ubuntu",
             YGG_MOCK_PKG_LOG: "",
-            PATH: ($env.PATH | prepend $bin_dir)
+            PATH: $sub_path,
+            Path: $sub_path
         } {
             ^($nu.current-exe) -I $src_dir -c 'use pkg.nu [probe-packages]; let res = (probe-packages { apt: ["curl"] }); print ($res | to json -r)' | complete
         })
