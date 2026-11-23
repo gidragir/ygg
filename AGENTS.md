@@ -11,8 +11,7 @@
 * **Спецификации и планы:** индекс — [docs/README.md](docs/README.md). Базовая архитектура — [docs/specs/2026-11-07-modular-omni-architecture-design.md](docs/specs/2026-11-07-modular-omni-architecture-design.md).
 * **Навыки разработки** (`.agents/skills/`):
   - `nushell-ygg-dev` — любая правка `.nu` в `src/`, `bin/`, `tests/`;
-  - `ygg-module-verification` — проверка модуля в одноразовой песочнице;
-  - `ygg-report` — заметки и ошибки → GitHub Issues.
+  - `ygg-module-verification` — проверка модуля в одноразовой песочнице.
 * **Тесты:** `mise run test` (весь набор), `nu tests/run.nu --filter <имя>` (точечно).
 * **Журнал изменений:** [CHANGELOG.md](CHANGELOG.md) — генерируется `mise run changelog` (git-cliff, [cliff.toml](cliff.toml)), руками не правится.
 
@@ -20,7 +19,12 @@
 
 ## 🐞 1a. Баги, бэклог и история решений
 
-* **Бэклог — GitHub Issues** (`gidragir/ygg`, публичный). Новые наблюдения, ошибки и идеи заводятся через навык `ygg-report` (атомарные issues, метки `type:*` / `area:*` / `os:*`, нормализация приватных путей, создание только после подтверждения пользователя). Офлайн — `docs/bugs/inbox.md` (в `.gitignore`).
+* **Бэклог — GitHub Issues** (`gidragir/ygg`, публичный). Новые наблюдения, ошибки и идеи заводятся через глобальный навык `task-intake` (`rtk task create` из checkout `main`, публикация только после явного «да»). Офлайн-буфер — `docs/bugs/inbox.md` (в `.gitignore`): без сети дописывать блоки `## <type>: <заголовок>` со строкой `Labels:`, после разбора через `task-intake` обработанные пункты удалять.
+  * **Заголовок и метки:** заголовок на английском `<command или area>: <суть>`; ровно один `type:*` (`bug`, `ux`, `feature`), один или несколько `area:*`, `os:*` — только при привязке к ОС, `needs-repro` — без шагов/версии (неизвестное поле формы — `_unknown_`).
+  * **Priority и Size:** `P0` — любой `bug` в `apply`/`doctor` и блокеры; `P1` — важный UX, диагностика, целостность; `P2` — улучшения и фичи. `Size`: `XS` (точечная правка), `S` (один модуль), `M` (несколько модулей/подкоманда), `L`/`XL` (крупная фича, новая секция манифеста).
+  * **Обезличивание (публичный репо):** `C:\Users\<имя>\...`, `/home/<имя>/...`, `/Users/<имя>/...` → `~/...`; `~/.ygg/.state/tmp/clone-XXXX/` → `<staged clone>/`; имена личных модулей → `<dotfiles module>`; `host.toml`, `secrets.toml`, токены, e-mail, имена хостов — убирать; `file:///...` → путь в репо (`bin/ygg.nu:548`).
+  * **Таксономия `area:*` → код:**
+    - `area:cli` (`bin/ygg.nu`), `area:link` (`src/link.nu`), `area:doctor` (`src/doctor.nu`), `area:git` (`src/git.nu`), `area:state` (`src/state.nu`), `area:manifest` (`src/manifest.nu`), `area:pkg` (`src/pkg.nu`), `area:env` (`src/env.nu`), `area:sdk` (`src/sdk.nu`), `area:container` (`src/container.nu`), `area:progress` (`src/progress.nu`), `area:ci` (`.github/`, `scripts/release.nu`), `area:docs` (`README`, `docs/`).
 * **Выбор задачи:** доска `ygg project` (#5) — `gh project item-list 5 --owner gidragir --format json --limit 100`, сначала меньший `Priority`, затем меньший `Size`.
 * **Перед фиксом или спекой** по issue `#N` или области `area:X` агент читает историю: `gh issue view N --comments`, `gh issue list --state all --label area:X`, `git log --grep "#N"`, `git log --oneline -- src/<file>.nu`, `rg -n "regression: #" tests`. Спека по issue указывает его в шапке (`Issues: #N`).
 * **Обязательный чеклист контрактов (выполнить ДО написания кода, спеки или плана):**

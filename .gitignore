@@ -25,7 +25,7 @@ id_ed25519
 state.db
 kanban.db
 
-# Local bug inbox (offline capture for the ygg-report skill; triaged into GitHub Issues)
+# Local bug inbox (offline capture; triaged into GitHub Issues via task-intake)
 docs/bugs/
 
 # Local Claude Code junction to .agents/skills (not portable, not committed)
