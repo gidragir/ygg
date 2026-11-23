@@ -1,0 +1,3 @@
+name = "module-sample"
+os = ["linux", "windows"]
+description = "Minimal cross-platform sample module for CI lint verification"

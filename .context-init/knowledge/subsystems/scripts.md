@@ -2,8 +2,8 @@
 directory: scripts
 source:
   kind: git
-  blob_sha: e1527c3d037ae58f809e94dbc4b25dcf1461f05e
-  commit_sha: b269cb6d37622578ea87359c014f11e40cae0830
+  blob_sha: a279bce24c45b61eabdf4242a729899bff45d673
+  commit_sha: 46316c5ab09f957e0847a0c89ac011084ca5316a
 generated_by:
   component: context-init
   role: update
@@ -37,11 +37,11 @@ export use ../src/engine.nu [read-ygg-version] const SEMVER = '^(...)\.(0|[1-9]\
 export def is-prerelease [tag: string]: nothing -> bool
 export def normalize-version [raw: string]: nothing -> string
 export def set-ygg-version [content: string, version: string]: nothing -> string
+export def set-workflow-ygg-version [content: string, version: string]: nothing -> string
 def repo-root []: nothing -> string
 def git [root: string, ...args: string]: nothing -> record
 def git-ok [root: string, ...args: string]: nothing -> string
 def fail [msg: string]
-def assert-clean [root: string]
 ```
 
 ## 🧪 Запуск и тестирование

@@ -1,0 +1,321 @@
+name: Module Check
+
+on:
+  workflow_call:
+    inputs:
+      ygg-version:
+        description: 'Git ref (tag, branch, or SHA) of gidragir/ygg to run'
+        required: false
+        type: string
+        default: 'v0.3.0'
+      module-path:
+        description: 'Path to the module inside the caller repository'
+        required: false
+        type: string
+        default: '.'
+      packages:
+        description: 'Probe existence of declared packages (--packages)'
+        required: false
+        type: boolean
+        default: true
+      os:
+        description: 'Comma-separated OS targets override (defaults to module ygg.toml os and distro scopes)'
+        required: false
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Plan target matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      host-matrix: ${{ steps.plan.outputs.host-matrix }}
+      has-host: ${{ steps.plan.outputs.has-host }}
+      container-matrix: ${{ steps.plan.outputs.container-matrix }}
+      has-container: ${{ steps.plan.outputs.has-container }}
+      has-mise: ${{ steps.plan.outputs.has-mise }}
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@v5
+        with:
+          path: module
+
+      - name: Checkout ygg engine
+        uses: actions/checkout@v5
+        with:
+          repository: gidragir/ygg
+          ref: ${{ inputs.ygg-version }}
+          path: ygg-engine
+
+      - name: Setup Nushell
+        uses: hustcer/setup-nu@v3
+        with:
+          version: '0.116.1'
+
+      - name: Compute matrix
+        id: plan
+        shell: nu {0}
+        env:
+          YGG_MODULE_PATH: ${{ inputs.module-path }}
+          YGG_OS_INPUT: ${{ inputs.os }}
+        run: |
+          let src_dir = ("ygg-engine" | path join "src" | path expand)
+          let mod_rel = ($env.YGG_MODULE_PATH | str trim | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep))
+          let mod_dir = if ($mod_rel == "") or ($mod_rel == ".") {
+            "module" | path expand
+          } else {
+            "module" | path join $mod_rel | path expand
+          }
+          with-env { YGG_MATRIX_MOD_DIR: $mod_dir } {
+            ^nu -I $src_dir -c r#'
+              use manifest.nu [load-module-manifest]
+              use lint.nu [compute-lint-targets]
+
+              def has-nonempty [v: any]: nothing -> bool {
+                let d = ($v | describe)
+                if $v == null {
+                  false
+                } else if ($d starts-with "list") {
+                  ($v | any { |x| (($x | describe) == "string") and (($x | str trim) != "") })
+                } else if ($d == "string") {
+                  ($v | str trim) != ""
+                } else {
+                  false
+                }
+              }
+
+              let mod_dir = $env.YGG_MATRIX_MOD_DIR
+              let os_override = ($env.YGG_OS_INPUT | split row "," | each { |s| $s | str trim | str lowercase } | where { |s| $s != "" } | uniq)
+
+              let loaded = (try {
+                { ok: true, manifest: (load-module-manifest $mod_dir) }
+              } catch { |e|
+                print $"::warning title=Manifest parse error::($e.msg)"
+                { ok: false, manifest: null }
+              })
+
+              let targets = if ($os_override | is-not-empty) {
+                $os_override
+              } else if $loaded.ok {
+                let t = (try { compute-lint-targets $loaded.manifest } catch { [] })
+                if ($t | is-not-empty) { $t } else { ["linux"] }
+              } else {
+                ["linux"]
+              }
+
+              let has_mise = if $loaded.ok {
+                try {
+                  let m = $loaded.manifest
+                  let base_pkgs = ($m.packages? | default null)
+                  let base_has = if (($base_pkgs | describe) starts-with "record") {
+                    has-nonempty ($base_pkgs.mise? | default null)
+                  } else {
+                    false
+                  }
+                  let scope_raw = ($m.scope? | default null)
+                  let scope_vals = if (($scope_raw | describe) starts-with "record") { $scope_raw | values } else { [] }
+                  let scope_has = ($scope_vals | any { |s|
+                    if not (($s | describe) starts-with "record") {
+                      false
+                    } else {
+                      let sp = ($s.packages? | default null)
+                      (($sp | describe) starts-with "record") and (has-nonempty ($sp.mise? | default null))
+                    }
+                  })
+                  $base_has or $scope_has
+                } catch {
+                  false
+                }
+              } else {
+                false
+              }
+
+              mut host_matrix = []
+              mut container_matrix = []
+              for os in ($targets | uniq) {
+                match $os {
+                  "windows" => {
+                    $host_matrix = ($host_matrix | append { os: $os, runner: "windows-latest" })
+                  },
+                  "macos" | "darwin" => {
+                    $host_matrix = ($host_matrix | append { os: $os, runner: "macos-latest" })
+                  },
+                  "linux" | "unix" | "ubuntu" | "debian" | "pop" | "mint" => {
+                    $host_matrix = ($host_matrix | append { os: $os, runner: "ubuntu-latest" })
+                  },
+                  "arch" | "cachyos" => {
+                    $container_matrix = ($container_matrix | append { os: $os, container: "archlinux:latest" })
+                  },
+                  "fedora" | "rhel" | "centos" => {
+                    $container_matrix = ($container_matrix | append { os: $os, container: "fedora:latest" })
+                  },
+                  _ => {
+                    print $"::warning title=Unknown OS::OS '($os)' mapped to ubuntu-latest"
+                    $host_matrix = ($host_matrix | append { os: $os, runner: "ubuntu-latest" })
+                  }
+                }
+              }
+
+              let has_host = ($host_matrix | is-not-empty)
+              let has_container = ($container_matrix | is-not-empty)
+              let out_file = $env.GITHUB_OUTPUT
+              $"host-matrix=($host_matrix | to json --raw)\nhas-host=($has_host)\ncontainer-matrix=($container_matrix | to json --raw)\nhas-container=($has_container)\nhas-mise=($has_mise)\n" | save --append $out_file
+            '#
+          }
+
+  lint:
+    name: Lint (${{ matrix.os }})
+    needs: matrix
+    if: ${{ needs.matrix.outputs.has-host == 'true' }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.host-matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout module
+        uses: actions/checkout@v5
+        with:
+          path: module
+
+      - name: Checkout ygg engine
+        uses: actions/checkout@v5
+        with:
+          repository: gidragir/ygg
+          ref: ${{ inputs.ygg-version }}
+          path: ygg-engine
+
+      - name: Setup Nushell
+        uses: hustcer/setup-nu@v3
+        with:
+          version: '0.116.1'
+
+      - name: Setup mise
+        if: ${{ needs.matrix.outputs.has-mise == 'true' && inputs.packages }}
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Refresh apt package index
+        if: ${{ matrix.runner == 'ubuntu-latest' && inputs.packages }}
+        run: sudo apt-get update
+
+      - name: Run ygg lint
+        shell: nu {0}
+        env:
+          YGG_MODULE_PATH: ${{ inputs.module-path }}
+          YGG_TARGET_OS: ${{ matrix.os }}
+          YGG_CHECK_PACKAGES: ${{ inputs.packages }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          let raw_rel = ($env.YGG_MODULE_PATH | str trim)
+          let rel = ($raw_rel | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep))
+          let mod_dir = if ($rel == "") or ($rel == ".") {
+            "module"
+          } else {
+            "module" | path join $rel
+          }
+          let ygg_bin = ("ygg-engine" | path join "bin" "ygg.nu")
+          mut args = [$ygg_bin, "lint", $mod_dir, "--os", $env.YGG_TARGET_OS]
+          if $env.YGG_CHECK_PACKAGES == "true" {
+            $args = ($args | append "--packages")
+          }
+          ^nu ...$args
+
+  lint-container:
+    name: Lint (${{ matrix.os }})
+    needs: matrix
+    if: ${{ needs.matrix.outputs.has-container == 'true' }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.matrix.outputs.container-matrix) }}
+    runs-on: ubuntu-latest
+    container: ${{ matrix.container }}
+    steps:
+      - name: Prepare container tools
+        shell: sh
+        run: |
+          if command -v pacman >/dev/null 2>&1; then
+            pacman -Syu --noconfirm git
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y git
+          fi
+
+      - name: Checkout module
+        uses: actions/checkout@v5
+        with:
+          path: module
+
+      - name: Checkout ygg engine
+        uses: actions/checkout@v5
+        with:
+          repository: gidragir/ygg
+          ref: ${{ inputs.ygg-version }}
+          path: ygg-engine
+
+      - name: Setup Nushell
+        uses: hustcer/setup-nu@v3
+        continue-on-error: true
+        with:
+          version: '0.116.1'
+
+      - name: Fallback install Nushell
+        shell: sh
+        run: |
+          if ! nu --version >/dev/null 2>&1; then
+            broken_nu="$(command -v nu 2>/dev/null || true)"
+            if [ -n "$broken_nu" ]; then
+              rm -f "$broken_nu"
+            fi
+            if command -v pacman >/dev/null 2>&1; then
+              pacman -Sy --noconfirm nushell
+            elif command -v dnf >/dev/null 2>&1; then
+              dnf install -y nushell
+            else
+              echo "::error::Could not install nushell in container" >&2
+              exit 1
+            fi
+          fi
+
+      - name: Setup mise
+        if: ${{ needs.matrix.outputs.has-mise == 'true' && inputs.packages }}
+        uses: jdx/mise-action@v2
+        with:
+          install: false
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run ygg lint
+        shell: nu {0}
+        env:
+          YGG_MODULE_PATH: ${{ inputs.module-path }}
+          YGG_TARGET_OS: ${{ matrix.os }}
+          YGG_CHECK_PACKAGES: ${{ inputs.packages }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MISE_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          let raw_rel = ($env.YGG_MODULE_PATH | str trim)
+          let rel = ($raw_rel | str replace --all "/" (char path_sep) | str replace --all "\\" (char path_sep))
+          let mod_dir = if ($rel == "") or ($rel == ".") {
+            "module"
+          } else {
+            "module" | path join $rel
+          }
+          let ygg_bin = ("ygg-engine" | path join "bin" "ygg.nu")
+          mut args = [$ygg_bin, "lint", $mod_dir, "--os", $env.YGG_TARGET_OS]
+          if $env.YGG_CHECK_PACKAGES == "true" {
+            $args = ($args | append "--packages")
+          }
+          ^nu ...$args

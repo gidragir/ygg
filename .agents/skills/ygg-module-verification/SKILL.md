@@ -1,20 +1,40 @@
 ---
 name: ygg-module-verification
-description: Use when checking a ygg module (ygg.toml, links, setup.nu, packages, compose) before pushing or after migrating dotfiles, or when diagnosing link, package or preflight conflicts of a module without touching the real host.
+description: Use when checking a ygg module via ygg lint or sandbox apply (ygg.toml, links, setup.nu, packages, compose) before pushing or after migrating dotfiles, or when diagnosing link, package or preflight conflicts of a module without touching the real host.
 ---
 
-# Проверка модуля ygg в одноразовой песочнице
+# Проверка модуля ygg
 
 ## Обзор
 
-Модуль проверяется только в одноразовом каталоге: свой `YGG_HOME`, свой `HOME` и **копия** модуля. Реальный `~/.ygg` не читается и не меняется (AGENTS.md §2.1); с `--sandbox`/`YGG_SANDBOX` без `YGG_HOME` ядро падает (`assert-sandbox-home`). `mise run test` проверяет код движка, а не модуль.
+Проверка модуля состоит из двух уровней:
 
-## До запуска
+1. **Первый шаг — `ygg lint <path>`** (и `ygg lint <path> --packages`): read-only проверка движка без изменения `~/.ygg`, `$HOME` и `host.toml`. Команда сама поднимает одноразовую песочницу и удаляет её по завершении. Проверяет схемы (L1), источники во **всех** `[scope.*]` и `mode = "dir"` (L2), выражения scopes (L3), синтаксис `setup.nu` (L4), план `apply` и `preflight-check` по ОС и наборам scopes или фикстурам `ci/hosts/*.toml` (L5), `compose config -q` и (с `--packages`) существование пакетов (L6). Код выхода `1` — только при наличии `error`.
+2. **Второй шаг (углублённая отладка) — ручная одноразовая песочница:** `ygg lint` не исполняет `setup.nu` и не создаёт реальных ссылок на диске. Для отладки `apply`, поведения `setup.nu`, `doctor`, `status` или кэша пакетов используется отдельная сессия `nu` со своим `YGG_HOME`, `HOME` и **копией** модуля. Реальный `~/.ygg` не читается и не меняется (AGENTS.md §2.1); `mise run test` проверяет код движка, а не конкретный модуль.
+
+## Шаг 1. Базовая проверка (`ygg lint`)
+
+Из корня репозитория движка (или через установленный `ygg`):
+
+```nushell
+let ygg = ("bin/ygg.nu" | path expand)
+nu $ygg lint ~/dev/my-module
+nu $ygg lint ~/dev/my-module --packages
+nu $ygg lint ~/dev/my-module --os linux,windows --json
+```
+
+* Если у модуля есть `depends_on`, нужные сочетания scopes или `config`, заведите фикстуры `ci/hosts/*.toml` — без них L5 проверит одиночный модуль и понизит `missing_dependency` до `warn`.
+* Находки L5 для чужой ОС помечаются `cross_os: true` (окончательная проверка для целевой ОС выполняется нативным прогоном в CI через `.github/workflows/module-check.yml`).
+* Если `ygg lint` зелёный, но нужно проверить фактическое исполнение `setup.nu`, создание симлинков/junction, мок контейнеров или повторный `diff` — переходите к Шагу 2.
+
+## Шаг 2. Углублённая отладка в одноразовой песочнице
+
+### До запуска
 
 - Прочитай `setup.nu`: `apply` выполняет его по-настоящему. Пути он должен брать из `YGG_SANDBOX`/SDK — `~` и `$nu.home-path` на Windows смотрят в реальный профиль при любом `USERPROFILE`, это дефект модуля.
 - Выпиши из `ygg.toml` пользовательские scopes (`[scope.<name>]`, кроме ОС) — их нужно включить в `host.toml`, иначе план почти пуст и «зелёный».
 
-## Порядок
+### Порядок
 
 Отдельная сессия `nu` в корне репозитория движка (переменные ниже живут до выхода из неё):
 
@@ -58,6 +78,7 @@ load-env {
 
 | Ошибка | Как правильно |
 |---|---|
+| Ручная песочница до `ygg lint` | Сначала `ygg lint <path>` (и `--packages`) — ловит схемы, все `[scope.*]` и `setup.nu` |
 | `doctor`/`status`/`diff` без `YGG_HOME` | Это чтение реального `~/.ygg` — только в песочнице |
 | Литеральный `/tmp/...` | `mktemp -d -t ygg-verify.XXXXXX` |
 | `ygg add ~/dev/my-module` в песочнице | Копия в `$YGG_HOME/modules/` + `host.toml` |

@@ -568,3 +568,40 @@ export def test_manifest_src_path_uses_native_separator [] {
         assert ($save_src | path exists)
     }
 }
+
+# regression: #23
+export def test_list_module_scopes_without_activation [] {
+    with-temp-ygg { |home|
+        let mod_dir = ($home | path join "modules" "scoped")
+        mkdir $mod_dir
+        ([
+            'name = "scoped"'
+            'os = ["linux", "cachyos"]'
+            '[scope.work.env]'
+            'WORK_MODE = "1"'
+            '[scope.cachyos.packages]'
+            'pacman = ["ripgrep"]'
+            '[scope."work and not headless".aliases]'
+            'w = "echo work"'
+        ] | str join "\n") | save -f ($mod_dir | path join "ygg.toml")
+
+        ([
+            '[scope.gaming]'
+            'steam = "~/.config/steam"'
+        ] | str join "\n") | save -f ($mod_dir | path join "links.toml")
+
+        let m = (load-module-manifest $mod_dir)
+        let scopes = (list-module-scopes $m)
+        assert ("work" in $scopes)
+        assert ("cachyos" in $scopes)
+        assert ("work and not headless" in $scopes)
+        assert ("gaming" in $scopes)
+        assert equal ($scopes | length) 4
+        assert equal (list-module-scopes {}) []
+        assert ("scope" in $YGG_MANIFEST_KEYS)
+        assert ("setup" in $YGG_MANIFEST_KEYS)
+        assert ("cachyos" in $KNOWN_OS_VALUES)
+        assert ("cachyos" in $DISTRO_AUTO_SCOPES)
+        assert (not ("windows" in $DISTRO_AUTO_SCOPES))
+    }
+}

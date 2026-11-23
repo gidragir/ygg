@@ -12,10 +12,9 @@
 
 | Скрипт | Выполняемая команда |
 | :--- | :--- |
-| `test-phase2` | `rtk mise run test-phase2` |
 | `release-tag` | `rtk mise run release-tag` |
-| `release` | `rtk mise run release` |
 | `changelog` | `rtk mise run changelog` |
+| `release` | `rtk mise run release` |
 
 ## Быстрый запуск
 ```bash
